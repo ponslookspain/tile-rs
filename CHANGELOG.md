@@ -6,6 +6,10 @@ follows [Semantic Versioning](https://semver.org) (see [docs/RELEASING.md](docs/
 
 ## [Unreleased]
 
+### Changed
+- The tray menu opens instantly: the "Start with Windows" state is now read directly from the
+  registry instead of starting a `reg.exe` process every time the menu is opened.
+
 ## [0.2.0] - 2026-10-17
 
 ### Added

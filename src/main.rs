@@ -18,16 +18,15 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::io::Write;
 use std::mem::size_of;
-use std::os::windows::process::CommandExt;
 use std::path::PathBuf;
-use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
 use windows::core::{w, BOOL, PCWSTR, PWSTR};
 use windows::Win32::Foundation::{
-    CloseHandle, GetLastError, ERROR_ALREADY_EXISTS, HWND, LPARAM, POINT, RECT,
+    CloseHandle, GetLastError, ERROR_ALREADY_EXISTS, ERROR_FILE_NOT_FOUND, ERROR_SUCCESS, HWND,
+    LPARAM, POINT, RECT,
 };
 use windows::Win32::Graphics::Dwm::{
     DwmGetWindowAttribute, DwmSetWindowAttribute, DWMWA_BORDER_COLOR, DWMWA_CLOAKED,
@@ -38,6 +37,9 @@ use windows::Win32::Graphics::Gdi::{
 };
 use windows::Win32::Media::{timeBeginPeriod, timeEndPeriod};
 use windows::Win32::System::Console::{AttachConsole, ATTACH_PARENT_PROCESS};
+use windows::Win32::System::Registry::{
+    RegDeleteKeyValueW, RegGetValueW, RegSetKeyValueW, HKEY_CURRENT_USER, REG_SZ, RRF_RT_REG_SZ,
+};
 use windows::Win32::System::Threading::{
     CreateMutexW, OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32,
     PROCESS_QUERY_LIMITED_INFORMATION,
@@ -254,21 +256,70 @@ pub fn notify(title: &str, text: &str) {
 // autostart (HKCU\...\Run)
 // ---------------------------------------------------------------------------
 
-const RUN_KEY: &str = r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run";
+/// The autostart entry lives here (the same place the old `reg.exe` version used).
+const RUN_SUBKEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Run";
+const RUN_VALUE: &str = "tile-rs";
 
-fn reg(args: &[&str]) -> bool {
-    Command::new("reg")
-        .args(args)
-        .creation_flags(0x0800_0000) // CREATE_NO_WINDOW
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false)
+/// Reads the value from `HKCU\<subkey>` without spawning a process.
+fn autostart_enabled_at(subkey: &str, name: &str) -> bool {
+    let sub = tray::wide(subkey);
+    let val = tray::wide(name);
+    let mut buf = [0u16; 2048];
+    let mut size = (buf.len() * size_of::<u16>()) as u32;
+    let err = unsafe {
+        RegGetValueW(
+            HKEY_CURRENT_USER,
+            PCWSTR(sub.as_ptr()),
+            PCWSTR(val.as_ptr()),
+            RRF_RT_REG_SZ,
+            None,
+            Some(buf.as_mut_ptr() as *mut _),
+            Some(&mut size),
+        )
+    };
+    err == ERROR_SUCCESS
+}
+
+/// Writes (`Some`) or removes (`None`) the value in `HKCU\<subkey>`.
+fn set_autostart_at(subkey: &str, name: &str, value: Option<&str>) -> bool {
+    let sub = tray::wide(subkey);
+    let val = tray::wide(name);
+    match value {
+        Some(v) => {
+            let data: Vec<u16> = v.encode_utf16().chain(std::iter::once(0)).collect();
+            let bytes = unsafe {
+                std::slice::from_raw_parts(
+                    data.as_ptr() as *const u8,
+                    data.len() * size_of::<u16>(),
+                )
+            };
+            let err = unsafe {
+                RegSetKeyValueW(
+                    HKEY_CURRENT_USER,
+                    PCWSTR(sub.as_ptr()),
+                    PCWSTR(val.as_ptr()),
+                    REG_SZ.0,
+                    Some(bytes.as_ptr() as *const _),
+                    bytes.len() as u32,
+                )
+            };
+            err == ERROR_SUCCESS
+        }
+        None => {
+            let err = unsafe {
+                RegDeleteKeyValueW(
+                    HKEY_CURRENT_USER,
+                    PCWSTR(sub.as_ptr()),
+                    PCWSTR(val.as_ptr()),
+                )
+            };
+            err == ERROR_SUCCESS || err == ERROR_FILE_NOT_FOUND
+        }
+    }
 }
 
 pub fn autostart_enabled() -> bool {
-    reg(&["query", RUN_KEY, "/v", "tile-rs"])
+    autostart_enabled_at(RUN_SUBKEY, RUN_VALUE)
 }
 
 pub fn set_autostart(on: bool) -> bool {
@@ -277,11 +328,9 @@ pub fn set_autostart(on: bool) -> bool {
             return false;
         };
         let value = format!("\"{}\" --autostart", exe.display());
-        reg(&[
-            "add", RUN_KEY, "/v", "tile-rs", "/t", "REG_SZ", "/d", &value, "/f",
-        ])
+        set_autostart_at(RUN_SUBKEY, RUN_VALUE, Some(&value))
     } else {
-        !autostart_enabled() || reg(&["delete", RUN_KEY, "/v", "tile-rs", "/f"])
+        !autostart_enabled() || set_autostart_at(RUN_SUBKEY, RUN_VALUE, None)
     }
 }
 
@@ -1800,5 +1849,27 @@ fn main() {
                 "usage: tile-rs [--autostart | list | tile | --version | --help]"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const TEST_SUBKEY: &str = r"Software\tile-rs-test";
+    const TEST_VALUE: &str = "tile-rs-test";
+
+    #[test]
+    fn autostart_registry_roundtrip() {
+        let _ = set_autostart_at(TEST_SUBKEY, TEST_VALUE, None); // start clean
+        assert!(!autostart_enabled_at(TEST_SUBKEY, TEST_VALUE));
+        assert!(set_autostart_at(
+            TEST_SUBKEY,
+            TEST_VALUE,
+            Some("\"C:\\tile-rs.exe\" --autostart")
+        ));
+        assert!(autostart_enabled_at(TEST_SUBKEY, TEST_VALUE));
+        assert!(set_autostart_at(TEST_SUBKEY, TEST_VALUE, None));
+        assert!(!autostart_enabled_at(TEST_SUBKEY, TEST_VALUE));
     }
 }
