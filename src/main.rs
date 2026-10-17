@@ -13,37 +13,37 @@
 mod config;
 mod geometry;
 mod overlay;
+mod prof;
 mod tray;
+mod window;
+
+use window::{classify, collect, is_fullscreen, visible_rect, Verdict, Win};
 
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::io::Write;
 use std::mem::size_of;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::Ordering;
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
-use windows::core::{w, BOOL, PCWSTR, PWSTR};
+use windows::core::{w, PCWSTR};
 use windows::Win32::Foundation::{
     CloseHandle, GetLastError, ERROR_ALREADY_EXISTS, ERROR_FILE_NOT_FOUND, ERROR_SUCCESS, HANDLE,
-    HWND, LPARAM, POINT, RECT, WAIT_FAILED, WAIT_OBJECT_0,
+    HWND, POINT, RECT, WAIT_FAILED, WAIT_OBJECT_0,
 };
-use windows::Win32::Graphics::Dwm::{
-    DwmGetWindowAttribute, DWMWA_CLOAKED, DWMWA_EXTENDED_FRAME_BOUNDS,
-};
+use windows::Win32::Graphics::Dwm::{DwmGetWindowAttribute, DWMWA_EXTENDED_FRAME_BOUNDS};
 use windows::Win32::Graphics::Gdi::{
-    GetMonitorInfoW, MonitorFromPoint, MonitorFromWindow, MONITORINFO, MONITOR_DEFAULTTONEAREST,
-    MONITOR_DEFAULTTOPRIMARY,
+    GetMonitorInfoW, MonitorFromPoint, MONITORINFO, MONITOR_DEFAULTTOPRIMARY,
 };
 use windows::Win32::System::Console::{AttachConsole, ATTACH_PARENT_PROCESS};
 use windows::Win32::System::Registry::{
     RegDeleteKeyValueW, RegGetValueW, RegSetKeyValueW, HKEY_CURRENT_USER, REG_SZ, RRF_RT_REG_SZ,
 };
 use windows::Win32::System::Threading::{
-    CancelWaitableTimer, CreateMutexW, CreateWaitableTimerExW, CreateWaitableTimerW, OpenProcess,
-    QueryFullProcessImageNameW, SetWaitableTimer, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, INFINITE,
-    PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION, TIMER_ALL_ACCESS,
+    CancelWaitableTimer, CreateMutexW, CreateWaitableTimerExW, CreateWaitableTimerW,
+    SetWaitableTimer, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, INFINITE, TIMER_ALL_ACCESS,
 };
 use windows::Win32::UI::Accessibility::{SetWinEventHook, HWINEVENTHOOK};
 use windows::Win32::UI::HiDpi::{
@@ -51,22 +51,20 @@ use windows::Win32::UI::HiDpi::{
 };
 use windows::Win32::UI::Input::KeyboardAndMouse::{RegisterHotKey, UnregisterHotKey, MOD_NOREPEAT};
 use windows::Win32::UI::WindowsAndMessaging::{
-    DispatchMessageW, EnumWindows, GetClassNameW, GetCursorPos, GetForegroundWindow,
-    GetShellWindow, GetWindow, GetWindowLongW, GetWindowRect, GetWindowTextW,
-    GetWindowThreadProcessId, IsIconic, IsWindow, IsWindowVisible, IsZoomed, KillTimer,
-    MessageBoxW, MsgWaitForMultipleObjectsEx, PeekMessageW, PostQuitMessage, SetForegroundWindow,
-    SetTimer, SetWindowPos, ShowWindow, TranslateMessage, EVENT_OBJECT_CLOAKED,
-    EVENT_OBJECT_CREATE, EVENT_OBJECT_DESTROY, EVENT_OBJECT_HIDE, EVENT_OBJECT_LOCATIONCHANGE,
-    EVENT_OBJECT_SHOW, EVENT_OBJECT_UNCLOAKED, EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_MINIMIZEEND,
-    EVENT_SYSTEM_MINIMIZESTART, EVENT_SYSTEM_MOVESIZEEND, EVENT_SYSTEM_MOVESIZESTART, GWL_EXSTYLE,
-    GWL_STYLE, GW_OWNER, IDYES, MB_ICONINFORMATION, MB_ICONQUESTION, MB_OK, MB_TOPMOST, MB_YESNO,
-    MSG, MWMO_INPUTAVAILABLE, PM_REMOVE, QS_ALLINPUT, SWP_NOACTIVATE, SWP_NOOWNERZORDER,
-    SWP_NOSIZE, SWP_NOZORDER, SW_MINIMIZE, SW_RESTORE, WINEVENT_OUTOFCONTEXT,
-    WINEVENT_SKIPOWNPROCESS, WM_HOTKEY, WM_QUIT, WM_TIMER, WS_CAPTION, WS_CHILD, WS_EX_NOACTIVATE,
-    WS_EX_TOOLWINDOW, WS_POPUP, WS_THICKFRAME,
+    DispatchMessageW, GetCursorPos, GetForegroundWindow, GetShellWindow, GetWindowLongW,
+    GetWindowRect, IsIconic, IsWindow, IsZoomed, KillTimer, MessageBoxW,
+    MsgWaitForMultipleObjectsEx, PeekMessageW, PostQuitMessage, SetForegroundWindow, SetTimer,
+    SetWindowPos, ShowWindow, TranslateMessage, EVENT_OBJECT_CLOAKED, EVENT_OBJECT_CREATE,
+    EVENT_OBJECT_DESTROY, EVENT_OBJECT_HIDE, EVENT_OBJECT_LOCATIONCHANGE, EVENT_OBJECT_SHOW,
+    EVENT_OBJECT_UNCLOAKED, EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_MINIMIZEEND,
+    EVENT_SYSTEM_MINIMIZESTART, EVENT_SYSTEM_MOVESIZEEND, EVENT_SYSTEM_MOVESIZESTART, GWL_STYLE,
+    IDYES, MB_ICONINFORMATION, MB_ICONQUESTION, MB_OK, MB_TOPMOST, MB_YESNO, MSG,
+    MWMO_INPUTAVAILABLE, PM_REMOVE, QS_ALLINPUT, SWP_NOACTIVATE, SWP_NOOWNERZORDER, SWP_NOSIZE,
+    SWP_NOZORDER, SW_MINIMIZE, SW_RESTORE, WINEVENT_OUTOFCONTEXT, WINEVENT_SKIPOWNPROCESS,
+    WM_HOTKEY, WM_QUIT, WM_TIMER, WS_CHILD,
 };
 
-use config::{Action, Dir, FullscreenWindows, Rule, WS_COUNT};
+use config::{Action, Dir, FullscreenWindows, WS_COUNT};
 use geometry::{
     anim_duration, apply_resize, ease, effective_step, fullscreen_action, lerp_rect, neighbour,
     same_rect, spiral, spiral_fitted, split_for, FsAction, MAX_RATIO, MIN_RATIO, RESIZE_PX,
@@ -75,31 +73,6 @@ use geometry::{
 /// Where windows of inactive workspaces are parked (the same spot Windows uses for minimized ones).
 const PARK_X: i32 = -32000;
 const PARK_Y: i32 = -32000;
-
-/// In `run` mode, windows the user maximized / made fullscreen are left alone.
-static SKIP_ZOOMED: AtomicBool = AtomicBool::new(false);
-
-/// Set once at startup from `TILE_RS_PROFILE=1`. When off, profiling costs one bool load.
-static PROFILE: AtomicBool = AtomicBool::new(false);
-
-fn profile_on() -> bool {
-    PROFILE.load(Ordering::Relaxed)
-}
-
-/// Skip reason for a window that runs fullscreen / borderless fullscreen.
-const FULLSCREEN_REASON: &str = "fullscreen (game / borderless)";
-
-/// Window classes that are never tiled (shell UI, overlays, our own overlays).
-const SKIP_CLASSES: &[&str] = &[
-    "Progman",
-    "WorkerW",
-    "Shell_TrayWnd",
-    "Shell_SecondaryTrayWnd",
-    "Windows.UI.Core.CoreWindow",
-    "XamlExplorerHostIslandWindow",
-    "tile-rs-border",
-    "tile-rs-indicator",
-];
 
 // ---------------------------------------------------------------------------
 // logging (the release build has no console, so we log to a file)
@@ -136,15 +109,12 @@ fn log_reset() {
 // profiling (enabled with TILE_RS_PROFILE=1; see docs/PLAN-performance.md)
 // ---------------------------------------------------------------------------
 
-/// How many times `collect()` (a full `EnumWindows` walk) ran.
-static COLLECT_CALLS: AtomicU32 = AtomicU32::new(0);
-
 /// Logs how long a block of code took, when profiling is on (on every exit path).
 struct Timer(&'static str, Option<Instant>);
 
 impl Timer {
     fn new(name: &'static str) -> Self {
-        Timer(name, profile_on().then(Instant::now))
+        Timer(name, prof::on().then(Instant::now))
     }
 }
 
@@ -155,7 +125,7 @@ impl Drop for Timer {
                 "profile: {} {}us collect={}",
                 self.0,
                 t.elapsed().as_micros(),
-                COLLECT_CALLS.load(Ordering::Relaxed)
+                prof::COLLECT_CALLS.load(Ordering::Relaxed)
             ));
         }
     }
@@ -341,241 +311,6 @@ pub fn set_autostart(on: bool) -> bool {
     }
 }
 
-// ---------------------------------------------------------------------------
-// window discovery
-// ---------------------------------------------------------------------------
-
-#[derive(Debug)]
-struct Win {
-    hwnd: HWND,
-    title: String,
-    class: String,
-    pid: u32,
-    /// from a config rule: open on this workspace (0-based)
-    rule_ws: Option<u8>,
-}
-
-fn text_of(f: impl Fn(&mut [u16]) -> i32) -> String {
-    let mut buf = [0u16; 256];
-    let n = f(&mut buf);
-    String::from_utf16_lossy(&buf[..n.max(0) as usize])
-}
-
-/// Executable name without ".exe", lower-case (empty if unknown).
-fn process_name(pid: u32) -> String {
-    unsafe {
-        let Ok(h) = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) else {
-            return String::new();
-        };
-        let mut buf = [0u16; 520];
-        let mut len = buf.len() as u32;
-        let ok =
-            QueryFullProcessImageNameW(h, PROCESS_NAME_WIN32, PWSTR(buf.as_mut_ptr()), &mut len)
-                .is_ok();
-        let _ = CloseHandle(h);
-        if !ok {
-            return String::new();
-        }
-        let path = String::from_utf16_lossy(&buf[..len as usize]);
-        let file = path
-            .rsplit(['\\', '/'])
-            .next()
-            .unwrap_or("")
-            .to_ascii_lowercase();
-        file.strip_suffix(".exe").unwrap_or(&file).to_string()
-    }
-}
-
-fn rule_matches(r: &Rule, w: &Win, proc_name: &str) -> bool {
-    if let Some(p) = &r.process {
-        let p = p.to_ascii_lowercase();
-        if p.strip_suffix(".exe").unwrap_or(&p) != proc_name {
-            return false;
-        }
-    }
-    if let Some(c) = &r.class {
-        if !c.eq_ignore_ascii_case(&w.class) {
-            return false;
-        }
-    }
-    if let Some(t) = &r.title {
-        if !w.title.to_lowercase().contains(&t.to_lowercase()) {
-            return false;
-        }
-    }
-    true
-}
-
-/// Returns None if the window is tileable, otherwise the reason it is skipped.
-fn skip_reason(hwnd: HWND, title: &str, class: &str) -> Option<&'static str> {
-    unsafe {
-        if !IsWindowVisible(hwnd).as_bool() {
-            return Some("invisible");
-        }
-        if IsIconic(hwnd).as_bool() {
-            return Some("minimized");
-        }
-        if SKIP_ZOOMED.load(Ordering::Relaxed) && IsZoomed(hwnd).as_bool() {
-            return Some("maximized/fullscreen by user");
-        }
-        if title.is_empty() {
-            return Some("no title");
-        }
-        if SKIP_CLASSES.contains(&class) {
-            return Some("shell/system class");
-        }
-        if GetWindow(hwnd, GW_OWNER).is_ok_and(|w| !w.is_invalid()) {
-            return Some("owned window (dialog)");
-        }
-        let ex = GetWindowLongW(hwnd, GWL_EXSTYLE) as u32;
-        if ex & (WS_EX_TOOLWINDOW.0 | WS_EX_NOACTIVATE.0) != 0 {
-            return Some("tool/no-activate window");
-        }
-        if is_fullscreen(hwnd) {
-            return Some(FULLSCREEN_REASON);
-        }
-        let style = GetWindowLongW(hwnd, GWL_STYLE) as u32;
-        if style & WS_THICKFRAME.0 == 0 {
-            return Some("not resizable");
-        }
-        let mut cloaked: u32 = 0;
-        if DwmGetWindowAttribute(
-            hwnd,
-            DWMWA_CLOAKED,
-            &mut cloaked as *mut _ as *mut _,
-            size_of::<u32>() as u32,
-        )
-        .is_ok()
-            && cloaked != 0
-        {
-            return Some("cloaked (other desktop / hidden UWP)");
-        }
-    }
-    None
-}
-
-struct Collector {
-    tileable: Vec<Win>,
-    /// Windows that run fullscreen / borderless fullscreen (tracked per workspace).
-    fullscreen: Vec<Win>,
-    skipped: Vec<(Win, &'static str)>,
-    rules: Vec<Rule>,
-}
-
-thread_local! {
-    /// pid -> executable name (the lookup opens the process, so cache it)
-    static PROC_CACHE: RefCell<HashMap<u32, String>> = RefCell::new(HashMap::new());
-}
-
-fn process_name_cached(pid: u32) -> String {
-    PROC_CACHE.with(|c| {
-        let mut c = c.borrow_mut();
-        if let Some(n) = c.get(&pid) {
-            return n.clone();
-        }
-        let n = process_name(pid);
-        if c.len() > 256 {
-            c.clear();
-        }
-        c.insert(pid, n.clone());
-        n
-    })
-}
-
-fn win_info(hwnd: HWND) -> Win {
-    let title = text_of(|b| unsafe { GetWindowTextW(hwnd, b) });
-    let class = text_of(|b| unsafe { GetClassNameW(hwnd, b) });
-    let mut pid = 0u32;
-    unsafe {
-        GetWindowThreadProcessId(hwnd, Some(&mut pid));
-    }
-    Win {
-        hwnd,
-        title,
-        class,
-        pid,
-        rule_ws: None,
-    }
-}
-
-enum Verdict {
-    /// not a window we care about (invisible etc.) - not even listed
-    Ignore,
-    Tileable(Win),
-    /// fullscreen / borderless fullscreen window (tracked per workspace, never tiled)
-    Fullscreen(Win),
-    Skipped(Win, &'static str),
-}
-
-/// Applies the config rules to `w`. Returns true if a rule asked to float it.
-fn apply_rules(w: &mut Win, rules: &[Rule]) -> bool {
-    if rules.is_empty() {
-        return false;
-    }
-    let pn = process_name_cached(w.pid);
-    if let Some(r) = rules.iter().find(|r| rule_matches(r, w, &pn)) {
-        w.rule_ws = r.workspace.map(|n| n - 1);
-        return r.action.as_deref() == Some("float");
-    }
-    false
-}
-
-/// Decides what to do with one window. Cheap checks first: invisible windows (the vast majority
-/// of top-level windows) are rejected before any string is fetched.
-fn classify(hwnd: HWND, rules: &[Rule]) -> Verdict {
-    if !unsafe { IsWindowVisible(hwnd) }.as_bool() {
-        return Verdict::Ignore;
-    }
-    let mut w = win_info(hwnd);
-    match skip_reason(hwnd, &w.title, &w.class) {
-        None => {
-            if apply_rules(&mut w, rules) {
-                return Verdict::Skipped(w, "rule: float");
-            }
-            Verdict::Tileable(w)
-        }
-        Some(r) if r == FULLSCREEN_REASON => {
-            if config::fullscreen_windows() == FullscreenWindows::Ignore {
-                Verdict::Skipped(w, r)
-            } else {
-                apply_rules(&mut w, rules); // a rule may assign it to a workspace
-                Verdict::Fullscreen(w)
-            }
-        }
-        // keep only titled ones in the skip list to keep `list` output readable
-        Some(r) if !w.title.is_empty() => Verdict::Skipped(w, r),
-        Some(_) => Verdict::Ignore,
-    }
-}
-
-unsafe extern "system" fn enum_proc(hwnd: HWND, lparam: LPARAM) -> BOOL {
-    let c = &mut *(lparam.0 as *mut Collector);
-    match classify(hwnd, &c.rules) {
-        Verdict::Ignore => {}
-        Verdict::Tileable(w) => c.tileable.push(w),
-        Verdict::Fullscreen(w) => c.fullscreen.push(w),
-        Verdict::Skipped(w, r) => c.skipped.push((w, r)),
-    }
-    BOOL(1)
-}
-
-fn collect() -> Collector {
-    if profile_on() {
-        COLLECT_CALLS.fetch_add(1, Ordering::Relaxed);
-    }
-    let mut c = Collector {
-        tileable: vec![],
-        fullscreen: vec![],
-        skipped: vec![],
-        rules: config::rules(),
-    };
-    unsafe {
-        let _ = EnumWindows(Some(enum_proc), LPARAM(&mut c as *mut _ as isize));
-    }
-    // EnumWindows walks top-to-bottom in Z order; keep that, it is a stable, sensible order.
-    c
-}
-
 /// How many tiles fit on one workspace for the current screen: the configured `max_tiles`, or a
 /// value derived from the screen area and the comfortable minimum tile.
 fn tile_budget() -> usize {
@@ -641,59 +376,6 @@ fn work_area() -> RECT {
 // ---------------------------------------------------------------------------
 // layout
 // ---------------------------------------------------------------------------
-
-fn visible_rect(hwnd: HWND) -> Option<RECT> {
-    let mut vis = RECT::default();
-    unsafe {
-        DwmGetWindowAttribute(
-            hwnd,
-            DWMWA_EXTENDED_FRAME_BOUNDS,
-            &mut vis as *mut _ as *mut _,
-            size_of::<RECT>() as u32,
-        )
-        .ok()?;
-    }
-    Some(vis)
-}
-
-/// The window's visible frame, falling back to `GetWindowRect` (DWM can fail on exclusive
-/// fullscreen windows that are not composited).
-fn frame_rect(hwnd: HWND) -> Option<RECT> {
-    if let Some(r) = visible_rect(hwnd) {
-        return Some(r);
-    }
-    let mut r = RECT::default();
-    unsafe { GetWindowRect(hwnd, &mut r).ok()? };
-    Some(r)
-}
-
-/// A window that covers its whole monitor and has no title bar (a game in exclusive or borderless
-/// fullscreen, a fullscreen video player, ...). Such windows are never tiled, so they stay
-/// fullscreen; a normal titled window is never reported here.
-fn is_fullscreen(hwnd: HWND) -> bool {
-    let style = unsafe { GetWindowLongW(hwnd, GWL_STYLE) } as u32;
-    let borderless = style & WS_POPUP.0 != 0 || style & WS_CAPTION.0 == 0;
-    if !borderless {
-        return false;
-    }
-    let Some(vis) = frame_rect(hwnd) else {
-        return false;
-    };
-    let mon = unsafe { MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST) };
-    let mut mi = MONITORINFO {
-        cbSize: size_of::<MONITORINFO>() as u32,
-        ..Default::default()
-    };
-    if !unsafe { GetMonitorInfoW(mon, &mut mi) }.as_bool() {
-        return false;
-    }
-    let m = mi.rcMonitor;
-    let t = 2; // a couple of pixels of tolerance
-    (vis.left - m.left).abs() <= t
-        && (vis.top - m.top).abs() <= t
-        && (vis.right - m.right).abs() <= t
-        && (vis.bottom - m.bottom).abs() <= t
-}
 
 /// Brings `fs_ws` / `fs_hidden` in sync with the windows that are really on screen now.
 /// A window that is minimized is kept (it may be one we hid ourselves, and its geometry can no
@@ -997,7 +679,7 @@ fn move_window(s: &mut State, hwnd: HWND, target: RECT, animate: bool) {
         last: None,
     });
     if was_empty {
-        if profile_on() {
+        if prof::on() {
             anim_prof_reset();
         }
         arm_anim_timer(s);
@@ -1060,7 +742,7 @@ fn cancel_anim_timer(s: &State) {
 
 /// One animation frame (called from the frame timer).
 fn anim_tick() {
-    let profiling = profile_on();
+    let profiling = prof::on();
     let easing = config::easing();
     STATE.with(|s| {
         let mut s = s.borrow_mut();
@@ -2174,7 +1856,7 @@ fn start(interactive: bool) {
         );
     }
 
-    SKIP_ZOOMED.store(true, Ordering::Relaxed);
+    window::SKIP_ZOOMED.store(true, Ordering::Relaxed);
     recover_parked();
     unsafe {
         let flags = WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS;
@@ -2282,7 +1964,7 @@ fn console_out() -> Box<dyn Write> {
 
 fn main() {
     if std::env::var_os("TILE_RS_PROFILE").is_some() {
-        PROFILE.store(true, Ordering::Relaxed);
+        prof::PROFILE.store(true, Ordering::Relaxed);
     }
     let cmd = std::env::args().nth(1);
     match cmd.as_deref() {
@@ -2332,7 +2014,10 @@ fn main() {
                         let _ = writeln!(
                             out,
                             "  [{:>6}] {:<28} {}  <- {}",
-                            w.pid, w.class, w.title, FULLSCREEN_REASON
+                            w.pid,
+                            w.class,
+                            w.title,
+                            window::FULLSCREEN_REASON
                         );
                     }
                 }
