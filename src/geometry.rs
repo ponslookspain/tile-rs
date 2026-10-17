@@ -256,6 +256,33 @@ pub fn anim_duration(base_ms: u32, dist_px: i32) -> u32 {
     (base_ms as f32 * f).round() as u32
 }
 
+/// What to do with a tracked fullscreen window when its workspace is shown or hidden.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum FsAction {
+    /// Restore it (it was minimized by us while its workspace was inactive).
+    Show,
+    /// Minimize it (its workspace is not the current one).
+    Hide,
+    /// Leave it as it is.
+    None,
+}
+
+/// Decides the visibility action for a fullscreen window. `hidden` = we minimized it earlier
+/// (so we may restore it); `minimized` = it is minimized right now (by us or by the user).
+pub fn fullscreen_action(ws: u8, cur: u8, hidden: bool, minimized: bool) -> FsAction {
+    if ws == cur {
+        if hidden {
+            FsAction::Show
+        } else {
+            FsAction::None
+        }
+    } else if !hidden && !minimized {
+        FsAction::Hide
+    } else {
+        FsAction::None
+    }
+}
+
 pub fn lerp_i(a: i32, b: i32, t: f32) -> i32 {
     a + ((b - a) as f32 * t).round() as i32
 }
@@ -431,6 +458,18 @@ mod tests {
         }
         // monotonic in the base duration
         assert!(anim_duration(200, 400) > anim_duration(100, 400));
+    }
+
+    #[test]
+    fn fullscreen_action_visibility() {
+        // on the current workspace
+        assert_eq!(fullscreen_action(1, 1, false, false), FsAction::None); // visible, leave it
+        assert_eq!(fullscreen_action(1, 1, true, true), FsAction::Show); // we hid it: restore
+        assert_eq!(fullscreen_action(1, 1, false, true), FsAction::None); // user minimized it
+                                                                          // on another workspace
+        assert_eq!(fullscreen_action(1, 2, false, false), FsAction::Hide); // visible: minimize
+        assert_eq!(fullscreen_action(1, 2, true, true), FsAction::None); // already hidden by us
+        assert_eq!(fullscreen_action(1, 2, false, true), FsAction::None); // minimized: leave it
     }
 
     #[test]

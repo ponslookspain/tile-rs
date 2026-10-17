@@ -33,11 +33,24 @@ pub enum Action {
         width: bool,
         grow: bool,
     },
+    /// Minimize the focused window.
+    Minimize,
     Pause,
     Quit,
     Retile,
     ReloadConfig,
     EditConfig,
+}
+
+/// What to do with a window that runs fullscreen / borderless fullscreen (a game, a video
+/// player): minimize it while its workspace is not shown, or leave it completely alone.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum FullscreenWindows {
+    /// Minimize on another workspace, restore when its workspace is shown (the default).
+    #[default]
+    Minimize,
+    /// Never touch fullscreen windows.
+    Ignore,
 }
 
 #[derive(Deserialize, Clone, Default, Debug)]
@@ -67,6 +80,7 @@ struct RawConfig {
     animations: Option<bool>,
     animation_ms: Option<u32>,
     easing: Option<String>,
+    fullscreen_windows: Option<String>,
     resize_step: Option<u32>,
     border: Option<bool>,
     border_color: Option<String>,
@@ -83,6 +97,8 @@ pub struct Config {
     pub animation_ms: u32,
     /// Easing curve of the animations.
     pub easing: Easing,
+    /// How to handle windows that run fullscreen / borderless fullscreen.
+    pub fullscreen_windows: FullscreenWindows,
     /// Pixels per keypress for the resize hotkeys.
     pub resize_step: u32,
     /// Colour the border of the focused tiled window (Windows 11).
@@ -128,6 +144,11 @@ resize_step = 40
 border = true
 border_color = "#8dbcff"
 
+# Windows that run fullscreen or borderless fullscreen (games, video players): "minimize" hides
+# them while their workspace is not shown and restores them when you switch back; "ignore" leaves
+# them completely alone.
+fullscreen_windows = "minimize"
+
 [hotkeys]
 # Format: "modifiers+key". Modifiers: alt, ctrl, shift, win.
 # Keys: a-z, 0-9, left, right, up, down, space, enter, tab, esc, f1-f12, minus, plus, comma, period.
@@ -144,6 +165,7 @@ grow_width    = ["alt+plus", "alt+numpad_add"]
 shrink_width  = ["alt+minus", "alt+numpad_subtract"]
 # grow_height   = "alt+shift+plus"
 # shrink_height = "alt+shift+minus"
+minimize      = "alt+shift+m"
 pause         = ["ctrl+alt+p", "alt+shift+p"]
 quit          = "ctrl+alt+q"
 # Optional (also available from the tray menu):
@@ -214,6 +236,9 @@ pub fn migrate(text: &str) -> Option<String> {
     if !has("shrink_width") {
         hot.push(r#"shrink_width  = ["alt+minus", "alt+numpad_subtract"]"#.into());
     }
+    if !has("minimize") {
+        hot.push(r#"minimize      = "alt+shift+m""#.into());
+    }
     if !hot.is_empty() {
         if let Some(i) = lines.iter().position(|l| l.trim() == "[hotkeys]") {
             for (n, l) in hot.into_iter().enumerate() {
@@ -252,6 +277,13 @@ pub fn migrate(text: &str) -> Option<String> {
     }
     if !has("border_color") {
         top.push("border_color = \"#8dbcff\"".into());
+    }
+    if !has("fullscreen_windows") {
+        top.push(
+            "# Windows that run fullscreen / borderless fullscreen: \"minimize\" or \"ignore\"."
+                .into(),
+        );
+        top.push("fullscreen_windows = \"minimize\"".into());
     }
     if !top.is_empty() {
         let at = lines
@@ -334,6 +366,7 @@ fn parse_action(name: &str) -> Option<Action> {
             width: false,
             grow: false,
         }),
+        "minimize" => Some(Action::Minimize),
         "pause" => Some(Action::Pause),
         "quit" => Some(Action::Quit),
         "retile" => Some(Action::Retile),
@@ -426,6 +459,17 @@ pub fn parse_easing(s: &str) -> Result<Easing, String> {
     }
 }
 
+/// "minimize", "ignore" -> `FullscreenWindows`.
+pub fn parse_fullscreen_windows(s: &str) -> Result<FullscreenWindows, String> {
+    match s.trim().to_ascii_lowercase().as_str() {
+        "minimize" => Ok(FullscreenWindows::Minimize),
+        "ignore" => Ok(FullscreenWindows::Ignore),
+        other => Err(format!(
+            "fullscreen_windows = \"{other}\": expected \"minimize\" or \"ignore\""
+        )),
+    }
+}
+
 /// "#rrggbb" (or "rrggbb") -> Windows COLORREF (0x00BBGGRR)
 pub fn parse_color(s: &str) -> Result<u32, String> {
     let h = s.trim().trim_start_matches('#');
@@ -453,6 +497,8 @@ pub fn parse(text: &str) -> Result<Config, String> {
     }
     let animations = raw.animations.unwrap_or(true) && animation_ms > 0;
     let easing = parse_easing(raw.easing.as_deref().unwrap_or("out_cubic"))?;
+    let fullscreen_windows =
+        parse_fullscreen_windows(raw.fullscreen_windows.as_deref().unwrap_or("minimize"))?;
     let resize_step = raw.resize_step.unwrap_or(40);
     if !(1..=500).contains(&resize_step) {
         return Err(format!(
@@ -504,6 +550,7 @@ pub fn parse(text: &str) -> Result<Config, String> {
         animations,
         animation_ms,
         easing,
+        fullscreen_windows,
         resize_step,
         border,
         border_color,
@@ -552,6 +599,14 @@ pub fn easing() -> Easing {
     cell().read().map(|c| c.easing).unwrap_or_default()
 }
 
+/// How to handle windows that run fullscreen / borderless fullscreen.
+pub fn fullscreen_windows() -> FullscreenWindows {
+    cell()
+        .read()
+        .map(|c| c.fullscreen_windows)
+        .unwrap_or_default()
+}
+
 /// The border colour (COLORREF) if the border is enabled.
 pub fn border() -> Option<u32> {
     cell()
@@ -580,9 +635,14 @@ mod tests {
         assert!(c.animations);
         assert_eq!(c.animation_ms, 140);
         assert_eq!(c.easing, Easing::OutCubic);
+        assert_eq!(c.fullscreen_windows, FullscreenWindows::Minimize);
         assert_eq!(c.resize_step, 40);
         assert!(c.border);
         assert_eq!(c.border_color, 0xFFBC8D); // #8dbcff as COLORREF (BGR)
+        assert!(c
+            .bindings
+            .iter()
+            .any(|(a, s)| *a == Action::Minimize && s == "alt+shift+m"));
         assert!(c.bindings.iter().any(|(a, s)| {
             *a == Action::Resize {
                 width: true,
@@ -618,7 +678,12 @@ mod tests {
         assert!(c.animations);
         assert_eq!(c.animation_ms, 140);
         assert_eq!(c.easing, Easing::OutCubic);
+        assert_eq!(c.fullscreen_windows, FullscreenWindows::Minimize);
         assert_eq!(c.resize_step, 40);
+        assert!(c
+            .bindings
+            .iter()
+            .any(|(a, s)| *a == Action::Minimize && s == "alt+shift+m"));
         assert!(c.bindings.iter().any(|(a, s)| {
             *a == Action::Resize {
                 width: true,
@@ -642,7 +707,7 @@ mod tests {
         let once = migrate(OLD_CONFIG).unwrap();
         assert!(migrate(&once).is_none(), "second run must change nothing");
         // a key the user commented out or turned off is not re-added
-        let custom = "gap = 5\nanimations = false\n# animation_ms = 99\neasing = \"linear\"\nresize_step = 10\nborder = false\n# border_color = \"#112233\"\n\n[hotkeys]\n# grow_width = \"alt+plus\"\n# shrink_width = \"alt+minus\"\nquit = \"ctrl+alt+q\"\n";
+        let custom = "gap = 5\nanimations = false\n# animation_ms = 99\neasing = \"linear\"\nfullscreen_windows = \"ignore\"\nresize_step = 10\nborder = false\n# border_color = \"#112233\"\n\n[hotkeys]\n# grow_width = \"alt+plus\"\n# shrink_width = \"alt+minus\"\nminimize = \"alt+shift+m\"\nquit = \"ctrl+alt+q\"\n";
         assert!(migrate(custom).is_none());
         // the freshly generated default never needs migrating
         assert!(migrate(&default_config()).is_none());
@@ -681,6 +746,30 @@ mod tests {
         assert!(err.contains("out_cubic"), "{err}");
         assert!(parse("easing = \"wobble\"").is_err());
         assert_eq!(parse("easing = \"linear\"").unwrap().easing, Easing::Linear);
+    }
+
+    #[test]
+    fn fullscreen_windows_parses_and_rejects_unknown() {
+        assert_eq!(
+            parse_fullscreen_windows("minimize").unwrap(),
+            FullscreenWindows::Minimize
+        );
+        assert_eq!(
+            parse_fullscreen_windows("IGNORE").unwrap(),
+            FullscreenWindows::Ignore
+        );
+        assert_eq!(
+            parse_fullscreen_windows(" ignore ").unwrap(),
+            FullscreenWindows::Ignore
+        );
+        assert!(parse_fullscreen_windows("hide").is_err());
+        assert!(parse("fullscreen_windows = \"hide\"").is_err());
+        assert_eq!(
+            parse("fullscreen_windows = \"ignore\"")
+                .unwrap()
+                .fullscreen_windows,
+            FullscreenWindows::Ignore
+        );
     }
 
     #[test]

@@ -15,7 +15,7 @@ mod geometry;
 mod tray;
 
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::Write;
 use std::mem::size_of;
 use std::path::PathBuf;
@@ -61,15 +61,15 @@ use windows::Win32::UI::WindowsAndMessaging::{
     EVENT_SYSTEM_MINIMIZESTART, EVENT_SYSTEM_MOVESIZEEND, EVENT_SYSTEM_MOVESIZESTART, GWL_EXSTYLE,
     GWL_STYLE, GW_OWNER, IDYES, MB_ICONINFORMATION, MB_ICONQUESTION, MB_OK, MB_TOPMOST, MB_YESNO,
     MSG, MWMO_INPUTAVAILABLE, PM_REMOVE, QS_ALLINPUT, SWP_NOACTIVATE, SWP_NOOWNERZORDER,
-    SWP_NOSIZE, SWP_NOZORDER, SW_RESTORE, WINEVENT_OUTOFCONTEXT, WINEVENT_SKIPOWNPROCESS,
-    WM_HOTKEY, WM_QUIT, WM_TIMER, WS_CAPTION, WS_CHILD, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
-    WS_POPUP, WS_THICKFRAME,
+    SWP_NOSIZE, SWP_NOZORDER, SW_MINIMIZE, SW_RESTORE, WINEVENT_OUTOFCONTEXT,
+    WINEVENT_SKIPOWNPROCESS, WM_HOTKEY, WM_QUIT, WM_TIMER, WS_CAPTION, WS_CHILD, WS_EX_NOACTIVATE,
+    WS_EX_TOOLWINDOW, WS_POPUP, WS_THICKFRAME,
 };
 
-use config::{Action, Dir, Rule, WS_COUNT};
+use config::{Action, Dir, FullscreenWindows, Rule, WS_COUNT};
 use geometry::{
-    anim_duration, apply_resize, ease, effective_step, lerp_rect, neighbour, same_rect, spiral,
-    split_for, MAX_RATIO, MIN_RATIO, RESIZE_PX,
+    anim_duration, apply_resize, ease, effective_step, fullscreen_action, lerp_rect, neighbour,
+    same_rect, spiral, split_for, FsAction, MAX_RATIO, MIN_RATIO, RESIZE_PX,
 };
 
 /// Where windows of inactive workspaces are parked (the same spot Windows uses for minimized ones).
@@ -85,6 +85,9 @@ static PROFILE: AtomicBool = AtomicBool::new(false);
 fn profile_on() -> bool {
     PROFILE.load(Ordering::Relaxed)
 }
+
+/// Skip reason for a window that runs fullscreen / borderless fullscreen.
+const FULLSCREEN_REASON: &str = "fullscreen (game / borderless)";
 
 /// Window classes that are never tiled (shell UI, overlays).
 const SKIP_CLASSES: &[&str] = &[
@@ -427,7 +430,7 @@ fn skip_reason(hwnd: HWND, title: &str, class: &str) -> Option<&'static str> {
             return Some("tool/no-activate window");
         }
         if is_fullscreen(hwnd) {
-            return Some("fullscreen (game / borderless)");
+            return Some(FULLSCREEN_REASON);
         }
         let style = GetWindowLongW(hwnd, GWL_STYLE) as u32;
         if style & WS_THICKFRAME.0 == 0 {
@@ -451,6 +454,8 @@ fn skip_reason(hwnd: HWND, title: &str, class: &str) -> Option<&'static str> {
 
 struct Collector {
     tileable: Vec<Win>,
+    /// Windows that run fullscreen / borderless fullscreen (tracked per workspace).
+    fullscreen: Vec<Win>,
     skipped: Vec<(Win, &'static str)>,
     rules: Vec<Rule>,
 }
@@ -495,7 +500,22 @@ enum Verdict {
     /// not a window we care about (invisible etc.) - not even listed
     Ignore,
     Tileable(Win),
+    /// fullscreen / borderless fullscreen window (tracked per workspace, never tiled)
+    Fullscreen(Win),
     Skipped(Win, &'static str),
+}
+
+/// Applies the config rules to `w`. Returns true if a rule asked to float it.
+fn apply_rules(w: &mut Win, rules: &[Rule]) -> bool {
+    if rules.is_empty() {
+        return false;
+    }
+    let pn = process_name_cached(w.pid);
+    if let Some(r) = rules.iter().find(|r| rule_matches(r, w, &pn)) {
+        w.rule_ws = r.workspace.map(|n| n - 1);
+        return r.action.as_deref() == Some("float");
+    }
+    false
 }
 
 /// Decides what to do with one window. Cheap checks first: invisible windows (the vast majority
@@ -507,17 +527,18 @@ fn classify(hwnd: HWND, rules: &[Rule]) -> Verdict {
     let mut w = win_info(hwnd);
     match skip_reason(hwnd, &w.title, &w.class) {
         None => {
-            // config rules
-            if !rules.is_empty() {
-                let pn = process_name_cached(w.pid);
-                if let Some(r) = rules.iter().find(|r| rule_matches(r, &w, &pn)) {
-                    if r.action.as_deref() == Some("float") {
-                        return Verdict::Skipped(w, "rule: float");
-                    }
-                    w.rule_ws = r.workspace.map(|n| n - 1);
-                }
+            if apply_rules(&mut w, rules) {
+                return Verdict::Skipped(w, "rule: float");
             }
             Verdict::Tileable(w)
+        }
+        Some(r) if r == FULLSCREEN_REASON => {
+            if config::fullscreen_windows() == FullscreenWindows::Ignore {
+                Verdict::Skipped(w, r)
+            } else {
+                apply_rules(&mut w, rules); // a rule may assign it to a workspace
+                Verdict::Fullscreen(w)
+            }
         }
         // keep only titled ones in the skip list to keep `list` output readable
         Some(r) if !w.title.is_empty() => Verdict::Skipped(w, r),
@@ -530,6 +551,7 @@ unsafe extern "system" fn enum_proc(hwnd: HWND, lparam: LPARAM) -> BOOL {
     match classify(hwnd, &c.rules) {
         Verdict::Ignore => {}
         Verdict::Tileable(w) => c.tileable.push(w),
+        Verdict::Fullscreen(w) => c.fullscreen.push(w),
         Verdict::Skipped(w, r) => c.skipped.push((w, r)),
     }
     BOOL(1)
@@ -541,6 +563,7 @@ fn collect() -> Collector {
     }
     let mut c = Collector {
         tileable: vec![],
+        fullscreen: vec![],
         skipped: vec![],
         rules: config::rules(),
     };
@@ -618,6 +641,79 @@ fn is_fullscreen(hwnd: HWND) -> bool {
         && (vis.top - m.top).abs() <= t
         && (vis.right - m.right).abs() <= t
         && (vis.bottom - m.bottom).abs() <= t
+}
+
+/// Brings `fs_ws` / `fs_hidden` in sync with the windows that are really on screen now.
+/// A window that is minimized is kept (it may be one we hid ourselves, and its geometry can no
+/// longer be detected reliably); a visible window that is no longer fullscreen is dropped.
+fn reconcile_fullscreen(s: &mut State, wins: &[Win]) {
+    let detected: HashSet<isize> = wins.iter().map(|w| w.hwnd.0 as isize).collect();
+    s.fs_ws.retain(|h, _| {
+        let hw = HWND(*h as *mut _);
+        if !unsafe { IsWindow(Some(hw)) }.as_bool() {
+            return false;
+        }
+        detected.contains(h) || unsafe { IsIconic(hw) }.as_bool()
+    });
+    for w in wins {
+        s.fs_ws
+            .entry(w.hwnd.0 as isize)
+            .or_insert(w.rule_ws.unwrap_or(s.cur));
+    }
+    let fs_ws = &s.fs_ws;
+    s.fs_hidden.retain(|h| fs_ws.contains_key(h));
+}
+
+/// Minimizes the fullscreen windows whose workspace is not shown, and restores the ones we hid
+/// when their workspace becomes the current one.
+fn apply_fullscreen(s: &mut State) {
+    if s.paused || config::fullscreen_windows() == FullscreenWindows::Ignore {
+        return;
+    }
+    let cur = s.cur;
+    let items: Vec<(isize, u8)> = s.fs_ws.iter().map(|(h, w)| (*h, *w)).collect();
+    let mut changed = false;
+    for (h, ws) in items {
+        let hw = HWND(h as *mut _);
+        if !unsafe { IsWindow(Some(hw)) }.as_bool() {
+            continue;
+        }
+        let hidden = s.fs_hidden.contains(&h);
+        let minimized = unsafe { IsIconic(hw) }.as_bool();
+        match fullscreen_action(ws, cur, hidden, minimized) {
+            FsAction::Show => {
+                unsafe {
+                    let _ = ShowWindow(hw, SW_RESTORE);
+                }
+                s.fs_hidden.remove(&h);
+                changed = true;
+            }
+            FsAction::Hide => {
+                unsafe {
+                    let _ = ShowWindow(hw, SW_MINIMIZE);
+                }
+                s.fs_hidden.insert(h);
+                changed = true;
+            }
+            FsAction::None => {}
+        }
+    }
+    if changed {
+        // our own minimize / restore must not look like the user moving windows
+        s.ignore_until = Some(Instant::now() + Duration::from_millis(300));
+    }
+}
+
+/// Restores every fullscreen window we minimized (pause, quit), so nothing stays hidden.
+fn restore_hidden_fullscreen(s: &mut State) {
+    for h in std::mem::take(&mut s.fs_hidden) {
+        let hw = HWND(h as *mut _);
+        if unsafe { IsWindow(Some(hw)) }.as_bool() && unsafe { IsIconic(hw) }.as_bool() {
+            unsafe {
+                let _ = ShowWindow(hw, SW_RESTORE);
+            }
+        }
+    }
 }
 
 fn place(hwnd: HWND, target: RECT) {
@@ -705,6 +801,10 @@ struct State {
     order: Vec<isize>,
     /// Workspace (0-based) of every known window.
     ws: HashMap<isize, u8>,
+    /// Workspace (0-based) of every known fullscreen window (they are never tiled).
+    fs_ws: HashMap<isize, u8>,
+    /// Fullscreen windows we minimized because their workspace is not shown (to restore later).
+    fs_hidden: HashSet<isize>,
     /// Current workspace (0-based).
     cur: u8,
     /// Windows of the current workspace in the layout that was applied last time;
@@ -1023,6 +1123,7 @@ pub fn action_name(a: Action) -> String {
             if grow { "grow" } else { "shrink" },
             if width { "width" } else { "height" }
         ),
+        Action::Minimize => "minimize".into(),
         Action::Pause => "pause".into(),
         Action::Quit => "quit".into(),
         Action::Retile => "retile".into(),
@@ -1223,8 +1324,10 @@ unsafe extern "system" fn on_event(
                 let recently = s
                     .last_switch
                     .is_some_and(|t| t.elapsed() < Duration::from_millis(500));
-                match s.ws.get(&h) {
-                    Some(&w) if w != s.cur && !s.paused && !recently => {
+                // a window of another workspace got focus (taskbar / Alt+Tab), tiled or fullscreen
+                let ws = s.ws.get(&h).copied().or_else(|| s.fs_ws.get(&h).copied());
+                match ws {
+                    Some(w) if w != s.cur && !s.paused && !recently => {
                         s.follow = Some((w, h));
                         s.windows_changed = true;
                     }
@@ -1462,6 +1565,8 @@ fn retile() {
             return;
         }
         s.windows_changed = false; // this pass reconciles the whole window set
+        reconcile_fullscreen(&mut s, &c.fullscreen);
+        apply_fullscreen(&mut s);
         let present: Vec<isize> = c.tileable.iter().map(|w| w.hwnd.0 as isize).collect();
         let cur = s.cur;
         // windows we have not seen before are placed instantly; known ones glide
@@ -1599,33 +1704,69 @@ fn switch_ws(n: u8, focus: Option<isize>) {
     retile();
     match focus {
         Some(h) => focus_hwnd(h),
-        None => focus_first_or_desktop(),
+        None => focus_workspace(n),
     }
     tray::update();
     log(format!("switched to workspace {}", n + 1));
 }
 
+/// Focuses the fullscreen window of workspace `n` if it has one, otherwise the first tiled one.
+fn focus_workspace(n: u8) {
+    let fs = STATE.with(|s| {
+        s.borrow()
+            .fs_ws
+            .iter()
+            .find(|(h, w)| **w == n && !unsafe { IsIconic(HWND(**h as *mut _)) }.as_bool())
+            .map(|(h, _)| *h)
+    });
+    match fs {
+        Some(h) => focus_hwnd(h),
+        None => focus_first_or_desktop(),
+    }
+}
+
 fn move_to_ws(n: u8) {
     let fg = unsafe { GetForegroundWindow() }.0 as isize;
-    let ok = STATE.with(|s| {
+    // which kind of window are we moving?
+    let fullscreen = STATE.with(|s| {
         let mut s = s.borrow_mut();
-        if s.paused || n >= WS_COUNT || !s.ws.contains_key(&fg) || s.ws[&fg] == n {
-            return false;
+        if s.paused || n >= WS_COUNT {
+            return None;
+        }
+        if let Some(&w) = s.fs_ws.get(&fg) {
+            if w == n {
+                return None;
+            }
+            s.fs_ws.insert(fg, n);
+            return Some(true);
+        }
+        if !s.ws.contains_key(&fg) || s.ws[&fg] == n {
+            return None;
         }
         s.ws.insert(fg, n);
         s.last.clear();
         s.last_switch = Some(Instant::now());
-        true
+        Some(false)
     });
-    if !ok {
+    let Some(fullscreen) = fullscreen else {
         return;
-    }
+    };
     let cur = STATE.with(|s| s.borrow().cur);
-    if n != cur {
-        park(HWND(fg as *mut _));
+    if fullscreen {
+        // retile syncs visibility: hidden if `n` is not the current workspace, shown if it is
+        retile();
+        if n == cur {
+            focus_hwnd(fg);
+        } else {
+            focus_first_or_desktop();
+        }
+    } else {
+        if n != cur {
+            park(HWND(fg as *mut _));
+        }
+        retile();
+        focus_first_or_desktop();
     }
-    retile();
-    focus_first_or_desktop();
     log(format!("moved a window to workspace {}", n + 1));
 }
 
@@ -1658,9 +1799,13 @@ fn bring_everything_back() {
         for v in s.ws.values_mut() {
             *v = cur;
         }
+        for v in s.fs_ws.values_mut() {
+            *v = cur; // so the fullscreen windows are not hidden again below
+        }
         s.last.clear();
         s.paused = false;
         s.no_anim = true; // the process is about to exit: no gliding
+        restore_hidden_fullscreen(&mut s);
     });
     retile();
 }
@@ -1676,6 +1821,7 @@ fn toggle_pause() {
     tray::update();
     if paused {
         clear_border();
+        STATE.with(|s| restore_hidden_fullscreen(&mut s.borrow_mut()));
     }
     if !paused {
         STATE.with(|s| s.borrow_mut().last.clear());
@@ -1709,6 +1855,25 @@ fn reload_config() {
     }
 }
 
+/// Hotkey: minimize the focused window (a fullscreen game, or a normal tiled window).
+fn minimize_focused() {
+    let fg = unsafe { GetForegroundWindow() };
+    if fg.is_invalid() {
+        return;
+    }
+    let h = fg.0 as isize;
+    STATE.with(|s| {
+        let mut s = s.borrow_mut();
+        // the user chose to minimize it: do not restore it on the next workspace switch
+        s.fs_hidden.remove(&h);
+        s.ignore_until = Some(Instant::now() + Duration::from_millis(300));
+    });
+    unsafe {
+        let _ = ShowWindow(fg, SW_MINIMIZE);
+    }
+    log("minimized the focused window");
+}
+
 pub fn dispatch(a: Action) {
     match a {
         Action::Focus(d) => focus_or_swap(d, false),
@@ -1716,6 +1881,7 @@ pub fn dispatch(a: Action) {
         Action::Workspace(n) => switch_ws(n, None),
         Action::MoveTo(n) => move_to_ws(n),
         Action::Resize { width, grow } => resize_focused(width, grow),
+        Action::Minimize => minimize_focused(),
         Action::Pause => toggle_pause(),
         Action::Quit => unsafe { PostQuitMessage(0) },
         Action::Retile => {
@@ -1978,6 +2144,16 @@ fn main() {
                 let _ = writeln!(out, "TILEABLE ({}):", c.tileable.len());
                 for w in &c.tileable {
                     let _ = writeln!(out, "  [{:>6}] {:<28} {}", w.pid, w.class, w.title);
+                }
+                if !c.fullscreen.is_empty() {
+                    let _ = writeln!(out, "\nFULLSCREEN ({}):", c.fullscreen.len());
+                    for w in &c.fullscreen {
+                        let _ = writeln!(
+                            out,
+                            "  [{:>6}] {:<28} {}  <- {}",
+                            w.pid, w.class, w.title, FULLSCREEN_REASON
+                        );
+                    }
                 }
                 let _ = writeln!(out, "\nSKIPPED ({}):", c.skipped.len());
                 for (w, r) in &c.skipped {
