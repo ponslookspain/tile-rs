@@ -819,7 +819,8 @@ fn place_border(vis: &RECT, target: isize) {
         right: vis.right + w,
         bottom: vis.bottom + w,
     };
-    overlay::show_border(rect, HWND(target as *mut _));
+    // rounded corners: the window's own corner radius (~8 px) plus the border width
+    overlay::show_border(rect, HWND(target as *mut _), 8 + w);
 }
 
 /// Picks the window that should carry the border (the focused tiled window of the current

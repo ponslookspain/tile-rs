@@ -10,8 +10,9 @@ use std::sync::atomic::{AtomicIsize, AtomicU32, Ordering};
 use windows::core::w;
 use windows::Win32::Foundation::{COLORREF, HINSTANCE, HWND, LPARAM, LRESULT, RECT, WPARAM};
 use windows::Win32::Graphics::Gdi::{
-    BeginPaint, CreateSolidBrush, DeleteObject, Ellipse, EndPaint, FillRect, GetStockObject,
-    InvalidateRect, SelectObject, HDC, HGDIOBJ, NULL_PEN, PAINTSTRUCT,
+    BeginPaint, CreateRoundRectRgn, CreateSolidBrush, DeleteObject, Ellipse, EndPaint, FillRect,
+    GetStockObject, InvalidateRect, SelectObject, SetWindowRgn, HDC, HGDIOBJ, NULL_PEN,
+    PAINTSTRUCT,
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::WindowsAndMessaging::{
@@ -23,6 +24,8 @@ use windows::Win32::UI::WindowsAndMessaging::{
 
 static BORDER: AtomicIsize = AtomicIsize::new(0);
 static BORDER_COLOR: AtomicU32 = AtomicU32::new(0x00FF_FFFF);
+/// Size (width << 16 | height) the rounded region was last built for.
+static BORDER_SIZE: AtomicU32 = AtomicU32::new(u32::MAX);
 
 unsafe extern "system" fn border_wndproc(
     hwnd: HWND,
@@ -91,12 +94,14 @@ pub fn set_border_color(color: u32) {
 }
 
 /// Shows the border at `rect` (which already includes the border width), inserted just below
-/// `window` in the z-order so the window itself covers the centre of the border.
-pub fn show_border(rect: RECT, window: HWND) {
+/// `window` in the z-order so the window itself covers the centre of the border. `radius` is the
+/// corner radius in pixels (rounded corners, like the window itself).
+pub fn show_border(rect: RECT, window: HWND, radius: i32) {
     let raw = BORDER.load(Ordering::Relaxed);
     if raw == 0 {
         return;
     }
+    let (w, h) = (rect.right - rect.left, rect.bottom - rect.top);
     unsafe {
         let hwnd = HWND(raw as *mut _);
         let _ = SetWindowPos(
@@ -104,10 +109,17 @@ pub fn show_border(rect: RECT, window: HWND) {
             Some(window),
             rect.left,
             rect.top,
-            rect.right - rect.left,
-            rect.bottom - rect.top,
+            w,
+            h,
             SWP_NOACTIVATE,
         );
+        // rounded corners: (re)create the window region only when the size changed
+        let key = ((w as u32) << 16) | (h as u32 & 0xFFFF);
+        if BORDER_SIZE.swap(key, Ordering::Relaxed) != key {
+            let d = (radius * 2).max(0);
+            let rgn = CreateRoundRectRgn(0, 0, w + 1, h + 1, d, d);
+            let _ = SetWindowRgn(hwnd, Some(rgn), true);
+        }
         let _ = ShowWindow(hwnd, SW_SHOWNA);
     }
 }
@@ -137,7 +149,8 @@ pub fn destroy_border() {
 const DOTS: i32 = 9;
 const DOT: i32 = 6;
 const DOT_GAP: i32 = 4;
-const PAD: i32 = 2;
+/// Padding above and below the dots.
+const PAD: i32 = 6;
 /// Colour key that is made transparent (the dots are drawn in other colours).
 const IND_KEY: u32 = 0x00FF_00FF;
 
