@@ -1035,7 +1035,10 @@ fn anim_tick() {
                 }
                 a.last = Some(rect);
             }
-            if !done {
+            if done {
+                // the window is at its tile now: note it if the app kept a bigger minimum size
+                observe_min_size(&mut s, HWND(a.hwnd as *mut _), &a.to);
+            } else {
                 keep.push(a);
             }
         }
