@@ -21,7 +21,7 @@ use std::mem::size_of;
 use std::os::windows::process::CommandExt;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
@@ -75,6 +75,13 @@ const PARK_Y: i32 = -32000;
 /// In `run` mode, windows the user maximized / made fullscreen are left alone.
 static SKIP_ZOOMED: AtomicBool = AtomicBool::new(false);
 
+/// Set once at startup from `TILE_RS_PROFILE=1`. When off, profiling costs one bool load.
+static PROFILE: AtomicBool = AtomicBool::new(false);
+
+fn profile_on() -> bool {
+    PROFILE.load(Ordering::Relaxed)
+}
+
 /// Window classes that are never tiled (shell UI, overlays).
 const SKIP_CLASSES: &[&str] = &[
     "Progman",
@@ -114,6 +121,107 @@ pub fn log(msg: impl AsRef<str>) {
 
 fn log_reset() {
     let _ = std::fs::write(log_file(), "");
+}
+
+// ---------------------------------------------------------------------------
+// profiling (enabled with TILE_RS_PROFILE=1; see docs/PLAN-performance.md)
+// ---------------------------------------------------------------------------
+
+/// How many times `collect()` (a full `EnumWindows` walk) ran.
+static COLLECT_CALLS: AtomicU32 = AtomicU32::new(0);
+
+/// Logs how long a block of code took, when profiling is on (on every exit path).
+struct Timer(&'static str, Option<Instant>);
+
+impl Timer {
+    fn new(name: &'static str) -> Self {
+        Timer(name, profile_on().then(Instant::now))
+    }
+}
+
+impl Drop for Timer {
+    fn drop(&mut self) {
+        if let Some(t) = self.1 {
+            log(format!(
+                "profile: {} {}us collect={}",
+                self.0,
+                t.elapsed().as_micros(),
+                COLLECT_CALLS.load(Ordering::Relaxed)
+            ));
+        }
+    }
+}
+
+/// Per-frame stats, aggregated until the animation queue drains.
+#[derive(Default)]
+struct AnimProf {
+    start: Option<Instant>,
+    last_frame: Option<Instant>,
+    frames: u32,
+    intervals_ms: Vec<f32>,
+    setpos_us: Vec<f32>,
+}
+
+thread_local! {
+    static ANIM_PROF: RefCell<AnimProf> = RefCell::new(AnimProf::default());
+}
+
+fn anim_prof_reset() {
+    ANIM_PROF.with(|p| *p.borrow_mut() = AnimProf::default());
+}
+
+/// Records one animation frame (only called when profiling is on).
+fn anim_prof_frame(now: Instant, setpos_us: f32) {
+    ANIM_PROF.with(|p| {
+        let mut p = p.borrow_mut();
+        if p.start.is_none() {
+            p.start = Some(now);
+        }
+        if let Some(prev) = p.last_frame {
+            p.intervals_ms.push((now - prev).as_secs_f32() * 1000.0);
+        }
+        p.last_frame = Some(now);
+        p.frames += 1;
+        p.setpos_us.push(setpos_us);
+    });
+}
+
+/// Logs the summary of a finished animation and resets the stats.
+fn anim_prof_finish(now: Instant) {
+    ANIM_PROF.with(|p| {
+        let mut p = p.borrow_mut();
+        let dur = p
+            .start
+            .map(|s| (now - s).as_secs_f32() * 1000.0)
+            .unwrap_or(0.0);
+        let setpos_avg = if p.setpos_us.is_empty() {
+            0.0
+        } else {
+            p.setpos_us.iter().sum::<f32>() / p.setpos_us.len() as f32
+        };
+        let setpos_max = p.setpos_us.iter().cloned().fold(0.0_f32, f32::max);
+        log(format!(
+            "anim: frames={} dur={:.0}ms interval avg/p95/max={}ms setpos avg/max={:.2}/{:.2}ms",
+            p.frames,
+            dur,
+            stat_line(&p.intervals_ms),
+            setpos_avg / 1000.0,
+            setpos_max / 1000.0
+        ));
+        *p = AnimProf::default();
+    });
+}
+
+fn stat_line(v: &[f32]) -> String {
+    if v.is_empty() {
+        return "0/0/0".into();
+    }
+    let mut s = v.to_vec();
+    s.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let avg = s.iter().sum::<f32>() / s.len() as f32;
+    let p95 = s[((s.len() as f32 * 0.95) as usize).min(s.len() - 1)];
+    let max = *s.last().unwrap();
+    format!("{avg:.1}/{p95:.1}/{max:.1}")
 }
 
 /// Message box. Returns true if the user pressed Yes (only meaningful when `question`).
@@ -374,6 +482,9 @@ unsafe extern "system" fn enum_proc(hwnd: HWND, lparam: LPARAM) -> BOOL {
 }
 
 fn collect() -> Collector {
+    if profile_on() {
+        COLLECT_CALLS.fetch_add(1, Ordering::Relaxed);
+    }
     let mut c = Collector {
         tileable: vec![],
         skipped: vec![],
@@ -605,6 +716,7 @@ fn move_window(s: &mut State, hwnd: HWND, target: RECT, animate: bool) {
         win.right - from.right,
         win.bottom - from.bottom,
     );
+    let was_empty = s.anims.is_empty();
     s.anims.push(Anim {
         hwnd: h,
         from,
@@ -612,27 +724,36 @@ fn move_window(s: &mut State, hwnd: HWND, target: RECT, animate: bool) {
         border,
         t0: Instant::now(),
     });
-    if s.anim_timer == 0 {
-        unsafe {
-            timeBeginPeriod(1); // ask for a 1 ms timer so frames are not rounded to 15.6 ms
-            s.anim_timer = SetTimer(None, 0, ANIM_FRAME_MS, None);
+    if was_empty {
+        if profile_on() {
+            anim_prof_reset();
+        }
+        if s.anim_timer == 0 {
+            unsafe {
+                timeBeginPeriod(1); // ask for a 1 ms timer so frames are not rounded to 15.6 ms
+                s.anim_timer = SetTimer(None, 0, ANIM_FRAME_MS, None);
+            }
         }
     }
 }
 
 /// One animation frame (called from the frame timer).
 fn anim_tick() {
+    let profiling = profile_on();
     STATE.with(|s| {
         let mut s = s.borrow_mut();
         let (_, ms) = config::animation();
         let dur = (ms.max(1) as f32) / 1000.0;
         let now = Instant::now();
+        let had = !s.anims.is_empty();
         let mut keep = Vec::with_capacity(s.anims.len());
+        let mut setpos = Duration::ZERO;
         for a in std::mem::take(&mut s.anims) {
             if !unsafe { IsWindow(Some(HWND(a.hwnd as *mut _))) }.as_bool() {
                 continue; // closed while gliding
             }
             let t = (now - a.t0).as_secs_f32() / dur;
+            let ts = profiling.then(Instant::now);
             if t >= 1.0 {
                 set_frame(a.hwnd, &a.to, a.border); // exact final position
             } else {
@@ -642,6 +763,9 @@ fn anim_tick() {
                     a.border,
                 );
                 keep.push(a);
+            }
+            if let Some(ts) = ts {
+                setpos += ts.elapsed();
             }
         }
         s.anims = keep;
@@ -653,6 +777,12 @@ fn anim_tick() {
                 timeEndPeriod(1);
             }
             s.anim_timer = 0;
+        }
+        if profiling && had {
+            anim_prof_frame(now, setpos.as_secs_f32() * 1e6);
+            if s.anims.is_empty() {
+                anim_prof_finish(now);
+            }
         }
     });
 }
@@ -1064,6 +1194,7 @@ fn live_resize() {
 
 /// Pull every tiled window of the current workspace back to its tile.
 fn enforce_layout() {
+    let _t = Timer::new("enforce_layout");
     STATE.with(|s| {
         let mut s = s.borrow_mut();
         if s.paused || s.dragging.is_some() || s.rects.len() != s.last.len() {
@@ -1095,6 +1226,7 @@ fn enforce_layout() {
 /// into its tile *right now* (the others glide aside) instead of waiting for the debounce timer.
 /// Returns false if the normal (slower, complete) path should handle it.
 fn fast_add(s: &mut State, hwnd: HWND) -> bool {
+    let _t = Timer::new("fast_add");
     let h = hwnd.0 as isize;
     if s.ws.contains_key(&h) {
         return false; // known window shown again: the normal path decides
@@ -1144,6 +1276,7 @@ fn fast_add(s: &mut State, hwnd: HWND) -> bool {
 }
 
 fn retile() {
+    let _t = Timer::new("retile");
     let c = collect();
     STATE.with(|s| {
         let mut s = s.borrow_mut();
@@ -1582,6 +1715,9 @@ fn console_out() -> Box<dyn Write> {
 }
 
 fn main() {
+    if std::env::var_os("TILE_RS_PROFILE").is_some() {
+        PROFILE.store(true, Ordering::Relaxed);
+    }
     let cmd = std::env::args().nth(1);
     match cmd.as_deref() {
         None => start(true),
