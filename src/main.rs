@@ -54,8 +54,8 @@ use windows::Win32::UI::WindowsAndMessaging::{
     GetShellWindow, GetWindow, GetWindowLongW, GetWindowRect, GetWindowTextW,
     GetWindowThreadProcessId, IsIconic, IsWindow, IsWindowVisible, IsZoomed, KillTimer,
     MessageBoxW, PostQuitMessage, SetForegroundWindow, SetTimer, SetWindowPos, ShowWindow,
-    TranslateMessage, EVENT_OBJECT_CLOAKED, EVENT_OBJECT_CREATE, EVENT_OBJECT_HIDE,
-    EVENT_OBJECT_LOCATIONCHANGE, EVENT_OBJECT_SHOW, EVENT_OBJECT_UNCLOAKED,
+    TranslateMessage, EVENT_OBJECT_CLOAKED, EVENT_OBJECT_CREATE, EVENT_OBJECT_DESTROY,
+    EVENT_OBJECT_HIDE, EVENT_OBJECT_LOCATIONCHANGE, EVENT_OBJECT_SHOW, EVENT_OBJECT_UNCLOAKED,
     EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_MINIMIZEEND, EVENT_SYSTEM_MINIMIZESTART,
     EVENT_SYSTEM_MOVESIZEEND, EVENT_SYSTEM_MOVESIZESTART, GWL_EXSTYLE, GWL_STYLE, GW_OWNER, IDYES,
     MB_ICONINFORMATION, MB_ICONQUESTION, MB_OK, MB_TOPMOST, MB_YESNO, MSG, SWP_NOACTIVATE,
@@ -666,6 +666,9 @@ struct State {
     /// Windows of the current workspace in the layout that was applied last time;
     /// if nothing changed we do not touch windows.
     last: Vec<isize>,
+    /// The set of top-level windows may have changed (created / destroyed / shown / hidden /
+    /// cloaked / minimized): a full `EnumWindows` walk (`retile`) is due.
+    windows_changed: bool,
     paused: bool,
     timer: usize,
     /// A window of another workspace got focus (taskbar / Alt+Tab): follow it.
@@ -1098,6 +1101,7 @@ unsafe extern "system" fn on_event(
                 s.enforce = true;
             }
             EVENT_OBJECT_SHOW => {
+                s.windows_changed = true;
                 // a window just appeared: put it into its tile right away, without waiting
                 if !s.paused && s.dragging.is_none() && fast_add(&mut s, hwnd) {
                     // some apps move/resize themselves right after showing: check again shortly
@@ -1114,9 +1118,19 @@ unsafe extern "system" fn on_event(
                 match s.ws.get(&h) {
                     Some(&w) if w != s.cur && !s.paused && !recently => {
                         s.follow = Some((w, h));
+                        s.windows_changed = true;
                     }
                     _ => return, // focus change inside the current workspace: nothing to do
                 }
+            }
+            EVENT_OBJECT_CREATE
+            | EVENT_OBJECT_DESTROY
+            | EVENT_OBJECT_HIDE
+            | EVENT_OBJECT_CLOAKED
+            | EVENT_OBJECT_UNCLOAKED
+            | EVENT_SYSTEM_MINIMIZESTART
+            | EVENT_SYSTEM_MINIMIZEEND => {
+                s.windows_changed = true;
             }
             _ => {}
         }
@@ -1332,6 +1346,7 @@ fn retile() {
         if s.paused {
             return;
         }
+        s.windows_changed = false; // this pass reconciles the whole window set
         let present: Vec<isize> = c.tileable.iter().map(|w| w.hwnd.0 as isize).collect();
         let cur = s.cur;
         // windows we have not seen before are placed instantly; known ones glide
@@ -1723,7 +1738,12 @@ fn start(interactive: bool) {
                         None if live => live_resize(),
                         None if enforce => {
                             enforce_layout();
-                            retile();
+                            // only walk all windows again if the set of windows really changed
+                            let changed =
+                                STATE.with(|s| std::mem::take(&mut s.borrow_mut().windows_changed));
+                            if changed {
+                                retile();
+                            }
                         }
                         None => retile(),
                     }
