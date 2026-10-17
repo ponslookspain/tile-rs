@@ -904,6 +904,15 @@ pub fn ui_state() -> (u8, bool) {
     })
 }
 
+/// The screen work area changed (display mode, taskbar size / auto-hide): rebuild the layout.
+pub fn request_relayout() {
+    STATE.with(|s| {
+        let mut s = s.borrow_mut();
+        s.reflow = true;
+        s.timer = unsafe { SetTimer(None, s.timer, DEBOUNCE_MS, None) };
+    });
+}
+
 pub fn action_name(a: Action) -> String {
     let dir = |d: Dir| match d {
         Dir::Left => "left",

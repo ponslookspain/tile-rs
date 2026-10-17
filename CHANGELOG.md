@@ -9,6 +9,8 @@ follows [Semantic Versioning](https://semver.org) (see [docs/RELEASING.md](docs/
 ### Changed
 - The tray menu opens instantly: the "Start with Windows" state is now read directly from the
   registry instead of starting a `reg.exe` process every time the menu is opened.
+- The layout is rebuilt automatically when the screen work area changes (resolution change,
+  taskbar resized or set to auto-hide), instead of staying stale until the next manual action.
 
 ## [0.2.0] - 2026-10-17
 
