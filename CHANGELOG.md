@@ -20,8 +20,9 @@ follows [Semantic Versioning](https://semver.org) (see [docs/RELEASING.md](docs/
   narrowed to make room for the rest), `max_tiles` (`0` = automatic from the screen size) caps the
   tiles per workspace, and `auto_overflow` moves a new window to the next workspace (and switches
   to it) when the current workspace is full.
-- A small workspace indicator at the top of the screen (dots, with a little padding); new
-  `workspace_indicator` setting.
+- A small workspace indicator (dots) that reserves its own bar at the top of the work area, so
+  windows are tiled below it and it never overlaps them; new `workspace_indicator` setting.
+- A fullscreen game or video player now opens on a workspace of its own and tile-rs switches to it.
 - Fullscreen windows (games, video players — windows that cover a whole monitor without a title
   bar) now belong to a workspace: tile-rs minimizes them when you switch to another workspace and
   restores them when you come back. The new `fullscreen_windows = "minimize" | "ignore"` setting
@@ -29,6 +30,8 @@ follows [Semantic Versioning](https://semver.org) (see [docs/RELEASING.md](docs/
 - `minimize` action to minimize the focused window, bound to `Alt+Shift+M` by default.
 
 ### Fixed
+- The focus border is drawn as a hollow frame, so it can no longer flash as a solid colour while a
+  window is being placed or resized; it is also hidden for windows that are being maximized.
 - A window that cannot shrink below its own minimum size (e.g. a browser) now gets a tile at least
   that big instead of overlapping its neighbour: the neighbours give up the space.
 - A newly opened window with a minimum size now pushes the grid aside immediately, instead of

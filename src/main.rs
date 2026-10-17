@@ -362,7 +362,8 @@ fn fitted(
     spiral_fitted(area, windows, ratios, mins, mw, mh)
 }
 
-fn work_area() -> RECT {
+/// The monitor's work area (taskbar excluded), as Windows reports it.
+fn raw_work_area() -> RECT {
     unsafe {
         let mon = MonitorFromPoint(POINT { x: 0, y: 0 }, MONITOR_DEFAULTTOPRIMARY);
         let mut mi = MONITORINFO {
@@ -372,6 +373,15 @@ fn work_area() -> RECT {
         let _ = GetMonitorInfoW(mon, &mut mi);
         mi.rcWork
     }
+}
+
+/// The area the windows are tiled in: the work area minus the indicator bar at the top.
+fn work_area() -> RECT {
+    let mut r = raw_work_area();
+    if config::workspace_indicator() {
+        r.top += overlay::INDICATOR_H;
+    }
+    r
 }
 
 // ---------------------------------------------------------------------------
@@ -390,13 +400,37 @@ fn reconcile_fullscreen(s: &mut State, wins: &[Win]) {
         }
         detected.contains(h) || unsafe { IsIconic(hw) }.as_bool()
     });
+    let mut follow: Option<(u8, isize)> = None;
     for w in wins {
-        s.fs_ws
-            .entry(w.hwnd.0 as isize)
-            .or_insert(w.rule_ws.unwrap_or(s.cur));
+        let h = w.hwnd.0 as isize;
+        if s.fs_ws.contains_key(&h) {
+            continue;
+        }
+        // a fullscreen game / video player gets a workspace of its own, and we switch to it
+        let ws = w.rule_ws.unwrap_or_else(|| next_free_workspace(s, s.cur));
+        s.fs_ws.insert(h, ws);
+        if ws != s.cur && follow.is_none() {
+            follow = Some((ws, h));
+        }
+    }
+    if follow.is_some() {
+        s.follow = follow;
     }
     let fs_ws = &s.fs_ws;
     s.fs_hidden.retain(|h| fs_ws.contains_key(h));
+}
+
+/// The first workspace (starting after `cur`, wrapping) that has no windows at all - used for a
+/// fullscreen game, so it does not land on top of the current work.
+fn next_free_workspace(s: &State, cur: u8) -> u8 {
+    let used = |ws: u8| s.ws.values().any(|w| *w == ws) || s.fs_ws.values().any(|w| *w == ws);
+    for i in 1..=WS_COUNT {
+        let ws = (cur + i) % WS_COUNT;
+        if !used(ws) {
+            return ws;
+        }
+    }
+    (cur + 1) % WS_COUNT
 }
 
 /// Minimizes the fullscreen windows whose workspace is not shown, and restores the ones we hid
@@ -807,13 +841,25 @@ fn anim_tick() {
 // focus border (drawn by tile-rs itself, see `overlay.rs`)
 // ---------------------------------------------------------------------------
 
-/// Draws the border around the *visible* frame `vis` of `target` (the border window is placed just
-/// below `target` in the z-order, so the window covers the centre of the border).
+/// Draws the border around the *visible* frame `vis` of `target`. The border window is placed just
+/// below `target` in the z-order and clipped to a hollow frame, so it can never cover the window
+/// with a solid colour (for example while the window is being placed or maximized).
 fn place_border(vis: &RECT, target: isize) {
-    if config::border_width() <= 0 {
+    let w = config::border_width();
+    let hw = HWND(target as *mut _);
+    // a maximized / minimized window has no tiled frame: no border
+    if w <= 0 || unsafe { IsZoomed(hw).as_bool() || IsIconic(hw).as_bool() } {
+        overlay::hide_border();
         return;
     }
-    let w = config::border_width();
+    // never draw a border that fills the whole monitor (a window in transition)
+    let mon = raw_work_area();
+    if (vis.right - vis.left) >= (mon.right - mon.left)
+        || (vis.bottom - vis.top) >= (mon.bottom - mon.top)
+    {
+        overlay::hide_border();
+        return;
+    }
     let rect = RECT {
         left: vis.left - w,
         top: vis.top - w,
@@ -821,7 +867,7 @@ fn place_border(vis: &RECT, target: isize) {
         bottom: vis.bottom + w,
     };
     // rounded corners: the window's own corner radius (~8 px) plus the border width
-    overlay::show_border(rect, HWND(target as *mut _), 8 + w);
+    overlay::show_border(rect, hw, 8 + w, w);
 }
 
 /// Picks the window that should carry the border (the focused tiled window of the current
@@ -858,7 +904,8 @@ fn clear_border() {
     overlay::hide_border();
 }
 
-/// Updates the small workspace indicator (dots at the top of the screen).
+/// Updates the workspace indicator (a small bar of dots at the top of the work area; the tiling
+/// area leaves room for it, so it never overlaps a window).
 fn sync_indicator() {
     if !config::workspace_indicator() {
         overlay::hide_indicator();
@@ -872,7 +919,16 @@ fn sync_indicator() {
         }
         (s.cur, mask)
     });
-    overlay::update_indicator(cur, mask, config::border_color_value());
+    let wa = raw_work_area();
+    let (w, h) = overlay::indicator_size();
+    let x = wa.left + (wa.right - wa.left - w) / 2;
+    let rect = RECT {
+        left: x,
+        top: wa.top,
+        right: x + w,
+        bottom: wa.top + h,
+    };
+    overlay::show_indicator(rect, cur, mask, config::border_color_value());
 }
 
 /// (current workspace 0-based, paused) - for the tray.

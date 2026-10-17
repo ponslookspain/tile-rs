@@ -10,16 +10,16 @@ use std::sync::atomic::{AtomicIsize, AtomicU32, Ordering};
 use windows::core::w;
 use windows::Win32::Foundation::{COLORREF, HINSTANCE, HWND, LPARAM, LRESULT, RECT, WPARAM};
 use windows::Win32::Graphics::Gdi::{
-    BeginPaint, CreateRoundRectRgn, CreateSolidBrush, DeleteObject, Ellipse, EndPaint, FillRect,
-    GetStockObject, InvalidateRect, SelectObject, SetWindowRgn, HDC, HGDIOBJ, NULL_PEN,
-    PAINTSTRUCT,
+    BeginPaint, CombineRgn, CreateRoundRectRgn, CreateSolidBrush, DeleteObject, Ellipse, EndPaint,
+    FillRect, GetStockObject, InvalidateRect, SelectObject, SetWindowRgn, HDC, HGDIOBJ, NULL_PEN,
+    PAINTSTRUCT, RGN_DIFF,
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, DestroyWindow, GetClientRect, GetSystemMetrics,
-    RegisterClassW, SetLayeredWindowAttributes, SetWindowPos, ShowWindow, LWA_ALPHA, LWA_COLORKEY,
-    SM_CXSCREEN, SWP_NOACTIVATE, SWP_NOZORDER, SW_HIDE, SW_SHOWNA, WM_ERASEBKGND, WM_PAINT,
-    WNDCLASSW, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TRANSPARENT, WS_POPUP,
+    CreateWindowExW, DefWindowProcW, DestroyWindow, GetClientRect, RegisterClassW,
+    SetLayeredWindowAttributes, SetWindowPos, ShowWindow, LWA_ALPHA, LWA_COLORKEY, SWP_NOACTIVATE,
+    SWP_NOZORDER, SW_HIDE, SW_SHOWNA, WM_ERASEBKGND, WM_PAINT, WNDCLASSW, WS_EX_LAYERED,
+    WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TRANSPARENT, WS_POPUP,
 };
 
 static BORDER: AtomicIsize = AtomicIsize::new(0);
@@ -94,14 +94,18 @@ pub fn set_border_color(color: u32) {
 }
 
 /// Shows the border at `rect` (which already includes the border width), inserted just below
-/// `window` in the z-order so the window itself covers the centre of the border. `radius` is the
-/// corner radius in pixels (rounded corners, like the window itself).
-pub fn show_border(rect: RECT, window: HWND, radius: i32) {
+/// `window` in the z-order. The window is clipped to a *hollow* rounded frame, so only the ring
+/// around the window is drawn - the centre is transparent and can never flash as a solid colour
+/// while the window is being placed or resized. `radius` is the corner radius in pixels.
+pub fn show_border(rect: RECT, window: HWND, radius: i32, width: i32) {
     let raw = BORDER.load(Ordering::Relaxed);
     if raw == 0 {
         return;
     }
     let (w, h) = (rect.right - rect.left, rect.bottom - rect.top);
+    if w <= 0 || h <= 0 {
+        return;
+    }
     unsafe {
         let hwnd = HWND(raw as *mut _);
         let _ = SetWindowPos(
@@ -113,12 +117,16 @@ pub fn show_border(rect: RECT, window: HWND, radius: i32) {
             h,
             SWP_NOACTIVATE,
         );
-        // rounded corners: (re)create the window region only when the size changed
-        let key = ((w as u32) << 16) | (h as u32 & 0xFFFF);
+        // (re)build the hollow frame region only when the size changed
+        let key = ((w as u32) << 16) ^ (h as u32) ^ (width as u32).wrapping_mul(0x9E37_79B9);
         if BORDER_SIZE.swap(key, Ordering::Relaxed) != key {
-            let d = (radius * 2).max(0);
-            let rgn = CreateRoundRectRgn(0, 0, w + 1, h + 1, d, d);
-            let _ = SetWindowRgn(hwnd, Some(rgn), true);
+            let bw = width.clamp(1, (w / 2).max(1)).clamp(1, (h / 2).max(1));
+            let outer = CreateRoundRectRgn(0, 0, w + 1, h + 1, radius * 2, radius * 2);
+            let ir = (radius - bw).max(1);
+            let inner = CreateRoundRectRgn(bw, bw, w + 1 - bw, h + 1 - bw, ir * 2, ir * 2);
+            CombineRgn(Some(outer), Some(outer), Some(inner), RGN_DIFF);
+            let _ = DeleteObject(HGDIOBJ(inner.0));
+            let _ = SetWindowRgn(hwnd, Some(outer), true);
         }
         let _ = ShowWindow(hwnd, SW_SHOWNA);
     }
@@ -159,16 +167,15 @@ static IND_CUR: AtomicU32 = AtomicU32::new(0);
 static IND_POP: AtomicU32 = AtomicU32::new(0);
 static IND_ACTIVE: AtomicU32 = AtomicU32::new(0x00FF_BC8D);
 
-fn indicator_size() -> (i32, i32) {
+/// Width and height of the indicator bar (the tiling area leaves this much room at the top).
+pub fn indicator_size() -> (i32, i32) {
     let w = PAD * 2 + DOTS * DOT + (DOTS - 1) * DOT_GAP;
     let h = PAD * 2 + DOT;
     (w, h)
 }
 
-fn indicator_x() -> i32 {
-    let (w, _) = indicator_size();
-    (unsafe { GetSystemMetrics(SM_CXSCREEN) } - w) / 2
-}
+/// Height of the reserved bar at the top of the work area.
+pub const INDICATOR_H: i32 = PAD * 2 + DOT;
 
 unsafe extern "system" fn indicator_wndproc(
     hwnd: HWND,
@@ -245,7 +252,7 @@ pub fn create_indicator() -> bool {
             class,
             w!("tile-rs-indicator"),
             WS_POPUP,
-            indicator_x(),
+            0,
             0,
             w,
             h,
@@ -262,8 +269,8 @@ pub fn create_indicator() -> bool {
     }
 }
 
-/// Updates the indicator: which workspace is current and which ones have windows.
-pub fn update_indicator(cur: u8, populated: u32, active: u32) {
+/// Shows the indicator at `rect`: which workspace is current and which ones have windows.
+pub fn show_indicator(rect: RECT, cur: u8, populated: u32, active: u32) {
     IND_CUR.store(cur as u32, Ordering::Relaxed);
     IND_POP.store(populated, Ordering::Relaxed);
     IND_ACTIVE.store(active, Ordering::Relaxed);
@@ -271,16 +278,15 @@ pub fn update_indicator(cur: u8, populated: u32, active: u32) {
     if raw == 0 {
         return;
     }
-    let (w, h) = indicator_size();
     unsafe {
         let hwnd = HWND(raw as *mut _);
         let _ = SetWindowPos(
             hwnd,
             None,
-            indicator_x(),
-            0,
-            w,
-            h,
+            rect.left,
+            rect.top,
+            rect.right - rect.left,
+            rect.bottom - rect.top,
             SWP_NOACTIVATE | SWP_NOZORDER,
         );
         let _ = InvalidateRect(Some(hwnd), None, true);
