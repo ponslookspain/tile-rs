@@ -1061,15 +1061,15 @@ fn set_border(hwnd: isize, color: Option<u32>) {
 fn update_border(s: &mut State, focus: isize) {
     let color = config::border();
     let target = (color.is_some() && !s.paused && s.last.contains(&focus)).then_some(focus);
-    if s.border_on == target {
-        return;
+    if s.border_on != target {
+        if let Some(prev) = s.border_on.take() {
+            set_border(prev, None);
+        }
+        s.border_on = target;
     }
-    if let Some(prev) = s.border_on.take() {
-        set_border(prev, None);
-    }
+    // always (re-)apply: a window that lost its colour while it was moved gets it back
     if let (Some(h), Some(c)) = (target, color) {
         set_border(h, Some(c));
-        s.border_on = Some(h);
     }
 }
 
@@ -1219,12 +1219,22 @@ unsafe extern "system" fn on_event(
                 // let the user drag freely; we decide what to do while / when they let go
                 if !s.paused {
                     if let Some(k) = s.last.iter().position(|x| *x == h) {
-                        s.dragging = Some(h);
-                        s.anims.retain(|a| a.hwnd != h);
-                        s.resizing = false;
-                        s.live = false;
-                        let t = s.rects[k];
-                        s.drag_size = (t.right - t.left, t.bottom - t.top);
+                        if k < s.rects.len() {
+                            s.dragging = Some(h);
+                            s.anims.retain(|a| a.hwnd != h);
+                            s.resizing = false;
+                            s.live = false;
+                            // Remember the window's *actual* size, not the tile's: an app with a
+                            // minimum size (or one that resized itself) can be larger than its
+                            // tile, and comparing a plain move against the tile size would then be
+                            // mistaken for a resize, which corrupts the split ratios.
+                            s.drag_size = visible_rect(hwnd)
+                                .map(|v| (v.right - v.left, v.bottom - v.top))
+                                .unwrap_or_else(|| {
+                                    let t = s.rects[k];
+                                    (t.right - t.left, t.bottom - t.top)
+                                });
+                        }
                     }
                 }
                 return;
@@ -1429,6 +1439,7 @@ fn resize_focused(width: bool, grow: bool) {
         s.regions = regions;
         s.ignore_until = Some(Instant::now() + Duration::from_millis(500));
     });
+    refresh_border();
 }
 
 /// While the user drags an edge of a tiled window: recompute the split ratios from the dragged
@@ -1491,6 +1502,15 @@ fn enforce_layout() -> bool {
                 continue; // already on its way
             }
             if off_target(hw, r) {
+                // an app with a minimum size cannot shrink to a small tile: retrying every time
+                // only makes it flicker, so leave it as it is (it overflows its tile instead)
+                if let Some(vis) = visible_rect(hw) {
+                    let bigger = (vis.right - vis.left) > (r.right - r.left) + 4
+                        || (vis.bottom - vis.top) > (r.bottom - r.top) + 4;
+                    if bigger {
+                        continue;
+                    }
+                }
                 move_window(&mut s, hw, *r, true);
                 moved += 1;
             }
@@ -1564,6 +1584,13 @@ fn retile() {
         if s.paused {
             return;
         }
+        // a drag whose end event we missed (e.g. the window was destroyed) must not stay stuck:
+        // while `dragging` is set, snapping windows back and live resizing are disabled
+        if let Some(d) = s.dragging {
+            if !unsafe { IsWindow(Some(HWND(d as *mut _))) }.as_bool() {
+                s.dragging = None;
+            }
+        }
         s.windows_changed = false; // this pass reconciles the whole window set
         reconcile_fullscreen(&mut s, &c.fullscreen);
         apply_fullscreen(&mut s);
@@ -1615,6 +1642,9 @@ fn retile() {
         s.rects = rects.clone();
         s.regions = regions;
         for (h, r) in layout.iter().zip(rects) {
+            if s.dragging == Some(*h) {
+                continue; // the user is dragging it right now: leave it under the cursor
+            }
             let animate = animate_all && !fresh.contains(h);
             move_window(&mut s, HWND(*h as *mut _), r, animate);
         }
@@ -1626,22 +1656,25 @@ fn retile() {
         s.last = layout;
         s.ignore_until = Some(Instant::now() + Duration::from_millis(500));
     });
+    // the focused window may only now have joined the layout: make sure it has the border
+    refresh_border();
 }
 
 fn focus_hwnd(h: isize) {
     unsafe {
         let _ = SetForegroundWindow(HWND(h as *mut _));
     }
+    // our own SetForegroundWindow produces a foreground event that the hook skips
+    // (WINEVENT_SKIPOWNPROCESS), so update the border here as well
+    STATE.with(|s| update_border(&mut s.borrow_mut(), h));
 }
 
 fn focus_first_or_desktop() {
     let first = STATE.with(|s| s.borrow().last.first().copied());
     match first {
         Some(h) => focus_hwnd(h),
-        None => unsafe {
-            // empty workspace: take focus away from the (now hidden) old window
-            let _ = SetForegroundWindow(GetShellWindow());
-        },
+        // empty workspace: take focus away from the (now hidden) old window
+        None => focus_hwnd(unsafe { GetShellWindow() }.0 as isize),
     }
 }
 

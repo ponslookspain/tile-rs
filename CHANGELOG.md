@@ -15,6 +15,16 @@ follows [Semantic Versioning](https://semver.org) (see [docs/RELEASING.md](docs/
   chooses the behaviour (`"ignore"` = the previous "never touch them" behaviour).
 - `minimize` action to minimize the focused window, bound to `Alt+Shift+M` by default.
 
+### Fixed
+- Moving a window is no longer mistaken for a resize when the app is larger than its tile (an
+  application minimum size): that used to change the split sizes and make windows overlap.
+- The focus border now also follows focus changes made by tile-rs itself (keyboard focus, workspace
+  switch), not only focus changes made by clicking.
+- A drag whose end event was missed (e.g. the window was closed while dragging) no longer leaves
+  window management stuck.
+- A window that cannot shrink to its tile (application minimum size) is no longer re-resized in a
+  loop, which caused flicker.
+
 ### Changed
 - The tray menu opens instantly: the "Start with Windows" state is now read directly from the
   registry instead of starting a `reg.exe` process every time the menu is opened.
