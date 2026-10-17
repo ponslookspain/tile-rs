@@ -1,0 +1,16 @@
+# Build output
+/target/
+
+# Local run artifacts
+*.log
+*.err
+
+# Release packaging output (built by the release workflow, not committed)
+/dist/
+/release/
+
+# Editor / OS
+.vscode/
+.idea/
+Thumbs.db
+desktop.ini
