@@ -30,8 +30,10 @@ follows [Semantic Versioning](https://semver.org) (see [docs/RELEASING.md](docs/
 - `minimize` action to minimize the focused window, bound to `Alt+Shift+M` by default.
 
 ### Fixed
-- The focus border is drawn as a hollow frame, so it can no longer flash as a solid colour while a
-  window is being placed or resized; it is also hidden for windows that are being maximized.
+- The launcher's hotkey editor wrote the bindings without quotes, which made the config invalid on
+  "Save & apply"; it now always writes valid TOML (quoted strings / lists).
+- The focus border is a transparent-centred colour-key frame, so it can no longer appear as a solid
+  colour while a window is being placed or resized; it is also hidden for maximized windows.
 - A window that cannot shrink below its own minimum size (e.g. a browser) now gets a tile at least
   that big instead of overlapping its neighbour: the neighbours give up the space.
 - A newly opened window with a minimum size now pushes the grid aside immediately, instead of

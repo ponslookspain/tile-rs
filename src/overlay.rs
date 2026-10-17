@@ -10,22 +10,47 @@ use std::sync::atomic::{AtomicIsize, AtomicU32, Ordering};
 use windows::core::w;
 use windows::Win32::Foundation::{COLORREF, HINSTANCE, HWND, LPARAM, LRESULT, RECT, WPARAM};
 use windows::Win32::Graphics::Gdi::{
-    BeginPaint, CombineRgn, CreateRoundRectRgn, CreateSolidBrush, DeleteObject, Ellipse, EndPaint,
-    FillRect, GetStockObject, InvalidateRect, SelectObject, SetWindowRgn, HDC, HGDIOBJ, NULL_PEN,
-    PAINTSTRUCT, RGN_DIFF,
+    BeginPaint, CreateSolidBrush, DeleteObject, Ellipse, EndPaint, FillRect, GetStockObject,
+    InvalidateRect, RoundRect, SelectObject, HDC, HGDIOBJ, NULL_PEN, PAINTSTRUCT,
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DestroyWindow, GetClientRect, RegisterClassW,
-    SetLayeredWindowAttributes, SetWindowPos, ShowWindow, LWA_ALPHA, LWA_COLORKEY, SWP_NOACTIVATE,
+    SetLayeredWindowAttributes, SetWindowPos, ShowWindow, LWA_COLORKEY, SWP_NOACTIVATE,
     SWP_NOZORDER, SW_HIDE, SW_SHOWNA, WM_ERASEBKGND, WM_PAINT, WNDCLASSW, WS_EX_LAYERED,
     WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TRANSPARENT, WS_POPUP,
 };
 
 static BORDER: AtomicIsize = AtomicIsize::new(0);
 static BORDER_COLOR: AtomicU32 = AtomicU32::new(0x00FF_FFFF);
-/// Size (width << 16 | height) the rounded region was last built for.
-static BORDER_SIZE: AtomicU32 = AtomicU32::new(u32::MAX);
+static BORDER_WIDTH: AtomicU32 = AtomicU32::new(2);
+static BORDER_RADIUS: AtomicU32 = AtomicU32::new(10);
+/// Colour that is made transparent (the centre of the border window).
+const BORDER_KEY: u32 = 0x00FF_00FE;
+
+/// Draws the frame: the whole window in the border colour, then the centre punched out with the
+/// colour key, so only the ring around the window is visible (never a solid fill).
+unsafe fn draw_frame(hdc: HDC, w: i32, h: i32) {
+    let bw = BORDER_WIDTH.load(Ordering::Relaxed) as i32;
+    let radius = BORDER_RADIUS.load(Ordering::Relaxed) as i32;
+    let rc = RECT {
+        left: 0,
+        top: 0,
+        right: w,
+        bottom: h,
+    };
+    let brush = CreateSolidBrush(COLORREF(BORDER_COLOR.load(Ordering::Relaxed)));
+    FillRect(hdc, &rc, brush);
+    let _ = DeleteObject(HGDIOBJ(brush.0));
+    let key = CreateSolidBrush(COLORREF(BORDER_KEY));
+    let old_pen = SelectObject(hdc, GetStockObject(NULL_PEN));
+    let old_brush = SelectObject(hdc, HGDIOBJ(key.0));
+    let ir = (radius - bw).max(1);
+    let _ = RoundRect(hdc, bw, bw, w - bw, h - bw, ir * 2, ir * 2);
+    SelectObject(hdc, old_brush);
+    SelectObject(hdc, old_pen);
+    let _ = DeleteObject(HGDIOBJ(key.0));
+}
 
 unsafe extern "system" fn border_wndproc(
     hwnd: HWND,
@@ -33,18 +58,25 @@ unsafe extern "system" fn border_wndproc(
     wparam: WPARAM,
     lparam: LPARAM,
 ) -> LRESULT {
-    if msg == WM_ERASEBKGND {
-        let hdc = HDC(wparam.0 as *mut _);
-        let mut rc = RECT::default();
-        let _ = unsafe { GetClientRect(hwnd, &mut rc) };
-        let brush = unsafe { CreateSolidBrush(COLORREF(BORDER_COLOR.load(Ordering::Relaxed))) };
-        unsafe {
-            FillRect(hdc, &rc, brush);
-            let _ = DeleteObject(HGDIOBJ(brush.0));
+    match msg {
+        WM_ERASEBKGND => {
+            let hdc = HDC(wparam.0 as *mut _);
+            let mut rc = RECT::default();
+            let _ = GetClientRect(hwnd, &mut rc);
+            draw_frame(hdc, rc.right, rc.bottom);
+            LRESULT(1)
         }
-        return LRESULT(1);
+        WM_PAINT => {
+            let mut ps = PAINTSTRUCT::default();
+            let hdc = BeginPaint(hwnd, &mut ps);
+            let mut rc = RECT::default();
+            let _ = GetClientRect(hwnd, &mut rc);
+            draw_frame(hdc, rc.right, rc.bottom);
+            let _ = EndPaint(hwnd, &ps);
+            LRESULT(0)
+        }
+        _ => DefWindowProcW(hwnd, msg, wparam, lparam),
     }
-    unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
 }
 
 /// Creates the (hidden) border window. Returns false if it could not be created.
@@ -76,8 +108,8 @@ pub fn create_border() -> bool {
         ) else {
             return false;
         };
-        // fully opaque, but click-through (WS_EX_TRANSPARENT)
-        let _ = SetLayeredWindowAttributes(hwnd, COLORREF(0), 255, LWA_ALPHA);
+        // the colour key is transparent; WS_EX_TRANSPARENT makes the window click-through
+        let _ = SetLayeredWindowAttributes(hwnd, COLORREF(BORDER_KEY), 0, LWA_COLORKEY);
         BORDER.store(hwnd.0 as isize, Ordering::Relaxed);
         true
     }
@@ -94,9 +126,8 @@ pub fn set_border_color(color: u32) {
 }
 
 /// Shows the border at `rect` (which already includes the border width), inserted just below
-/// `window` in the z-order. The window is clipped to a *hollow* rounded frame, so only the ring
-/// around the window is drawn - the centre is transparent and can never flash as a solid colour
-/// while the window is being placed or resized. `radius` is the corner radius in pixels.
+/// `window` in the z-order. Only a rounded frame is drawn (the centre is the transparent colour
+/// key), so the window can never be covered by a solid colour while it is being placed or resized.
 pub fn show_border(rect: RECT, window: HWND, radius: i32, width: i32) {
     let raw = BORDER.load(Ordering::Relaxed);
     if raw == 0 {
@@ -106,6 +137,8 @@ pub fn show_border(rect: RECT, window: HWND, radius: i32, width: i32) {
     if w <= 0 || h <= 0 {
         return;
     }
+    BORDER_WIDTH.store(width.max(1) as u32, Ordering::Relaxed);
+    BORDER_RADIUS.store(radius.max(1) as u32, Ordering::Relaxed);
     unsafe {
         let hwnd = HWND(raw as *mut _);
         let _ = SetWindowPos(
@@ -117,17 +150,8 @@ pub fn show_border(rect: RECT, window: HWND, radius: i32, width: i32) {
             h,
             SWP_NOACTIVATE,
         );
-        // (re)build the hollow frame region only when the size changed
-        let key = ((w as u32) << 16) ^ (h as u32) ^ (width as u32).wrapping_mul(0x9E37_79B9);
-        if BORDER_SIZE.swap(key, Ordering::Relaxed) != key {
-            let bw = width.clamp(1, (w / 2).max(1)).clamp(1, (h / 2).max(1));
-            let outer = CreateRoundRectRgn(0, 0, w + 1, h + 1, radius * 2, radius * 2);
-            let ir = (radius - bw).max(1);
-            let inner = CreateRoundRectRgn(bw, bw, w + 1 - bw, h + 1 - bw, ir * 2, ir * 2);
-            CombineRgn(Some(outer), Some(outer), Some(inner), RGN_DIFF);
-            let _ = DeleteObject(HGDIOBJ(inner.0));
-            let _ = SetWindowRgn(hwnd, Some(outer), true);
-        }
+        // the frame depends on the size, so repaint on every move
+        let _ = InvalidateRect(Some(hwnd), None, true);
         let _ = ShowWindow(hwnd, SW_SHOWNA);
     }
 }

@@ -398,10 +398,29 @@ fn save_and_apply(hwnd: HWND) {
 }
 
 /// Replaces the `[hotkeys]` section with `lines` (raw `action = key` lines), leaving the rest.
+/// Each value is normalised so the result is always valid TOML: a bare key is quoted, an already
+/// quoted string or a `[...]` list is kept as it is.
 fn write_hotkeys(lines: &str) -> std::io::Result<()> {
     let path = config::config_path();
     let text = std::fs::read_to_string(&path).unwrap_or_default();
     let nl = if text.contains("\r\n") { "\r\n" } else { "\n" };
+    let mut hot: Vec<String> = Vec::new();
+    for l in lines.lines() {
+        let t = l.trim();
+        if t.is_empty() || t.starts_with('#') {
+            continue;
+        }
+        if let Some((k, v)) = t.split_once('=') {
+            let k = k.trim();
+            let v = v.trim();
+            let value = if v.starts_with('[') || v.starts_with('"') {
+                v.to_string()
+            } else {
+                format!("\"{}\"", v.trim_matches('"'))
+            };
+            hot.push(format!("{k} = {value}"));
+        }
+    }
     let mut out: Vec<String> = Vec::new();
     let mut in_hotkeys = false;
     let mut found = false;
@@ -412,11 +431,7 @@ fn write_hotkeys(lines: &str) -> std::io::Result<()> {
             found |= in_hotkeys;
             out.push(l.to_string());
             if in_hotkeys {
-                for hl in lines.lines() {
-                    if !hl.trim().is_empty() {
-                        out.push(hl.trim_end().to_string());
-                    }
-                }
+                out.extend(hot.iter().cloned());
             }
             continue;
         }
@@ -428,11 +443,7 @@ fn write_hotkeys(lines: &str) -> std::io::Result<()> {
     if !found {
         out.push(String::new());
         out.push("[hotkeys]".into());
-        for hl in lines.lines() {
-            if !hl.trim().is_empty() {
-                out.push(hl.trim_end().to_string());
-            }
-        }
+        out.extend(hot);
     }
     let mut s = out.join(nl);
     s.push_str(nl);
@@ -486,10 +497,31 @@ fn populate() {
     });
 }
 
+/// The `[hotkeys]` body for the editor: one line per action, with the binding(s) quoted
+/// (`focus_left = ["alt+h", "alt+left"]`), so the text is valid TOML as-is.
 fn hotkeys_text() -> String {
-    let mut out = String::new();
+    let mut order: Vec<String> = Vec::new();
+    let mut map: std::collections::HashMap<String, Vec<String>> = std::collections::HashMap::new();
     for (action, spec) in &config::current().bindings {
-        out.push_str(&format!("{} = {}\n", crate::action_name(*action), spec));
+        let name = crate::action_name(*action);
+        if !map.contains_key(&name) {
+            order.push(name.clone());
+        }
+        map.entry(name).or_default().push(spec.clone());
+    }
+    let mut out = String::new();
+    for name in order {
+        let specs = &map[&name];
+        if specs.len() == 1 {
+            out.push_str(&format!("{name} = \"{}\"\n", specs[0]));
+        } else {
+            let list = specs
+                .iter()
+                .map(|s| format!("\"{s}\""))
+                .collect::<Vec<_>>()
+                .join(", ");
+            out.push_str(&format!("{name} = [{list}]\n"));
+        }
     }
     out
 }
