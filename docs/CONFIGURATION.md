@@ -21,6 +21,7 @@ These keys go at the top of the file, before any `[section]`.
 
 | Key | Default | Meaning |
 |---|---|---|
+| `layout` | `"spiral"` | Tiling layout. Only `spiral` (dwindle) is implemented; `master_stack`, `grid` and `columns` are planned. |
 | `gap` | `10` | Pixels between windows and around the screen edges. `0`–`200`. |
 | `animations` | `true` | Smooth movement of windows when the layout changes. |
 | `animation_ms` | `140` | Duration of the animation, `0`–`1000` ms. `0` turns animations off. Short moves take proportionally less time. |

@@ -12,6 +12,7 @@
 
 mod config;
 mod geometry;
+mod launcher;
 mod overlay;
 mod prof;
 mod tray;
@@ -1685,7 +1686,19 @@ fn toggle_pause() {
     }
 }
 
-fn reload_config() {
+/// Opens the settings launcher (also used by the tray menu).
+pub fn show_launcher() {
+    launcher::show();
+}
+
+/// Quits tile-rs (used by the launcher's "Quit" button).
+pub fn dispatch_quit() {
+    unsafe {
+        PostQuitMessage(0);
+    }
+}
+
+pub fn reload_config() {
     match config::load() {
         Ok(c) => {
             config::set(c);
@@ -1836,25 +1849,23 @@ fn start(interactive: bool) {
             notify("tile-rs: config error (built-in defaults are used)", &e);
         }
     }
+    if config::layout() != config::Layout::Spiral {
+        log(format!(
+            "layout \"{}\" is not implemented yet; using the spiral",
+            config::layout().name()
+        ));
+    }
 
     if interactive && first_run {
         let yes = msgbox(
             "tile-rs - first start",
             "Start tile-rs automatically when you sign in to Windows?\n\n\
-             (You can change this later in the tray menu: \"Start with Windows\".)",
+             (You can change this later in the launcher or the tray menu.)",
             true,
         );
         if yes {
             set_autostart(true);
         }
-        msgbox(
-            "tile-rs",
-            "tile-rs is running.\n\n\
-             - Its icon is in the system tray (click ^ near the clock). Right-click it for the menu.\n\
-             - Hotkeys and window rules: tray menu -> \"Edit config\".\n\
-             - Pause / resume: Ctrl+Alt+P.  Quit: Ctrl+Alt+Q.",
-            false,
-        );
     }
 
     window::SKIP_ZOOMED.store(true, Ordering::Relaxed);
@@ -1873,6 +1884,7 @@ fn start(interactive: bool) {
     }
     let failed = register_hotkeys();
     tray::create();
+    launcher::create();
     if !overlay::create_border() {
         log("could not create the border overlay window");
     }
@@ -1889,6 +1901,9 @@ fn start(interactive: bool) {
     }
     retile();
     refresh_border();
+    if interactive {
+        launcher::show();
+    }
 
     // One thread, one message loop. The animation frames come from a high-resolution waitable
     // timer (not WM_TIMER, which is the lowest priority and stutters while the mouse moves);
@@ -1945,6 +1960,7 @@ fn start(interactive: bool) {
     clear_border();
     bring_everything_back();
     tray::remove();
+    launcher::destroy();
     overlay::destroy_indicator();
     overlay::destroy_border();
     unsafe {

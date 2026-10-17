@@ -28,15 +28,16 @@ static TRAY_HWND: AtomicIsize = AtomicIsize::new(0);
 static TASKBAR_CREATED: AtomicU32 = AtomicU32::new(0);
 
 // menu command ids
-const M_PAUSE: usize = 1;
-const M_RETILE: usize = 2;
-const M_RELOAD: usize = 3;
-const M_EDIT: usize = 4;
-const M_FOLDER: usize = 5;
-const M_LOG: usize = 6;
-const M_AUTOSTART: usize = 7;
-const M_HOTKEYS: usize = 8;
-const M_QUIT: usize = 9;
+const M_SETTINGS: usize = 1;
+const M_PAUSE: usize = 2;
+const M_RETILE: usize = 3;
+const M_RELOAD: usize = 4;
+const M_EDIT: usize = 5;
+const M_FOLDER: usize = 6;
+const M_LOG: usize = 7;
+const M_AUTOSTART: usize = 8;
+const M_HOTKEYS: usize = 9;
+const M_QUIT: usize = 10;
 
 pub fn wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(std::iter::once(0)).collect()
@@ -51,20 +52,31 @@ fn make_icon(active: bool) -> Option<HICON> {
     } else {
         (0x90, 0x90, 0x90)
     };
-    let mut fill = |x0: usize, y0: usize, x1: usize, y1: usize, shade: f32| {
-        for y in y0..y1 {
-            for x in x0..x1 {
+    // rounded tiles with a soft (anti-aliased) edge
+    let mut fill = |x0: f32, y0: f32, x1: f32, y1: f32, rad: f32, shade: f32| {
+        for y in 0..N {
+            for x in 0..N {
+                let (fx, fy) = (x as f32 + 0.5, y as f32 + 0.5);
+                if fx < x0 || fx > x1 || fy < y0 || fy > y1 {
+                    continue;
+                }
+                let dx = (x0 + rad - fx).max(fx - (x1 - rad)).max(0.0);
+                let dy = (y0 + rad - fy).max(fy - (y1 - rad)).max(0.0);
+                let cov = (rad - (dx * dx + dy * dy).sqrt() + 0.5).clamp(0.0, 1.0);
+                if cov <= 0.0 {
+                    continue;
+                }
                 let i = (y * N + x) * 4;
                 px[i] = (b as f32 * shade) as u8;
                 px[i + 1] = (g as f32 * shade) as u8;
                 px[i + 2] = (r as f32 * shade) as u8;
-                px[i + 3] = 255;
+                px[i + 3] = (255.0 * cov) as u8;
             }
         }
     };
-    fill(2, 2, 15, 30, 1.0); // big tile on the left
-    fill(17, 2, 30, 15, 0.8); // top right
-    fill(17, 17, 30, 30, 0.6); // bottom right
+    fill(2.0, 2.0, 15.0, 30.0, 3.5, 1.0); // big tile on the left
+    fill(17.0, 2.0, 30.0, 15.0, 3.0, 0.85); // top right
+    fill(17.0, 17.0, 30.0, 30.0, 3.0, 0.65); // bottom right
     unsafe {
         let color = CreateBitmap(N as i32, N as i32, 1, 32, Some(px.as_ptr() as *const _));
         let mask = CreateBitmap(N as i32, N as i32, 1, 1, None);
@@ -212,6 +224,7 @@ fn show_menu(hwnd: HWND) {
         let ver = wide(&format!("tile-rs v{}", env!("CARGO_PKG_VERSION")));
         let _ = AppendMenuW(menu, MF_STRING | MF_GRAYED, 0, PCWSTR(ver.as_ptr()));
         let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
+        item(menu, M_SETTINGS, "Settings...", false);
         item(
             menu,
             M_PAUSE,
@@ -256,6 +269,7 @@ fn show_menu(hwnd: HWND) {
         let _ = DestroyMenu(menu);
 
         match cmd.0 as usize {
+            M_SETTINGS => crate::show_launcher(),
             M_PAUSE => crate::dispatch(Action::Pause),
             M_RETILE => crate::dispatch(Action::Retile),
             M_RELOAD => crate::dispatch(Action::ReloadConfig),

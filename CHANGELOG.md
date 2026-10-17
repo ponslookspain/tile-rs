@@ -7,6 +7,10 @@ follows [Semantic Versioning](https://semver.org) (see [docs/RELEASING.md](docs/
 ## [Unreleased]
 
 ### Added
+- A **settings launcher** (tray menu -> *Settings...*, or on first start): every option in one
+  window, a layout picker (spiral for now; master-stack, grid and columns are "coming soon"), and
+  a "check for updates" link.
+- `layout` setting (only `spiral` is implemented so far).
 - `easing` setting to pick the animation curve: `linear`, `out_quad`, `out_cubic` (the default),
   `out_quart`, `in_out_cubic`.
 - The focus border is now drawn by tile-rs itself (a small click-through overlay window) instead

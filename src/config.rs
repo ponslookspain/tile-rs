@@ -53,6 +53,30 @@ pub enum FullscreenWindows {
     Ignore,
 }
 
+/// The tiling layout. Only `Spiral` is implemented so far; the others are placeholders (they are
+/// shown in the launcher as "coming soon" and fall back to the spiral).
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum Layout {
+    /// Spiral / dwindle (the default).
+    #[default]
+    Spiral,
+    MasterStack,
+    Grid,
+    Columns,
+}
+
+impl Layout {
+    /// The name used in `config.toml`.
+    pub fn name(self) -> &'static str {
+        match self {
+            Layout::Spiral => "spiral",
+            Layout::MasterStack => "master_stack",
+            Layout::Grid => "grid",
+            Layout::Columns => "columns",
+        }
+    }
+}
+
 #[derive(Deserialize, Clone, Default, Debug)]
 pub struct Rule {
     /// Executable name, e.g. "Telegram" or "Telegram.exe" (case-insensitive, exact).
@@ -76,6 +100,7 @@ enum OneOrMany {
 
 #[derive(Deserialize, Default, Debug)]
 struct RawConfig {
+    layout: Option<String>,
     gap: Option<i32>,
     animations: Option<bool>,
     animation_ms: Option<u32>,
@@ -98,6 +123,8 @@ struct RawConfig {
 
 #[derive(Clone, Default, Debug)]
 pub struct Config {
+    /// The tiling layout (`spiral` for now).
+    pub layout: Layout,
     pub gap: i32,
     pub animations: bool,
     pub animation_ms: u32,
@@ -143,6 +170,10 @@ pub fn default_config() -> String {
     let mut s = String::from(
         r##"# tile-rs configuration.
 # After editing: save the file, then tray icon -> "Reload config".
+
+# Tiling layout. "spiral" (dwindle) is the only one for now; master_stack, grid and columns
+# are planned.
+layout = "spiral"
 
 # Gap between windows and around the screen edges, in pixels.
 gap = 10
@@ -280,6 +311,10 @@ pub fn migrate(text: &str) -> Option<String> {
 
     // new top-level settings go before the first [table]
     let mut top: Vec<String> = Vec::new();
+    if !has("layout") {
+        top.push("# Tiling layout: spiral (the only one for now).".into());
+        top.push("layout = \"spiral\"".into());
+    }
     if !has("animations") {
         top.push(
             "# Smooth window movement (animation_ms: 0..1000; animations = false = instant)."
@@ -354,6 +389,38 @@ pub fn migrate(text: &str) -> Option<String> {
     let mut out = lines.join(nl);
     out.push_str(nl);
     Some(out)
+}
+
+/// Edits top-level `key = value` lines in `text` in place (the value is already formatted, e.g.
+/// `"spiral"`, `10`, `true`). A missing key is inserted before the first `[section]`. Everything
+/// else in the file (comments, hotkeys, rules) is left untouched.
+pub fn edit_top(text: &str, pairs: &[(&str, String)]) -> String {
+    let nl = if text.contains("\r\n") { "\r\n" } else { "\n" };
+    let mut lines: Vec<String> = text.lines().map(|l| l.to_string()).collect();
+    let mut at = lines
+        .iter()
+        .position(|l| l.trim_start().starts_with('['))
+        .unwrap_or(lines.len());
+    let mut inserted = 0;
+    for (key, value) in pairs {
+        let line = format!("{key} = {value}");
+        let pos = lines.iter().position(|l| {
+            let t = l.trim_start().trim_start_matches('#').trim_start();
+            t.strip_prefix(*key)
+                .is_some_and(|rest| rest.trim_start().starts_with('='))
+        });
+        match pos {
+            Some(i) => lines[i] = line,
+            None => {
+                lines.insert(at + inserted, line);
+                inserted += 1;
+                at += 0; // keep `at` fixed; `inserted` tracks the offset
+            }
+        }
+    }
+    let mut out = lines.join(nl);
+    out.push_str(nl);
+    out
 }
 
 /// Runs `migrate` on the config file (keeping a copy as config.toml.bak). True if it changed.
@@ -510,6 +577,19 @@ pub fn parse_easing(s: &str) -> Result<Easing, String> {
     }
 }
 
+/// "spiral", "master_stack", "grid", "columns" -> `Layout`.
+pub fn parse_layout(s: &str) -> Result<Layout, String> {
+    match s.trim().to_ascii_lowercase().as_str() {
+        "spiral" => Ok(Layout::Spiral),
+        "master_stack" => Ok(Layout::MasterStack),
+        "grid" => Ok(Layout::Grid),
+        "columns" => Ok(Layout::Columns),
+        other => Err(format!(
+            "layout = \"{other}\": expected one of spiral, master_stack, grid, columns"
+        )),
+    }
+}
+
 /// "minimize", "ignore" -> `FullscreenWindows`.
 pub fn parse_fullscreen_windows(s: &str) -> Result<FullscreenWindows, String> {
     match s.trim().to_ascii_lowercase().as_str() {
@@ -536,6 +616,7 @@ pub fn parse_color(s: &str) -> Result<u32, String> {
 
 pub fn parse(text: &str) -> Result<Config, String> {
     let raw: RawConfig = toml::from_str(text).map_err(|e| e.to_string())?;
+    let layout = parse_layout(raw.layout.as_deref().unwrap_or("spiral"))?;
     let gap = raw.gap.unwrap_or(10);
     if !(0..=200).contains(&gap) {
         return Err(format!("gap = {gap}: must be between 0 and 200"));
@@ -616,6 +697,7 @@ pub fn parse(text: &str) -> Result<Config, String> {
         }
     }
     Ok(Config {
+        layout,
         gap,
         animations,
         animation_ms,
@@ -656,6 +738,11 @@ pub fn set(c: Config) {
     if let Ok(mut w) = cell().write() {
         *w = c;
     }
+}
+
+/// The configured tiling layout (only `Spiral` is implemented).
+pub fn layout() -> Layout {
+    cell().read().map(|c| c.layout).unwrap_or_default()
 }
 
 pub fn gap() -> i32 {
@@ -737,6 +824,7 @@ mod tests {
     #[test]
     fn default_config_parses() {
         let c = parse(&default_config()).expect("default config must parse");
+        assert_eq!(c.layout, Layout::Spiral);
         assert_eq!(c.gap, 10);
         assert!(c.animations);
         assert_eq!(c.animation_ms, 140);
@@ -818,7 +906,7 @@ mod tests {
         let once = migrate(OLD_CONFIG).unwrap();
         assert!(migrate(&once).is_none(), "second run must change nothing");
         // a key the user commented out or turned off is not re-added
-        let custom = "gap = 5\nanimations = false\n# animation_ms = 99\neasing = \"linear\"\nfullscreen_windows = \"ignore\"\nresize_step = 10\nborder = false\n# border_color = \"#112233\"\nborder_width = 3\nmin_tile_width = 400\nmin_tile_height = 300\nmax_tiles = 6\nauto_overflow = false\nworkspace_indicator = false\n\n[hotkeys]\n# grow_width = \"alt+plus\"\n# shrink_width = \"alt+minus\"\nminimize = \"alt+shift+m\"\nquit = \"ctrl+alt+q\"\n";
+        let custom = "layout = \"spiral\"\ngap = 5\nanimations = false\n# animation_ms = 99\neasing = \"linear\"\nfullscreen_windows = \"ignore\"\nresize_step = 10\nborder = false\n# border_color = \"#112233\"\nborder_width = 3\nmin_tile_width = 400\nmin_tile_height = 300\nmax_tiles = 6\nauto_overflow = false\nworkspace_indicator = false\n\n[hotkeys]\n# grow_width = \"alt+plus\"\n# shrink_width = \"alt+minus\"\nminimize = \"alt+shift+m\"\nquit = \"ctrl+alt+q\"\n";
         assert!(migrate(custom).is_none());
         // the freshly generated default never needs migrating
         assert!(migrate(&default_config()).is_none());
@@ -857,6 +945,17 @@ mod tests {
         assert!(err.contains("out_cubic"), "{err}");
         assert!(parse("easing = \"wobble\"").is_err());
         assert_eq!(parse("easing = \"linear\"").unwrap().easing, Easing::Linear);
+    }
+
+    #[test]
+    fn layout_parses_and_rejects_unknown() {
+        assert_eq!(parse_layout("spiral").unwrap(), Layout::Spiral);
+        assert_eq!(parse_layout(" GRID ").unwrap(), Layout::Grid);
+        assert_eq!(parse_layout("master_stack").unwrap(), Layout::MasterStack);
+        assert_eq!(parse_layout("columns").unwrap(), Layout::Columns);
+        assert!(parse_layout("stacked").is_err());
+        assert!(parse("layout = \"stacked\"").is_err());
+        assert_eq!(parse("layout = \"grid\"").unwrap().layout, Layout::Grid);
     }
 
     #[test]

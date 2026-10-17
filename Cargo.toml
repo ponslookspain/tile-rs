@@ -14,6 +14,9 @@ publish = false
 serde = { version = "1", features = ["derive"] }
 toml = "0.8"
 
+[build-dependencies]
+winres = "0.1"
+
 [dependencies.windows]
 version = "0.61"
 features = [
