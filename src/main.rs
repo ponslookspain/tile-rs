@@ -25,8 +25,8 @@ use std::time::{Duration, Instant};
 
 use windows::core::{w, BOOL, PCWSTR, PWSTR};
 use windows::Win32::Foundation::{
-    CloseHandle, GetLastError, ERROR_ALREADY_EXISTS, ERROR_FILE_NOT_FOUND, ERROR_SUCCESS, HWND,
-    LPARAM, POINT, RECT,
+    CloseHandle, GetLastError, ERROR_ALREADY_EXISTS, ERROR_FILE_NOT_FOUND, ERROR_SUCCESS, HANDLE,
+    HWND, LPARAM, POINT, RECT, WAIT_OBJECT_0,
 };
 use windows::Win32::Graphics::Dwm::{
     DwmGetWindowAttribute, DwmSetWindowAttribute, DWMWA_BORDER_COLOR, DWMWA_CLOAKED,
@@ -35,14 +35,14 @@ use windows::Win32::Graphics::Dwm::{
 use windows::Win32::Graphics::Gdi::{
     GetMonitorInfoW, MonitorFromPoint, MONITORINFO, MONITOR_DEFAULTTOPRIMARY,
 };
-use windows::Win32::Media::{timeBeginPeriod, timeEndPeriod};
 use windows::Win32::System::Console::{AttachConsole, ATTACH_PARENT_PROCESS};
 use windows::Win32::System::Registry::{
     RegDeleteKeyValueW, RegGetValueW, RegSetKeyValueW, HKEY_CURRENT_USER, REG_SZ, RRF_RT_REG_SZ,
 };
 use windows::Win32::System::Threading::{
-    CreateMutexW, OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32,
-    PROCESS_QUERY_LIMITED_INFORMATION,
+    CancelWaitableTimer, CreateMutexW, CreateWaitableTimerExW, CreateWaitableTimerW, OpenProcess,
+    QueryFullProcessImageNameW, SetWaitableTimer, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, INFINITE,
+    PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION, TIMER_ALL_ACCESS,
 };
 use windows::Win32::UI::Accessibility::{SetWinEventHook, HWINEVENTHOOK};
 use windows::Win32::UI::HiDpi::{
@@ -50,18 +50,18 @@ use windows::Win32::UI::HiDpi::{
 };
 use windows::Win32::UI::Input::KeyboardAndMouse::{RegisterHotKey, UnregisterHotKey, MOD_NOREPEAT};
 use windows::Win32::UI::WindowsAndMessaging::{
-    DispatchMessageW, EnumWindows, GetClassNameW, GetCursorPos, GetForegroundWindow, GetMessageW,
+    DispatchMessageW, EnumWindows, GetClassNameW, GetCursorPos, GetForegroundWindow,
     GetShellWindow, GetWindow, GetWindowLongW, GetWindowRect, GetWindowTextW,
     GetWindowThreadProcessId, IsIconic, IsWindow, IsWindowVisible, IsZoomed, KillTimer,
-    MessageBoxW, PostQuitMessage, SetForegroundWindow, SetTimer, SetWindowPos, ShowWindow,
-    TranslateMessage, EVENT_OBJECT_CLOAKED, EVENT_OBJECT_CREATE, EVENT_OBJECT_DESTROY,
-    EVENT_OBJECT_HIDE, EVENT_OBJECT_LOCATIONCHANGE, EVENT_OBJECT_SHOW, EVENT_OBJECT_UNCLOAKED,
-    EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_MINIMIZEEND, EVENT_SYSTEM_MINIMIZESTART,
-    EVENT_SYSTEM_MOVESIZEEND, EVENT_SYSTEM_MOVESIZESTART, GWL_EXSTYLE, GWL_STYLE, GW_OWNER, IDYES,
-    MB_ICONINFORMATION, MB_ICONQUESTION, MB_OK, MB_TOPMOST, MB_YESNO, MSG, SWP_NOACTIVATE,
-    SWP_NOOWNERZORDER, SWP_NOSIZE, SWP_NOZORDER, SW_RESTORE, WINEVENT_OUTOFCONTEXT,
-    WINEVENT_SKIPOWNPROCESS, WM_HOTKEY, WM_TIMER, WS_CHILD, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
-    WS_THICKFRAME,
+    MessageBoxW, MsgWaitForMultipleObjectsEx, PeekMessageW, PostQuitMessage, SetForegroundWindow,
+    SetTimer, SetWindowPos, ShowWindow, TranslateMessage, EVENT_OBJECT_CLOAKED,
+    EVENT_OBJECT_CREATE, EVENT_OBJECT_DESTROY, EVENT_OBJECT_HIDE, EVENT_OBJECT_LOCATIONCHANGE,
+    EVENT_OBJECT_SHOW, EVENT_OBJECT_UNCLOAKED, EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_MINIMIZEEND,
+    EVENT_SYSTEM_MINIMIZESTART, EVENT_SYSTEM_MOVESIZEEND, EVENT_SYSTEM_MOVESIZESTART, GWL_EXSTYLE,
+    GWL_STYLE, GW_OWNER, IDYES, MB_ICONINFORMATION, MB_ICONQUESTION, MB_OK, MB_TOPMOST, MB_YESNO,
+    MSG, MWMO_INPUTAVAILABLE, PM_REMOVE, QS_ALLINPUT, SWP_NOACTIVATE, SWP_NOOWNERZORDER,
+    SWP_NOSIZE, SWP_NOZORDER, SW_RESTORE, WINEVENT_OUTOFCONTEXT, WINEVENT_SKIPOWNPROCESS,
+    WM_HOTKEY, WM_QUIT, WM_TIMER, WS_CHILD, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_THICKFRAME,
 };
 
 use config::{Action, Dir, Rule, WS_COUNT};
@@ -698,8 +698,8 @@ struct State {
     border_on: Option<isize>,
     /// Windows currently gliding to their new tiles.
     anims: Vec<Anim>,
-    /// Frame timer of the animations (0 = none running).
-    anim_timer: usize,
+    /// High-resolution waitable timer that drives the animation frames (null = none).
+    anim_timer: HANDLE,
     /// The next layout pass must place windows instantly (workspace switch, startup, ...).
     no_anim: bool,
     /// Registered hotkeys: (id, action)
@@ -792,12 +792,44 @@ fn move_window(s: &mut State, hwnd: HWND, target: RECT, animate: bool) {
         if profile_on() {
             anim_prof_reset();
         }
-        if s.anim_timer == 0 {
-            unsafe {
-                timeBeginPeriod(1); // ask for a 1 ms timer so frames are not rounded to 15.6 ms
-                s.anim_timer = SetTimer(None, 0, ANIM_FRAME_MS, None);
-            }
-        }
+        arm_anim_timer(s);
+    }
+}
+
+/// Creates the timer that drives animation frames. Prefers the high-resolution variant
+/// (Windows 10 1803+); falls back to a normal waitable timer on older systems.
+fn create_anim_timer() -> HANDLE {
+    unsafe {
+        CreateWaitableTimerExW(
+            None,
+            PCWSTR::null(),
+            CREATE_WAITABLE_TIMER_HIGH_RESOLUTION,
+            TIMER_ALL_ACCESS.0,
+        )
+        .or_else(|_| CreateWaitableTimerExW(None, PCWSTR::null(), 0, TIMER_ALL_ACCESS.0))
+        .or_else(|_| CreateWaitableTimerW(None, false, PCWSTR::null()))
+        .unwrap_or_default()
+    }
+}
+
+/// (Re)arms the frame timer: the first frame fires in `ANIM_FRAME_MS`, then every `ANIM_FRAME_MS`.
+fn arm_anim_timer(s: &State) {
+    if s.anim_timer.is_invalid() {
+        return;
+    }
+    let due = -(ANIM_FRAME_MS as i64) * 10_000; // relative time, in 100 ns units
+    unsafe {
+        let _ = SetWaitableTimer(s.anim_timer, &due, ANIM_FRAME_MS as i32, None, None, false);
+    }
+}
+
+/// Stops the frame timer once nothing is animating.
+fn cancel_anim_timer(s: &State) {
+    if s.anim_timer.is_invalid() {
+        return;
+    }
+    unsafe {
+        let _ = CancelWaitableTimer(s.anim_timer);
     }
 }
 
@@ -807,8 +839,10 @@ fn anim_tick() {
     let easing = config::easing();
     STATE.with(|s| {
         let mut s = s.borrow_mut();
+        if s.anims.is_empty() {
+            return; // nothing to animate (a stray frame after the queue drained)
+        }
         let now = Instant::now();
-        let had = !s.anims.is_empty();
         let mut keep = Vec::with_capacity(s.anims.len());
         let mut setpos = Duration::ZERO;
         for mut a in std::mem::take(&mut s.anims) {
@@ -838,14 +872,10 @@ fn anim_tick() {
         s.anims = keep;
         // our own moves must not look like the user moving windows
         s.ignore_until = Some(now + Duration::from_millis(300));
-        if s.anims.is_empty() && s.anim_timer != 0 {
-            unsafe {
-                let _ = KillTimer(None, s.anim_timer);
-                timeEndPeriod(1);
-            }
-            s.anim_timer = 0;
+        if s.anims.is_empty() {
+            cancel_anim_timer(&s);
         }
-        if profiling && had {
+        if profiling {
             anim_prof_frame(now, setpos.as_secs_f32() * 1e6);
             if s.anims.is_empty() {
                 anim_prof_finish(now);
@@ -1648,6 +1678,42 @@ pub fn dispatch(a: Action) {
     }
 }
 
+/// Handles the debounce / live / verify timer (a classic `SetTimer` message).
+fn handle_debounce_timer(wparam: usize) {
+    let timer = STATE.with(|s| s.borrow().timer);
+    if wparam != timer {
+        return;
+    }
+    unsafe {
+        let _ = KillTimer(None, timer);
+    }
+    let (follow, reflow, enforce, live) = STATE.with(|s| {
+        let mut s = s.borrow_mut();
+        s.timer = 0;
+        let reflow = std::mem::take(&mut s.reflow);
+        let enforce = std::mem::take(&mut s.enforce);
+        let live = std::mem::take(&mut s.live);
+        if reflow {
+            s.last.clear(); // force a fresh layout (snap back / apply a swap)
+        }
+        (s.follow.take(), reflow, enforce, live)
+    });
+    match follow {
+        Some((w, h)) => switch_ws(w, Some(h)),
+        None if reflow => retile(),
+        None if live => live_resize(),
+        None if enforce => {
+            enforce_layout();
+            // only walk all windows again if the set of windows really changed
+            let changed = STATE.with(|s| std::mem::take(&mut s.borrow_mut().windows_changed));
+            if changed {
+                retile();
+            }
+        }
+        None => retile(),
+    }
+}
+
 // ---------------------------------------------------------------------------
 // start-up
 // ---------------------------------------------------------------------------
@@ -1721,6 +1787,8 @@ fn start(interactive: bool) {
     }
     let failed = register_hotkeys();
     tray::create();
+    let anim_timer = create_anim_timer();
+    STATE.with(|s| s.borrow_mut().anim_timer = anim_timer);
     log("tile-rs running");
     if !failed.is_empty() {
         notify(
@@ -1731,69 +1799,60 @@ fn start(interactive: bool) {
     retile();
     refresh_border();
 
+    // One thread, one message loop. The animation frames come from a high-resolution waitable
+    // timer (not WM_TIMER, which is the lowest priority and stutters while the mouse moves);
+    // the debounce / live / verify timers stay ordinary SetTimer messages.
     unsafe {
         let mut msg = MSG::default();
-        while GetMessageW(&mut msg, None, 0, 0).0 > 0 {
-            if msg.message == WM_TIMER {
-                let (timer, atimer) = STATE.with(|s| {
-                    let s = s.borrow();
-                    (s.timer, s.anim_timer)
-                });
-                if atimer != 0 && msg.wParam.0 == atimer {
-                    anim_tick();
+        let handles = [anim_timer];
+        loop {
+            let r = MsgWaitForMultipleObjectsEx(
+                Some(&handles),
+                INFINITE,
+                QS_ALLINPUT,
+                MWMO_INPUTAVAILABLE,
+            );
+            if r == WAIT_OBJECT_0 {
+                anim_tick();
+            }
+            let mut quit = false;
+            while PeekMessageW(&mut msg, None, 0, 0, PM_REMOVE).as_bool() {
+                if msg.message == WM_QUIT {
+                    quit = true;
+                    break;
+                }
+                if msg.message == WM_TIMER {
+                    handle_debounce_timer(msg.wParam.0);
                     continue;
                 }
-                if msg.wParam.0 == timer {
-                    let _ = KillTimer(None, timer);
-                    let (follow, reflow, enforce, live) = STATE.with(|s| {
-                        let mut s = s.borrow_mut();
-                        s.timer = 0;
-                        let reflow = std::mem::take(&mut s.reflow);
-                        let enforce = std::mem::take(&mut s.enforce);
-                        let live = std::mem::take(&mut s.live);
-                        if reflow {
-                            s.last.clear(); // force a fresh layout (snap back / apply a swap)
-                        }
-                        (s.follow.take(), reflow, enforce, live)
+                if msg.message == WM_HOTKEY {
+                    let id = msg.wParam.0 as i32;
+                    let action = STATE.with(|s| {
+                        s.borrow()
+                            .hotkeys
+                            .iter()
+                            .find(|(i, _)| *i == id)
+                            .map(|(_, a)| *a)
                     });
-                    match follow {
-                        Some((w, h)) => switch_ws(w, Some(h)),
-                        None if reflow => retile(),
-                        None if live => live_resize(),
-                        None if enforce => {
-                            enforce_layout();
-                            // only walk all windows again if the set of windows really changed
-                            let changed =
-                                STATE.with(|s| std::mem::take(&mut s.borrow_mut().windows_changed));
-                            if changed {
-                                retile();
-                            }
-                        }
-                        None => retile(),
+                    if let Some(a) = action {
+                        dispatch(a);
                     }
                     continue;
                 }
-            } else if msg.message == WM_HOTKEY {
-                let id = msg.wParam.0 as i32;
-                let action = STATE.with(|s| {
-                    s.borrow()
-                        .hotkeys
-                        .iter()
-                        .find(|(i, _)| *i == id)
-                        .map(|(_, a)| *a)
-                });
-                if let Some(a) = action {
-                    dispatch(a);
-                }
-                continue;
+                let _ = TranslateMessage(&msg);
+                DispatchMessageW(&msg);
             }
-            let _ = TranslateMessage(&msg);
-            DispatchMessageW(&msg);
+            if quit {
+                break;
+            }
         }
     }
     clear_border();
     bring_everything_back();
     tray::remove();
+    unsafe {
+        let _ = CloseHandle(anim_timer);
+    }
     log("bye");
 }
 

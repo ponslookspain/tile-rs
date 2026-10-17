@@ -17,6 +17,9 @@ follows [Semantic Versioning](https://semver.org) (see [docs/RELEASING.md](docs/
   taskbar resized or set to auto-hide), instead of staying stale until the next manual action.
 - Short moves are animated more quickly: a small resize step no longer takes as long as a full
   re-layout, and frames that would not move a window are skipped.
+- Animation frames are driven by a high-resolution timer instead of the low-priority `WM_TIMER`,
+  so windows keep moving smoothly while the mouse and keyboard are busy. tile-rs no longer raises
+  the system-wide timer resolution.
 
 ## [0.2.0] - 2026-10-17
 
