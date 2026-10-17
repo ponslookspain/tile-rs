@@ -18,6 +18,10 @@ follows [Semantic Versioning](https://semver.org) (see [docs/RELEASING.md](docs/
 ### Fixed
 - A window that cannot shrink below its own minimum size (e.g. a browser) now gets a tile at least
   that big instead of overlapping its neighbour: the neighbours give up the space.
+- A newly opened window with a minimum size now pushes the grid aside immediately, instead of
+  overflowing the workspace until it is dragged.
+- The focus border is re-applied after a window is moved or resized (DWM drops the custom border
+  colour on move), so it now also shows for console windows such as Windows PowerShell.
 - Moving a window is no longer mistaken for a resize when the app is larger than its tile (an
   application minimum size): that used to change the split sizes and make windows overlap.
 - The focus border now also follows focus changes made by tile-rs itself (keyboard focus, workspace

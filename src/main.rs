@@ -82,6 +82,9 @@ static SKIP_ZOOMED: AtomicBool = AtomicBool::new(false);
 /// Set once at startup from `TILE_RS_PROFILE=1`. When off, profiling costs one bool load.
 static PROFILE: AtomicBool = AtomicBool::new(false);
 
+/// Set when a border colour could not be applied (logged once, to diagnose the focus border).
+static BORDER_WARNED: AtomicBool = AtomicBool::new(false);
+
 fn profile_on() -> bool {
     PROFILE.load(Ordering::Relaxed)
 }
@@ -902,11 +905,13 @@ fn move_window(s: &mut State, hwnd: HWND, target: RECT, animate: bool) {
     if !animate || !on || ms == 0 || busy || s.anim_timer.is_invalid() {
         place(hwnd, target);
         observe_min_size(s, hwnd, &target);
+        reapply_border(s, h);
         return;
     }
     let Some(from) = visible_rect(hwnd) else {
         place(hwnd, target);
         observe_min_size(s, hwnd, &target);
+        reapply_border(s, h);
         return;
     };
     if same_rect(&from, &target, 1) {
@@ -1038,6 +1043,8 @@ fn anim_tick() {
             if done {
                 // the window is at its tile now: note it if the app kept a bigger minimum size
                 observe_min_size(&mut s, HWND(a.hwnd as *mut _), &a.to);
+                // gliding to a new tile resets the DWM border colour: restore it for the focus
+                reapply_border(&s, a.hwnd);
             } else {
                 keep.push(a);
             }
@@ -1072,12 +1079,32 @@ fn set_border(hwnd: isize, color: Option<u32>) {
     let c = color.unwrap_or(DWM_COLOR_DEFAULT);
     unsafe {
         // Windows 11 only; on older systems the call just fails and nothing happens
-        let _ = DwmSetWindowAttribute(
+        let r = DwmSetWindowAttribute(
             hw,
             DWMWA_BORDER_COLOR,
             &c as *const u32 as *const _,
             size_of::<u32>() as u32,
         );
+        if let Err(e) = r {
+            // log the first failure only (the class tells which kind of window does not support it)
+            if color.is_some() && !BORDER_WARNED.swap(true, Ordering::Relaxed) {
+                let class = text_of(|b| GetClassNameW(hw, b));
+                log(format!(
+                    "border: DwmSetWindowAttribute failed for class \"{class}\" ({e}); \
+                     the focus border may not show for such windows"
+                ));
+            }
+        }
+    }
+}
+
+/// Moving or resizing a window makes DWM drop its custom border colour, so re-apply it to the
+/// window that currently carries the focus border.
+fn reapply_border(s: &State, h: isize) {
+    if s.border_on == Some(h) {
+        if let Some(c) = config::border() {
+            set_border(h, Some(c));
+        }
     }
 }
 
@@ -1312,6 +1339,9 @@ unsafe extern "system" fn on_event(
                 if s.paused {
                     return;
                 }
+                // DWM drops the custom border colour whenever a window moves or resizes, so put it
+                // back on the focused window right away
+                reapply_border(&s, h);
                 if let Some(d) = s.dragging {
                     // during a drag only the dragged window matters: is it being resized?
                     if d == h {
@@ -1587,6 +1617,13 @@ fn fast_add(s: &mut State, hwnd: HWND) -> bool {
         rs.resize(layout.len() - 1, 0.5);
         rs.clone()
     };
+    // Put the new window in its provisional tile first: an app with a minimum size refuses to
+    // shrink below it, and only after it has been placed do we know that minimum.
+    let (prov, _) = spiral_with_mins(work_area(), &layout, &ratios, &s.min_size);
+    place(hwnd, prov[layout.len() - 1]);
+    observe_min_size(s, hwnd, &prov[layout.len() - 1]);
+    // Now that the minimum is known, lay the whole workspace out again (the new window's tile may
+    // have grown, and the neighbours move aside).
     let (rects, regions) = spiral_with_mins(work_area(), &layout, &ratios, &s.min_size);
     for (i, hh) in layout.iter().enumerate() {
         // the new window appears in its tile instantly; the others glide to make room
@@ -1661,15 +1698,18 @@ fn retile() {
             }
         }
         let layout: Vec<isize> = order.into_iter().filter(|h| s.ws[h] == cur).collect();
-        if layout == s.last {
-            return; // same windows, same order: leave them alone (respects manual tweaks)
-        }
         let ratios = {
             let rs = s.ratios.entry(cur).or_default();
             rs.resize(layout.len().saturating_sub(1), 0.5);
             rs.clone()
         };
         let (rects, regions) = spiral_with_mins(work_area(), &layout, &ratios, &s.min_size);
+        if layout == s.last && rects == s.rects {
+            // same windows and same tiles: leave them alone (respects manual tweaks). The tile
+            // comparison matters: a minimum size learned after the last layout (or after a new
+            // window appeared) changes the tiles even though the window set did not.
+            return;
+        }
         s.rects = rects.clone();
         s.regions = regions;
         for (h, r) in layout.iter().zip(rects) {
