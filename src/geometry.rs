@@ -4,6 +4,8 @@
 //! left, window 2 the left part of the rest, and so on (strictly alternating). Every split has
 //! a ratio, which the user changes by resizing windows.
 
+use std::collections::HashMap;
+
 use windows::Win32::Foundation::RECT;
 
 use crate::config::{self, Dir};
@@ -133,6 +135,70 @@ pub fn apply_resize(
         }
     }
     changed
+}
+
+/// Like `spiral`, but grows the tiles of windows that cannot shrink below a minimum size (an
+/// application minimum, e.g. a browser window): the neighbours give up the space instead, so the
+/// window does not overlap them. `mins` maps a window handle to its observed minimum size.
+pub fn spiral_with_mins(
+    area: RECT,
+    windows: &[isize],
+    ratios: &[f32],
+    mins: &HashMap<isize, (i32, i32)>,
+) -> (Vec<RECT>, Vec<RECT>) {
+    let n = windows.len();
+    let mut rs = ratios.to_vec();
+    rs.resize(n.saturating_sub(1), 0.5);
+    let mut out = spiral(area, n, &rs);
+    // each pass grows the tiles that are still too small; a few passes are enough in practice
+    for _ in 0..4 {
+        let (tiles, regions) = (out.0.clone(), out.1.clone());
+        let mut changed = false;
+        for (k, h) in windows.iter().enumerate() {
+            let Some(&(mw, mh)) = mins.get(h) else {
+                continue;
+            };
+            let t = tiles[k];
+            let dw = (mw - (t.right - t.left)).max(0);
+            let dh = (mh - (t.bottom - t.top)).max(0);
+            if dw == 0 && dh == 0 {
+                continue;
+            }
+            // move only the edges that actually belong to a split of this window
+            let last = k == n - 1;
+            let mut d = t;
+            if dw > 0 {
+                if k.is_multiple_of(2) {
+                    if last {
+                        d.left -= dw;
+                    } else {
+                        d.right += dw;
+                    }
+                } else {
+                    d.left -= dw;
+                }
+            }
+            if dh > 0 {
+                if k % 2 == 1 {
+                    if !last {
+                        d.bottom += dh;
+                    } else if k >= 3 {
+                        d.top -= dh;
+                    }
+                } else if k >= 1 {
+                    d.top -= dh;
+                }
+            }
+            if apply_resize(&mut rs, &tiles, &regions, k, d) {
+                changed = true;
+            }
+        }
+        if !changed {
+            break;
+        }
+        out = spiral(area, n, &rs);
+    }
+    out
 }
 
 /// Which split controls the width (or height) of window `k` among `n` windows, and in which
@@ -350,6 +416,49 @@ mod tests {
     fn dragging_own_right_edge_of_first_window() {
         let t = drag(3, 0, |r| r.right = 2000);
         assert!(near(t[0].right, 2000), "{:?}", t[0]);
+    }
+
+    #[test]
+    fn a_minimum_size_grows_the_tile_and_pushes_neighbours() {
+        let windows = [10isize, 20, 30];
+        let (base, _) = spiral(AREA, 3, &[]);
+        let w0 = base[0].right - base[0].left;
+        let min_w = w0 + 200;
+        let mut mins = HashMap::new();
+        mins.insert(10isize, (min_w, 0));
+        let (t, _) = spiral_with_mins(AREA, &windows, &[], &mins);
+        assert!(
+            (t[0].right - t[0].left) >= min_w - 4,
+            "tile 0 grew to fit its minimum: {:?}",
+            t[0]
+        );
+        // the layout is still a valid, non-overlapping spiral
+        assert!(t[0].right <= t[1].left, "{t:?}");
+        assert!(t[1].bottom <= t[2].top, "{t:?}");
+        assert_eq!(t[1].left, t[2].left);
+        assert_eq!(t[1].right, t[2].right);
+        // without a minimum the layout is unchanged
+        let (same, _) = spiral_with_mins(AREA, &windows, &[], &HashMap::new());
+        let (plain, _) = spiral(AREA, 3, &[]);
+        assert_eq!(same, plain);
+    }
+
+    #[test]
+    fn a_minimum_size_of_a_last_window_grows_it_to_the_left() {
+        let windows = [10isize, 20, 30];
+        let (base, _) = spiral(AREA, 3, &[]);
+        let w2 = base[2].right - base[2].left;
+        let min_w = w2 + 150;
+        let mut mins = HashMap::new();
+        mins.insert(30isize, (min_w, 0)); // window 2 is the last one
+        let (t, _) = spiral_with_mins(AREA, &windows, &[], &mins);
+        assert!(
+            (t[2].right - t[2].left) >= min_w - 4,
+            "last tile grew to the left: {:?}",
+            t[2]
+        );
+        assert!(t[0].right <= t[1].left, "{t:?}");
+        assert!(t[1].bottom <= t[2].top, "{t:?}");
     }
 
     #[test]

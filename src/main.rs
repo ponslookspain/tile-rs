@@ -69,7 +69,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 use config::{Action, Dir, FullscreenWindows, Rule, WS_COUNT};
 use geometry::{
     anim_duration, apply_resize, ease, effective_step, fullscreen_action, lerp_rect, neighbour,
-    same_rect, spiral, split_for, FsAction, MAX_RATIO, MIN_RATIO, RESIZE_PX,
+    same_rect, spiral, spiral_with_mins, split_for, FsAction, MAX_RATIO, MIN_RATIO, RESIZE_PX,
 };
 
 /// Where windows of inactive workspaces are parked (the same spot Windows uses for minimized ones).
@@ -801,6 +801,9 @@ struct State {
     order: Vec<isize>,
     /// Workspace (0-based) of every known window.
     ws: HashMap<isize, u8>,
+    /// Observed minimum size of a window (an app that refuses to shrink below it): its tile is
+    /// grown to at least this size so it does not overlap its neighbours.
+    min_size: HashMap<isize, (i32, i32)>,
     /// Workspace (0-based) of every known fullscreen window (they are never tiled).
     fs_ws: HashMap<isize, u8>,
     /// Fullscreen windows we minimized because their workspace is not shown (to restore later).
@@ -898,10 +901,12 @@ fn move_window(s: &mut State, hwnd: HWND, target: RECT, animate: bool) {
     // if the frame timer could not be created, place windows instantly rather than freeze them
     if !animate || !on || ms == 0 || busy || s.anim_timer.is_invalid() {
         place(hwnd, target);
+        observe_min_size(s, hwnd, &target);
         return;
     }
     let Some(from) = visible_rect(hwnd) else {
         place(hwnd, target);
+        observe_min_size(s, hwnd, &target);
         return;
     };
     if same_rect(&from, &target, 1) {
@@ -938,6 +943,23 @@ fn move_window(s: &mut State, hwnd: HWND, target: RECT, animate: bool) {
             anim_prof_reset();
         }
         arm_anim_timer(s);
+    }
+}
+
+/// After a window was placed instantly, remember its actual size if the app refused to shrink
+/// below it (an application minimum size). The layout then grows its tile instead of letting the
+/// window overlap its neighbour. Only ever grows the remembered size: once a tile has been grown
+/// to fit, the window also fits it, so forgetting the minimum would make the tile shrink again
+/// and start an endless grow/shrink loop.
+fn observe_min_size(s: &mut State, hwnd: HWND, target: &RECT) {
+    let h = hwnd.0 as isize;
+    let Some(vis) = visible_rect(hwnd) else {
+        return;
+    };
+    let (vw, vh) = (vis.right - vis.left, vis.bottom - vis.top);
+    let (tw, th) = (target.right - target.left, target.bottom - target.top);
+    if vw > tw + 2 || vh > th + 2 {
+        s.min_size.insert(h, (vw.max(tw), vh.max(th)));
     }
 }
 
@@ -1432,7 +1454,7 @@ fn resize_focused(width: bool, grow: bool) {
             }
             rs.clone()
         };
-        let (tiles, regions) = spiral(work_area(), n, &ratios);
+        let (tiles, regions) = spiral_with_mins(work_area(), &s.last, &ratios, &s.min_size);
         let last = s.last.clone();
         for (i, h) in last.iter().enumerate() {
             // single taps glide; a held key resizes instantly so it stays responsive
@@ -1465,7 +1487,7 @@ fn live_resize() {
         let mut rs = s.ratios.remove(&cur).unwrap_or_default();
         let changed = apply_resize(&mut rs, &tiles, &regions, k, vis);
         if changed {
-            let (new_tiles, new_regions) = spiral(work_area(), s.last.len(), &rs);
+            let (new_tiles, new_regions) = spiral_with_mins(work_area(), &s.last, &rs, &s.min_size);
             let last = s.last.clone();
             for (i, hw) in last.iter().enumerate() {
                 if *hw != h {
@@ -1562,7 +1584,7 @@ fn fast_add(s: &mut State, hwnd: HWND) -> bool {
         rs.resize(layout.len() - 1, 0.5);
         rs.clone()
     };
-    let (rects, regions) = spiral(work_area(), layout.len(), &ratios);
+    let (rects, regions) = spiral_with_mins(work_area(), &layout, &ratios, &s.min_size);
     for (i, hh) in layout.iter().enumerate() {
         // the new window appears in its tile instantly; the others glide to make room
         move_window(s, HWND(*hh as *mut _), rects[i], *hh != h);
@@ -1606,6 +1628,9 @@ fn retile() {
             .filter(|h| !s.ws.contains_key(h))
             .collect();
         let animate_all = !std::mem::take(&mut s.no_anim);
+        // forget windows that are gone (their observed minimum size goes with them)
+        s.min_size
+            .retain(|h, _| unsafe { IsWindow(Some(HWND(*h as *mut _))) }.as_bool());
         // forget windows that are gone; new windows join the current workspace
         // (or the workspace a config rule asks for)
         s.ws.retain(|h, _| present.contains(h));
@@ -1641,7 +1666,7 @@ fn retile() {
             rs.resize(layout.len().saturating_sub(1), 0.5);
             rs.clone()
         };
-        let (rects, regions) = spiral(work_area(), layout.len(), &ratios);
+        let (rects, regions) = spiral_with_mins(work_area(), &layout, &ratios, &s.min_size);
         s.rects = rects.clone();
         s.regions = regions;
         for (h, r) in layout.iter().zip(rects) {

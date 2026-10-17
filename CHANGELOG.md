@@ -16,6 +16,8 @@ follows [Semantic Versioning](https://semver.org) (see [docs/RELEASING.md](docs/
 - `minimize` action to minimize the focused window, bound to `Alt+Shift+M` by default.
 
 ### Fixed
+- A window that cannot shrink below its own minimum size (e.g. a browser) now gets a tile at least
+  that big instead of overlapping its neighbour: the neighbours give up the space.
 - Moving a window is no longer mistaken for a resize when the app is larger than its tile (an
   application minimum size): that used to change the split sizes and make windows overlap.
 - The focus border now also follows focus changes made by tile-rs itself (keyboard focus, workspace
