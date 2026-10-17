@@ -16,6 +16,8 @@ everything lives in one small `.exe` with a tray icon and a plain-text config.
 - **Resize like a normal window**: drag any edge or corner and the neighbours follow live. Or use
   `Alt +` / `Alt -` (hold to repeat).
 - **Drag a window onto another tile** to swap them; drop it anywhere else and it snaps back.
+- **Fullscreen games and videos are left alone**: a window that covers a whole screen without a title
+  bar (exclusive or borderless fullscreen) is never tiled, so it stays fullscreen.
 - **9 workspaces**, per-app rules (always float, open on workspace N), focus and swap by keyboard.
 - **Tray icon** with pause/resume, reload config, edit config, "Start with Windows", quit.
 - **Coloured border** around the focused window (Windows 11).

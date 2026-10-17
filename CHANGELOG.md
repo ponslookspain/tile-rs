@@ -10,6 +10,11 @@ follows [Semantic Versioning](https://semver.org) (see [docs/RELEASING.md](docs/
 - `easing` setting to pick the animation curve: `linear`, `out_quad`, `out_cubic` (the default),
   `out_quart`, `in_out_cubic`.
 
+### Fixed
+- Games and other windows that run fullscreen or borderless fullscreen (they cover a whole monitor
+  and have no title bar) are now left alone: tile-rs never tiles, moves or parks them, so they stay
+  fullscreen. When such a window goes back to windowed mode, it is tiled again.
+
 ### Changed
 - The tray menu opens instantly: the "Start with Windows" state is now read directly from the
   registry instead of starting a `reg.exe` process every time the menu is opened.

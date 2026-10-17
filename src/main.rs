@@ -26,14 +26,15 @@ use std::time::{Duration, Instant};
 use windows::core::{w, BOOL, PCWSTR, PWSTR};
 use windows::Win32::Foundation::{
     CloseHandle, GetLastError, ERROR_ALREADY_EXISTS, ERROR_FILE_NOT_FOUND, ERROR_SUCCESS, HANDLE,
-    HWND, LPARAM, POINT, RECT, WAIT_OBJECT_0,
+    HWND, LPARAM, POINT, RECT, WAIT_FAILED, WAIT_OBJECT_0,
 };
 use windows::Win32::Graphics::Dwm::{
     DwmGetWindowAttribute, DwmSetWindowAttribute, DWMWA_BORDER_COLOR, DWMWA_CLOAKED,
     DWMWA_EXTENDED_FRAME_BOUNDS,
 };
 use windows::Win32::Graphics::Gdi::{
-    GetMonitorInfoW, MonitorFromPoint, MONITORINFO, MONITOR_DEFAULTTOPRIMARY,
+    GetMonitorInfoW, MonitorFromPoint, MonitorFromWindow, MONITORINFO, MONITOR_DEFAULTTONEAREST,
+    MONITOR_DEFAULTTOPRIMARY,
 };
 use windows::Win32::System::Console::{AttachConsole, ATTACH_PARENT_PROCESS};
 use windows::Win32::System::Registry::{
@@ -61,7 +62,8 @@ use windows::Win32::UI::WindowsAndMessaging::{
     GWL_STYLE, GW_OWNER, IDYES, MB_ICONINFORMATION, MB_ICONQUESTION, MB_OK, MB_TOPMOST, MB_YESNO,
     MSG, MWMO_INPUTAVAILABLE, PM_REMOVE, QS_ALLINPUT, SWP_NOACTIVATE, SWP_NOOWNERZORDER,
     SWP_NOSIZE, SWP_NOZORDER, SW_RESTORE, WINEVENT_OUTOFCONTEXT, WINEVENT_SKIPOWNPROCESS,
-    WM_HOTKEY, WM_QUIT, WM_TIMER, WS_CHILD, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_THICKFRAME,
+    WM_HOTKEY, WM_QUIT, WM_TIMER, WS_CAPTION, WS_CHILD, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
+    WS_POPUP, WS_THICKFRAME,
 };
 
 use config::{Action, Dir, Rule, WS_COUNT};
@@ -424,6 +426,9 @@ fn skip_reason(hwnd: HWND, title: &str, class: &str) -> Option<&'static str> {
         if ex & (WS_EX_TOOLWINDOW.0 | WS_EX_NOACTIVATE.0) != 0 {
             return Some("tool/no-activate window");
         }
+        if is_fullscreen(hwnd) {
+            return Some("fullscreen (game / borderless)");
+        }
         let style = GetWindowLongW(hwnd, GWL_STYLE) as u32;
         if style & WS_THICKFRAME.0 == 0 {
             return Some("not resizable");
@@ -574,6 +579,45 @@ fn visible_rect(hwnd: HWND) -> Option<RECT> {
         .ok()?;
     }
     Some(vis)
+}
+
+/// The window's visible frame, falling back to `GetWindowRect` (DWM can fail on exclusive
+/// fullscreen windows that are not composited).
+fn frame_rect(hwnd: HWND) -> Option<RECT> {
+    if let Some(r) = visible_rect(hwnd) {
+        return Some(r);
+    }
+    let mut r = RECT::default();
+    unsafe { GetWindowRect(hwnd, &mut r).ok()? };
+    Some(r)
+}
+
+/// A window that covers its whole monitor and has no title bar (a game in exclusive or borderless
+/// fullscreen, a fullscreen video player, ...). Such windows are never tiled, so they stay
+/// fullscreen; a normal titled window is never reported here.
+fn is_fullscreen(hwnd: HWND) -> bool {
+    let style = unsafe { GetWindowLongW(hwnd, GWL_STYLE) } as u32;
+    let borderless = style & WS_POPUP.0 != 0 || style & WS_CAPTION.0 == 0;
+    if !borderless {
+        return false;
+    }
+    let Some(vis) = frame_rect(hwnd) else {
+        return false;
+    };
+    let mon = unsafe { MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST) };
+    let mut mi = MONITORINFO {
+        cbSize: size_of::<MONITORINFO>() as u32,
+        ..Default::default()
+    };
+    if !unsafe { GetMonitorInfoW(mon, &mut mi) }.as_bool() {
+        return false;
+    }
+    let m = mi.rcMonitor;
+    let t = 2; // a couple of pixels of tolerance
+    (vis.left - m.left).abs() <= t
+        && (vis.top - m.top).abs() <= t
+        && (vis.right - m.right).abs() <= t
+        && (vis.bottom - m.bottom).abs() <= t
 }
 
 fn place(hwnd: HWND, target: RECT) {
@@ -841,7 +885,10 @@ fn anim_tick() {
     STATE.with(|s| {
         let mut s = s.borrow_mut();
         if s.anims.is_empty() {
-            return; // nothing to animate (a stray frame after the queue drained)
+            // The queue was emptied outside `anim_tick` (e.g. a drag started): stop the timer so
+            // it does not keep firing at 60 Hz doing nothing.
+            cancel_anim_timer(&s);
+            return;
         }
         let now = Instant::now();
         let mut keep = Vec::with_capacity(s.anims.len());
@@ -1148,12 +1195,18 @@ unsafe extern "system" fn on_event(
                     }
                     return;
                 }
-                // a tiled window moved/resized outside of a drag (and not because of us)
+                // a window moved/resized outside of a drag (and not because of us)
                 let quiet = s.ignore_until.is_none_or(|t| Instant::now() >= t);
-                if !quiet || !s.last.contains(&h) {
+                if !quiet {
                     return;
                 }
-                s.enforce = true;
+                if s.last.contains(&h) {
+                    s.enforce = true; // a tiled window moved on its own: pull it back
+                } else if h == GetForegroundWindow().0 as isize {
+                    // an untracked window changed size, e.g. a game just left fullscreen and must
+                    // be tiled again: reconcile the window set
+                    s.windows_changed = true;
+                }
             }
             EVENT_OBJECT_SHOW => {
                 s.windows_changed = true;
@@ -1310,20 +1363,26 @@ fn live_resize() {
     });
 }
 
-/// Pull every tiled window of the current workspace back to its tile.
-fn enforce_layout() {
+/// Pulls every tiled window of the current workspace back to its tile. Returns true if a window
+/// that is now fullscreen was found: the caller must re-tile so the layout drops it.
+fn enforce_layout() -> bool {
     let _t = Timer::new("enforce_layout");
     STATE.with(|s| {
         let mut s = s.borrow_mut();
         if s.paused || s.dragging.is_some() || s.rects.len() != s.last.len() {
-            return;
+            return false;
         }
         let mut moved = 0;
+        let mut fullscreen = false;
         let (last, rects) = (s.last.clone(), s.rects.clone());
         for (h, r) in last.iter().zip(rects.iter()) {
             let hw = HWND(*h as *mut _);
             if unsafe { IsZoomed(hw).as_bool() || IsIconic(hw).as_bool() } {
                 continue; // maximized / minimized by the user: leave it alone
+            }
+            if is_fullscreen(hw) {
+                fullscreen = true; // a game went fullscreen: let it be, re-tile drops it
+                continue;
             }
             if s.anims.iter().any(|a| a.hwnd == *h) {
                 continue; // already on its way
@@ -1337,7 +1396,8 @@ fn enforce_layout() {
             log(format!("snapped {} window(s) back to their tiles", moved));
             s.ignore_until = Some(Instant::now() + Duration::from_millis(500));
         }
-    });
+        fullscreen
+    })
 }
 
 /// A window was just shown. If it is a new, tileable window of the current workspace, put it
@@ -1704,9 +1764,11 @@ fn handle_debounce_timer(wparam: usize) {
         None if reflow => retile(),
         None if live => live_resize(),
         None if enforce => {
-            enforce_layout();
-            // only walk all windows again if the set of windows really changed
-            let changed = STATE.with(|s| std::mem::take(&mut s.borrow_mut().windows_changed));
+            let fullscreen = enforce_layout();
+            // only walk all windows again if the set of windows really changed (or one of them
+            // just went fullscreen and must be dropped from the layout)
+            let changed =
+                fullscreen || STATE.with(|s| std::mem::take(&mut s.borrow_mut().windows_changed));
             if changed {
                 retile();
             }
@@ -1813,6 +1875,10 @@ fn start(interactive: bool) {
                 QS_ALLINPUT,
                 MWMO_INPUTAVAILABLE,
             );
+            if r == WAIT_FAILED {
+                log("MsgWaitForMultipleObjectsEx failed; stopping the message loop");
+                break;
+            }
             if r == WAIT_OBJECT_0 {
                 anim_tick();
             }
