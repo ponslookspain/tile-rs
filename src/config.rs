@@ -337,7 +337,7 @@ pub fn migrate(text: &str) -> Option<String> {
         top.push("resize_step = 40".into());
     }
     if !has("border") {
-        top.push("# Coloured border around the focused tiled window (Windows 11 only).".into());
+        top.push("# Coloured border around the focused tiled window.".into());
         top.push("border = true".into());
     }
     if !has("border_color") {

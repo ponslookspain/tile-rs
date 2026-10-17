@@ -35,7 +35,7 @@ everything lives in one small `.exe` with a tray icon and a plain-text config.
 
 ## Requirements
 
-- Windows 10 or 11, 64-bit. (The focus border needs Windows 11.)
+- Windows 10 or 11, 64-bit.
 - Nothing else to install. It does not need administrator rights.
 
 ## Install

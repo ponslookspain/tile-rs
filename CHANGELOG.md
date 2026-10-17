@@ -6,6 +6,8 @@ follows [Semantic Versioning](https://semver.org) (see [docs/RELEASING.md](docs/
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-10-18
+
 ### Added
 - A **settings launcher** (tray menu -> *Settings...*, or on first start): every option in one
   window, a layout picker (spiral for now; master-stack, grid and columns are "coming soon"), and
@@ -89,6 +91,7 @@ First working prototype.
 - Tray icon with menu, autostart, single-instance guard, first-run dialog.
 - `config.toml`: gap, animations, hotkeys, per-application rules (float / workspace).
 
-[Unreleased]: https://github.com/ponslookspain/tile-rs/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/ponslookspain/tile-rs/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/ponslookspain/tile-rs/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/ponslookspain/tile-rs/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/ponslookspain/tile-rs/releases/tag/v0.1.0

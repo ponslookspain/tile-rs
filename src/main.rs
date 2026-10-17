@@ -107,7 +107,7 @@ fn log_reset() {
 }
 
 // ---------------------------------------------------------------------------
-// profiling (enabled with TILE_RS_PROFILE=1; see docs/PLAN-performance.md)
+// profiling (enabled with the TILE_RS_PROFILE environment variable)
 // ---------------------------------------------------------------------------
 
 /// Logs how long a block of code took, when profiling is on (on every exit path).

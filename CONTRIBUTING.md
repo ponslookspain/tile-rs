@@ -45,12 +45,17 @@ and a release build.
 ## Project layout
 
 ```
-src/main.rs        window discovery, event handling, workspaces, animations, start-up
+src/main.rs        event handling, layout, workspaces, animations, start-up
+src/window.rs      window discovery and classification (tiled / fullscreen / skipped)
 src/geometry.rs    pure layout maths (spiral, resize ratios, neighbours, easing) + unit tests
 src/config.rs      config file: parsing, defaults, migration, hotkey syntax + unit tests
+src/launcher.rs    the settings launcher window
+src/overlay.rs     the focus border and the workspace indicator (drawn by tile-rs itself)
 src/tray.rs        tray icon and menu
+src/prof.rs        opt-in profiling (TILE_RS_PROFILE)
 docs/              configuration reference, release process
-scripts/           check.ps1 (CI checks), package.ps1 (release zip), release-notes.ps1
+scripts/           check.ps1 (CI checks), package.ps1 (release zip), build-installer.ps1,
+                   release-notes.ps1, make-icon.ps1
 .github/workflows/ CI and release automation
 ```
 
