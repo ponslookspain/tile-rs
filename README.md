@@ -16,8 +16,10 @@ everything lives in one small `.exe` with a tray icon and a plain-text config.
 - **Resize like a normal window**: drag any edge or corner and the neighbours follow live. Or use
   `Alt +` / `Alt -` (hold to repeat).
 - **Drag a window onto another tile** to swap them; drop it anywhere else and it snaps back.
-- **Fullscreen games and videos are left alone**: a window that covers a whole screen without a title
-  bar (exclusive or borderless fullscreen) is never tiled, so it stays fullscreen.
+- **Fullscreen games and videos**: a window that covers a whole screen without a title bar
+  (exclusive or borderless fullscreen) is never tiled. It is minimized when you switch to another
+  workspace and restored when you switch back, so it stays fullscreen but does not block your other
+  workspaces.
 - **9 workspaces**, per-app rules (always float, open on workspace N), focus and swap by keyboard.
 - **Tray icon** with pause/resume, reload config, edit config, "Start with Windows", quit.
 - **Coloured border** around the focused window (Windows 11).
@@ -83,6 +85,7 @@ of the old file is saved as `config.toml.bak`).
 | `Alt+1` … `Alt+9` | switch to workspace 1…9 |
 | `Alt+Shift+1` … `Alt+Shift+9` | move the focused window to workspace 1…9 |
 | `Alt+=` / `Alt+-` (also `Alt+Num+` / `Alt+Num-`) | make the focused window wider / narrower (hold to repeat) |
+| `Alt+Shift+M` | minimize the focused window |
 | `Ctrl+Alt+P` or `Alt+Shift+P` | pause / resume tiling |
 | `Ctrl+Alt+Q` | quit (all windows are brought back to the current workspace) |
 
@@ -124,6 +127,7 @@ gap = 10                 # pixels between windows
 animations = true
 animation_ms = 140
 easing = "out_cubic"     # animation curve: linear, out_quad, out_cubic, out_quart, in_out_cubic
+fullscreen_windows = "minimize"  # or "ignore": never touch fullscreen games
 resize_step = 40         # pixels per Alt+ / Alt- press
 border = true            # coloured border on the focused window (Windows 11)
 border_color = "#8dbcff"

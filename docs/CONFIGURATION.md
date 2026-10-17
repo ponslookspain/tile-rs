@@ -26,6 +26,7 @@ These keys go at the top of the file, before any `[section]`.
 | `animation_ms` | `140` | Duration of the animation, `0`–`1000` ms. `0` turns animations off. Short moves take proportionally less time. |
 | `easing` | `"out_cubic"` | Animation curve: `linear`, `out_quad`, `out_cubic`, `out_quart`, `in_out_cubic`. |
 | `resize_step` | `40` | Pixels per key press of the grow/shrink hotkeys, `1`–`500`. A held key uses smaller, instant steps. |
+| `fullscreen_windows` | `"minimize"` | What to do with a window that runs fullscreen or borderless fullscreen (a game, a video player): `"minimize"` hides it while its workspace is not shown and restores it when you switch back; `"ignore"` leaves it completely alone. |
 | `border` | `true` | Colour the border of the focused tiled window (**Windows 11 only**). |
 | `border_color` | `"#8dbcff"` | Border colour, `"#rrggbb"`. |
 
@@ -61,6 +62,7 @@ you which one and carries on with the rest.
 | `move_to_workspace_1` … `move_to_workspace_9` | Move the focused window to a workspace. |
 | `grow_width`, `shrink_width` | Make the focused window wider / narrower. Repeats while the key is held. |
 | `grow_height`, `shrink_height` | Make the focused window taller / shorter. Repeats while the key is held. |
+| `minimize` | Minimize the focused window (a fullscreen game or a normal tiled window). |
 | `pause` | Pause / resume tiling. While paused only `pause`, `quit`, `reload_config` and `edit_config` keep their keys. |
 | `quit` | Quit; all windows are brought back to the current workspace. |
 | `retile` | Re-apply the layout and reset all sizes to equal halves. |
@@ -78,6 +80,7 @@ An unknown action name is an error (it is reported on reload, with the name).
 | `workspace_N` | `alt+N` |
 | `move_to_workspace_N` | `alt+shift+N` |
 | `grow_width` / `shrink_width` | `alt+plus`, `alt+numpad_add` / `alt+minus`, `alt+numpad_subtract` |
+| `minimize` | `alt+shift+m` |
 | `pause` | `ctrl+alt+p`, `alt+shift+p` |
 | `quit` | `ctrl+alt+q` |
 
