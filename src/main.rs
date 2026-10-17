@@ -751,7 +751,8 @@ fn move_window(s: &mut State, hwnd: HWND, target: RECT, animate: bool) {
     s.anims.retain(|a| a.hwnd != h);
     let (on, ms) = config::animation();
     let busy = unsafe { IsZoomed(hwnd).as_bool() } || is_parked(hwnd);
-    if !animate || !on || ms == 0 || busy {
+    // if the frame timer could not be created, place windows instantly rather than freeze them
+    if !animate || !on || ms == 0 || busy || s.anim_timer.is_invalid() {
         place(hwnd, target);
         return;
     }
