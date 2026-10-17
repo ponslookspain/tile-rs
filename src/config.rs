@@ -9,6 +9,8 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
     HOT_KEY_MODIFIERS, MOD_ALT, MOD_CONTROL, MOD_SHIFT, MOD_WIN,
 };
 
+use crate::geometry::Easing;
+
 pub const WS_COUNT: u8 = 9;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -64,6 +66,7 @@ struct RawConfig {
     gap: Option<i32>,
     animations: Option<bool>,
     animation_ms: Option<u32>,
+    easing: Option<String>,
     resize_step: Option<u32>,
     border: Option<bool>,
     border_color: Option<String>,
@@ -78,6 +81,8 @@ pub struct Config {
     pub gap: i32,
     pub animations: bool,
     pub animation_ms: u32,
+    /// Easing curve of the animations.
+    pub easing: Easing,
     /// Pixels per keypress for the resize hotkeys.
     pub resize_step: u32,
     /// Colour the border of the focused tiled window (Windows 11).
@@ -112,6 +117,9 @@ gap = 10
 # If windows feel laggy on your PC, set animations = false.
 animations = true
 animation_ms = 140
+
+# Easing of the window animations: linear, out_quad, out_cubic (default), out_quart, in_out_cubic.
+easing = "out_cubic"
 
 # How many pixels the "grow/shrink" hotkeys change a window's width/height per keypress.
 resize_step = 40
@@ -226,6 +234,13 @@ pub fn migrate(text: &str) -> Option<String> {
     }
     if !has("animation_ms") {
         top.push("animation_ms = 140".into());
+    }
+    if !has("easing") {
+        top.push(
+            "# Easing of the window animations: linear, out_quad, out_cubic (default), out_quart, in_out_cubic."
+                .into(),
+        );
+        top.push("easing = \"out_cubic\"".into());
     }
     if !has("resize_step") {
         top.push("# Pixels per keypress for the grow/shrink hotkeys.".into());
@@ -397,6 +412,20 @@ fn parse_key(k: &str) -> Option<u32> {
     })
 }
 
+/// "linear", "out_quad", "out_cubic", "out_quart", "in_out_cubic" -> `Easing`.
+pub fn parse_easing(s: &str) -> Result<Easing, String> {
+    match s.trim().to_ascii_lowercase().as_str() {
+        "linear" => Ok(Easing::Linear),
+        "out_quad" => Ok(Easing::OutQuad),
+        "out_cubic" => Ok(Easing::OutCubic),
+        "out_quart" => Ok(Easing::OutQuart),
+        "in_out_cubic" => Ok(Easing::InOutCubic),
+        other => Err(format!(
+            "easing = \"{other}\": expected one of linear, out_quad, out_cubic, out_quart, in_out_cubic"
+        )),
+    }
+}
+
 /// "#rrggbb" (or "rrggbb") -> Windows COLORREF (0x00BBGGRR)
 pub fn parse_color(s: &str) -> Result<u32, String> {
     let h = s.trim().trim_start_matches('#');
@@ -423,6 +452,7 @@ pub fn parse(text: &str) -> Result<Config, String> {
         ));
     }
     let animations = raw.animations.unwrap_or(true) && animation_ms > 0;
+    let easing = parse_easing(raw.easing.as_deref().unwrap_or("out_cubic"))?;
     let resize_step = raw.resize_step.unwrap_or(40);
     if !(1..=500).contains(&resize_step) {
         return Err(format!(
@@ -473,6 +503,7 @@ pub fn parse(text: &str) -> Result<Config, String> {
         gap,
         animations,
         animation_ms,
+        easing,
         resize_step,
         border,
         border_color,
@@ -516,6 +547,11 @@ pub fn animation() -> (bool, u32) {
         .unwrap_or((true, 140))
 }
 
+/// Easing curve of the animations.
+pub fn easing() -> Easing {
+    cell().read().map(|c| c.easing).unwrap_or_default()
+}
+
 /// The border colour (COLORREF) if the border is enabled.
 pub fn border() -> Option<u32> {
     cell()
@@ -543,6 +579,7 @@ mod tests {
         assert_eq!(c.gap, 10);
         assert!(c.animations);
         assert_eq!(c.animation_ms, 140);
+        assert_eq!(c.easing, Easing::OutCubic);
         assert_eq!(c.resize_step, 40);
         assert!(c.border);
         assert_eq!(c.border_color, 0xFFBC8D); // #8dbcff as COLORREF (BGR)
@@ -580,6 +617,7 @@ mod tests {
         let c = parse(&new).expect("migrated config must still parse");
         assert!(c.animations);
         assert_eq!(c.animation_ms, 140);
+        assert_eq!(c.easing, Easing::OutCubic);
         assert_eq!(c.resize_step, 40);
         assert!(c.bindings.iter().any(|(a, s)| {
             *a == Action::Resize {
@@ -604,7 +642,7 @@ mod tests {
         let once = migrate(OLD_CONFIG).unwrap();
         assert!(migrate(&once).is_none(), "second run must change nothing");
         // a key the user commented out or turned off is not re-added
-        let custom = "gap = 5\nanimations = false\n# animation_ms = 99\nresize_step = 10\nborder = false\n# border_color = \"#112233\"\n\n[hotkeys]\n# grow_width = \"alt+plus\"\n# shrink_width = \"alt+minus\"\nquit = \"ctrl+alt+q\"\n";
+        let custom = "gap = 5\nanimations = false\n# animation_ms = 99\neasing = \"linear\"\nresize_step = 10\nborder = false\n# border_color = \"#112233\"\n\n[hotkeys]\n# grow_width = \"alt+plus\"\n# shrink_width = \"alt+minus\"\nquit = \"ctrl+alt+q\"\n";
         assert!(migrate(custom).is_none());
         // the freshly generated default never needs migrating
         assert!(migrate(&default_config()).is_none());
@@ -630,6 +668,19 @@ mod tests {
         assert!(parse_color("#gg0000").is_err());
         assert!(parse("border_color = \"nope\"").is_err());
         assert!(!parse("border = false").unwrap().border);
+    }
+
+    #[test]
+    fn easing_parses_and_rejects_unknown() {
+        assert_eq!(parse_easing("linear").unwrap(), Easing::Linear);
+        assert_eq!(parse_easing("OUT_QUAD").unwrap(), Easing::OutQuad);
+        assert_eq!(parse_easing(" out_cubic ").unwrap(), Easing::OutCubic);
+        assert_eq!(parse_easing("out_quart").unwrap(), Easing::OutQuart);
+        assert_eq!(parse_easing("in_out_cubic").unwrap(), Easing::InOutCubic);
+        let err = parse_easing("wobble").unwrap_err();
+        assert!(err.contains("out_cubic"), "{err}");
+        assert!(parse("easing = \"wobble\"").is_err());
+        assert_eq!(parse("easing = \"linear\"").unwrap().easing, Easing::Linear);
     }
 
     #[test]

@@ -121,6 +121,7 @@ tile-rs again.
 gap = 10                 # pixels between windows
 animations = true
 animation_ms = 140
+easing = "out_cubic"     # animation curve: linear, out_quad, out_cubic, out_quart, in_out_cubic
 resize_step = 40         # pixels per Alt+ / Alt- press
 border = true            # coloured border on the focused window (Windows 11)
 border_color = "#8dbcff"

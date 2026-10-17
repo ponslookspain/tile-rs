@@ -212,6 +212,50 @@ pub fn ease_out_cubic(t: f32) -> f32 {
     1.0 - u * u * u
 }
 
+/// Easing of the window animations (`config.toml` -> `easing`).
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum Easing {
+    Linear,
+    OutQuad,
+    #[default]
+    OutCubic,
+    OutQuart,
+    InOutCubic,
+}
+
+/// Applies the easing curve to a normalized time `t` (clamped to 0..1). `ease(_, 0) = 0` and
+/// `ease(_, 1) = 1` for every curve.
+pub fn ease(e: Easing, t: f32) -> f32 {
+    let t = t.clamp(0.0, 1.0);
+    match e {
+        Easing::Linear => t,
+        Easing::OutQuad => 1.0 - (1.0 - t) * (1.0 - t),
+        Easing::OutCubic => ease_out_cubic(t),
+        Easing::OutQuart => {
+            let u = 1.0 - t;
+            1.0 - u * u * u * u
+        }
+        Easing::InOutCubic => {
+            if t < 0.5 {
+                4.0 * t * t * t
+            } else {
+                1.0 - (-2.0 * t + 2.0).powi(3) / 2.0
+            }
+        }
+    }
+}
+
+/// Duration of an animation for a window that has to travel `dist_px` (the largest edge move).
+/// Short trips are quicker; a full reflow keeps the configured duration. `base_ms` is
+/// `animation_ms` from the config.
+pub fn anim_duration(base_ms: u32, dist_px: i32) -> u32 {
+    if base_ms == 0 {
+        return 0;
+    }
+    let f = (dist_px.max(0) as f32 / 400.0).clamp(0.45, 1.0);
+    (base_ms as f32 * f).round() as u32
+}
+
 pub fn lerp_i(a: i32, b: i32, t: f32) -> i32 {
     a + ((b - a) as f32 * t).round() as i32
 }
@@ -343,6 +387,50 @@ mod tests {
         }
         // fast start: more than half of the way after a quarter of the time
         assert!(ease_out_cubic(0.25) > 0.5);
+    }
+
+    #[test]
+    fn easing_curves_are_monotonic_and_hit_the_ends() {
+        let curves = [
+            Easing::Linear,
+            Easing::OutQuad,
+            Easing::OutCubic,
+            Easing::OutQuart,
+            Easing::InOutCubic,
+        ];
+        for e in curves {
+            assert_eq!(ease(e, 0.0), 0.0, "{e:?} at 0");
+            assert_eq!(ease(e, 1.0), 1.0, "{e:?} at 1");
+            assert_eq!(ease(e, -1.0), 0.0, "{e:?} clamped below 0");
+            assert_eq!(ease(e, 2.0), 1.0, "{e:?} clamped above 1");
+            let mut prev = 0.0;
+            for i in 1..=100 {
+                let v = ease(e, i as f32 / 100.0);
+                assert!(v >= prev - 1e-6, "{e:?} not monotonic at {i}");
+                prev = v;
+            }
+        }
+    }
+
+    #[test]
+    fn anim_duration_scales_with_distance() {
+        assert_eq!(anim_duration(0, 1000), 0, "0 ms stays 0 ms");
+        // short trip: the lower bound (45% of the base)
+        assert_eq!(anim_duration(200, 0), 90);
+        // a full-screen reflow keeps the base duration
+        assert_eq!(anim_duration(200, 400), 200);
+        assert_eq!(anim_duration(200, 10_000), 200, "clamped at the base");
+        // negative distance is treated as zero
+        assert_eq!(anim_duration(200, -50), 90);
+        // monotonic in distance
+        let mut prev = 0;
+        for d in 0..=500 {
+            let v = anim_duration(200, d);
+            assert!(v >= prev, "not monotonic at {d}");
+            prev = v;
+        }
+        // monotonic in the base duration
+        assert!(anim_duration(200, 400) > anim_duration(100, 400));
     }
 
     #[test]

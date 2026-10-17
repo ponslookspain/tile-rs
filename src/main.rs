@@ -66,7 +66,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 
 use config::{Action, Dir, Rule, WS_COUNT};
 use geometry::{
-    apply_resize, ease_out_cubic, effective_step, lerp_rect, neighbour, same_rect, spiral,
+    anim_duration, apply_resize, ease, effective_step, lerp_rect, neighbour, same_rect, spiral,
     split_for, MAX_RATIO, MIN_RATIO, RESIZE_PX,
 };
 
@@ -723,6 +723,10 @@ struct Anim {
     /// invisible resize border: (left, top, right, bottom)
     border: (i32, i32, i32, i32),
     t0: Instant,
+    /// Duration of this animation (scaled by the distance, see `anim_duration`).
+    dur_ms: u32,
+    /// Last visible frame we actually applied (to skip frames that do not move the window).
+    last: Option<RECT>,
 }
 
 /// Put the *visible* frame of a window at `vis`, given its invisible border.
@@ -768,6 +772,12 @@ fn move_window(s: &mut State, hwnd: HWND, target: RECT, animate: bool) {
         win.right - from.right,
         win.bottom - from.bottom,
     );
+    let dist = (from.left - target.left)
+        .abs()
+        .max((from.top - target.top).abs())
+        .max((from.right - target.right).abs())
+        .max((from.bottom - target.bottom).abs());
+    let dur_ms = anim_duration(ms, dist);
     let was_empty = s.anims.is_empty();
     s.anims.push(Anim {
         hwnd: h,
@@ -775,6 +785,8 @@ fn move_window(s: &mut State, hwnd: HWND, target: RECT, animate: bool) {
         to: target,
         border,
         t0: Instant::now(),
+        dur_ms,
+        last: None,
     });
     if was_empty {
         if profile_on() {
@@ -792,32 +804,35 @@ fn move_window(s: &mut State, hwnd: HWND, target: RECT, animate: bool) {
 /// One animation frame (called from the frame timer).
 fn anim_tick() {
     let profiling = profile_on();
+    let easing = config::easing();
     STATE.with(|s| {
         let mut s = s.borrow_mut();
-        let (_, ms) = config::animation();
-        let dur = (ms.max(1) as f32) / 1000.0;
         let now = Instant::now();
         let had = !s.anims.is_empty();
         let mut keep = Vec::with_capacity(s.anims.len());
         let mut setpos = Duration::ZERO;
-        for a in std::mem::take(&mut s.anims) {
+        for mut a in std::mem::take(&mut s.anims) {
             if !unsafe { IsWindow(Some(HWND(a.hwnd as *mut _))) }.as_bool() {
                 continue; // closed while gliding
             }
+            let dur = (a.dur_ms.max(1) as f32) / 1000.0;
             let t = (now - a.t0).as_secs_f32() / dur;
-            let ts = profiling.then(Instant::now);
-            if t >= 1.0 {
-                set_frame(a.hwnd, &a.to, a.border); // exact final position
+            let (rect, done) = if t >= 1.0 {
+                (a.to, true) // exact final position
             } else {
-                set_frame(
-                    a.hwnd,
-                    &lerp_rect(&a.from, &a.to, ease_out_cubic(t)),
-                    a.border,
-                );
-                keep.push(a);
+                (lerp_rect(&a.from, &a.to, ease(easing, t)), false)
+            };
+            // skip frames that would not move the window (the tail of an ease-out is almost flat)
+            if a.last.as_ref().is_none_or(|l| !same_rect(l, &rect, 0)) {
+                let ts = profiling.then(Instant::now);
+                set_frame(a.hwnd, &rect, a.border);
+                if let Some(ts) = ts {
+                    setpos += ts.elapsed();
+                }
+                a.last = Some(rect);
             }
-            if let Some(ts) = ts {
-                setpos += ts.elapsed();
+            if !done {
+                keep.push(a);
             }
         }
         s.anims = keep;

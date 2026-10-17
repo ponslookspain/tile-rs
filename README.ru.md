@@ -124,6 +124,7 @@ tile-rs заново.
 gap = 10                 # пиксели между окнами
 animations = true
 animation_ms = 140
+easing = "out_cubic"     # кривая анимации: linear, out_quad, out_cubic, out_quart, in_out_cubic
 resize_step = 40         # пикселей за одно нажатие Alt+ / Alt-
 border = true            # цветная рамка у активного окна (Windows 11)
 border_color = "#8dbcff"

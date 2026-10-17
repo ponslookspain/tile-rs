@@ -23,7 +23,8 @@ These keys go at the top of the file, before any `[section]`.
 |---|---|---|
 | `gap` | `10` | Pixels between windows and around the screen edges. `0`–`200`. |
 | `animations` | `true` | Smooth movement of windows when the layout changes. |
-| `animation_ms` | `140` | Duration of the animation, `0`–`1000` ms. `0` turns animations off. |
+| `animation_ms` | `140` | Duration of the animation, `0`–`1000` ms. `0` turns animations off. Short moves take proportionally less time. |
+| `easing` | `"out_cubic"` | Animation curve: `linear`, `out_quad`, `out_cubic`, `out_quart`, `in_out_cubic`. |
 | `resize_step` | `40` | Pixels per key press of the grow/shrink hotkeys, `1`–`500`. A held key uses smaller, instant steps. |
 | `border` | `true` | Colour the border of the focused tiled window (**Windows 11 only**). |
 | `border_color` | `"#8dbcff"` | Border colour, `"#rrggbb"`. |

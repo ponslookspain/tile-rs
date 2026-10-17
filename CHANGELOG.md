@@ -6,11 +6,17 @@ follows [Semantic Versioning](https://semver.org) (see [docs/RELEASING.md](docs/
 
 ## [Unreleased]
 
+### Added
+- `easing` setting to pick the animation curve: `linear`, `out_quad`, `out_cubic` (the default),
+  `out_quart`, `in_out_cubic`.
+
 ### Changed
 - The tray menu opens instantly: the "Start with Windows" state is now read directly from the
   registry instead of starting a `reg.exe` process every time the menu is opened.
 - The layout is rebuilt automatically when the screen work area changes (resolution change,
   taskbar resized or set to auto-hide), instead of staying stale until the next manual action.
+- Short moves are animated more quickly: a small resize step no longer takes as long as a full
+  re-layout, and frames that would not move a window are skipped.
 
 ## [0.2.0] - 2026-10-17
 
