@@ -75,10 +75,12 @@ Prerequisites: everything you want in the release is merged into `main` and CI i
    ```
 7. The **Release workflow** (`.github/workflows/release.yml`) now: verifies that the tag matches
    `Cargo.toml`, runs the tests, builds `tile-rs-vX.Y.Z-windows-x64.zip` (exe, README, LICENSE,
-   CHANGELOG, configuration reference) plus its `.sha256`, and publishes a GitHub Release
-   whose notes come from the changelog.
-8. **Verify**: download the zip from the release page, compare the SHA-256, start `tile-rs.exe`
-   once on a clean profile (`--version` shows the new version).
+   CHANGELOG, configuration reference) plus its `.sha256`, builds the Windows installer
+   `tile-rs-X.Y.Z-setup.exe` (Inno Setup, see `installer/tile-rs.iss`), and publishes a GitHub
+   Release whose notes come from the changelog.
+8. **Verify**: download the installer from the release page and run it on a clean profile (it
+   installs, opens the launcher and starts tile-rs); also check the portable zip and its SHA-256
+   (`tile-rs.exe --version` shows the new version).
 
 ### Hotfix
 

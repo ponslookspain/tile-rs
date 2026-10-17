@@ -35,6 +35,13 @@ jobs:
         shell: pwsh
         run: ./scripts/package.ps1
 
+      - name: Install Inno Setup
+        run: choco install innosetup --no-progress -y
+
+      - name: Build the Windows installer
+        shell: pwsh
+        run: ./scripts/build-installer.ps1
+
       - name: Release notes from CHANGELOG.md
         shell: pwsh
         run: |
@@ -46,7 +53,8 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          $files = Get-ChildItem release\*.zip, release\*.sha256 | ForEach-Object { $_.FullName }
+          $files = Get-ChildItem release\*.zip, release\*.sha256, dist\*-setup.exe |
+              ForEach-Object { $_.FullName }
           $ghArgs = @('release', 'create', $env:TAG) + $files +
               @('--title', "tile-rs $env:TAG", '--notes-file', 'notes.md')
           if ($env:TAG -match '-') { $ghArgs += '--prerelease' }
