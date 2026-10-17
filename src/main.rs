@@ -12,6 +12,7 @@
 
 mod config;
 mod geometry;
+mod overlay;
 mod tray;
 
 use std::cell::RefCell;
@@ -29,8 +30,7 @@ use windows::Win32::Foundation::{
     HWND, LPARAM, POINT, RECT, WAIT_FAILED, WAIT_OBJECT_0,
 };
 use windows::Win32::Graphics::Dwm::{
-    DwmGetWindowAttribute, DwmSetWindowAttribute, DWMWA_BORDER_COLOR, DWMWA_CLOAKED,
-    DWMWA_EXTENDED_FRAME_BOUNDS,
+    DwmGetWindowAttribute, DWMWA_CLOAKED, DWMWA_EXTENDED_FRAME_BOUNDS,
 };
 use windows::Win32::Graphics::Gdi::{
     GetMonitorInfoW, MonitorFromPoint, MonitorFromWindow, MONITORINFO, MONITOR_DEFAULTTONEAREST,
@@ -69,7 +69,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 use config::{Action, Dir, FullscreenWindows, Rule, WS_COUNT};
 use geometry::{
     anim_duration, apply_resize, ease, effective_step, fullscreen_action, lerp_rect, neighbour,
-    same_rect, spiral, spiral_with_mins, split_for, FsAction, MAX_RATIO, MIN_RATIO, RESIZE_PX,
+    same_rect, spiral, spiral_fitted, split_for, FsAction, MAX_RATIO, MIN_RATIO, RESIZE_PX,
 };
 
 /// Where windows of inactive workspaces are parked (the same spot Windows uses for minimized ones).
@@ -82,9 +82,6 @@ static SKIP_ZOOMED: AtomicBool = AtomicBool::new(false);
 /// Set once at startup from `TILE_RS_PROFILE=1`. When off, profiling costs one bool load.
 static PROFILE: AtomicBool = AtomicBool::new(false);
 
-/// Set when a border colour could not be applied (logged once, to diagnose the focus border).
-static BORDER_WARNED: AtomicBool = AtomicBool::new(false);
-
 fn profile_on() -> bool {
     PROFILE.load(Ordering::Relaxed)
 }
@@ -92,7 +89,7 @@ fn profile_on() -> bool {
 /// Skip reason for a window that runs fullscreen / borderless fullscreen.
 const FULLSCREEN_REASON: &str = "fullscreen (game / borderless)";
 
-/// Window classes that are never tiled (shell UI, overlays).
+/// Window classes that are never tiled (shell UI, overlays, our own overlays).
 const SKIP_CLASSES: &[&str] = &[
     "Progman",
     "WorkerW",
@@ -100,6 +97,8 @@ const SKIP_CLASSES: &[&str] = &[
     "Shell_SecondaryTrayWnd",
     "Windows.UI.Core.CoreWindow",
     "XamlExplorerHostIslandWindow",
+    "tile-rs-border",
+    "tile-rs-indicator",
 ];
 
 // ---------------------------------------------------------------------------
@@ -577,6 +576,56 @@ fn collect() -> Collector {
     c
 }
 
+/// How many tiles fit on one workspace for the current screen: the configured `max_tiles`, or a
+/// value derived from the screen area and the comfortable minimum tile.
+fn tile_budget() -> usize {
+    let configured = config::max_tiles();
+    if configured > 0 {
+        return configured as usize;
+    }
+    let area = work_area();
+    let (mw, mh) = config::min_tile();
+    let area_px = (area.right - area.left).max(1) as f64 * (area.bottom - area.top).max(1) as f64;
+    let min_px = mw.max(1) as f64 * mh.max(1) as f64;
+    let ratio = area_px / min_px;
+    if ratio <= 1.0 {
+        return 2;
+    }
+    (1.0 + ratio.log2()).floor().clamp(2.0, 8.0) as usize
+}
+
+/// The workspace a new window should open on: the current one if it still has room, otherwise the
+/// next workspace (wrapping) with room.
+fn workspace_for_new_window(s: &State, cur: u8) -> u8 {
+    if !config::auto_overflow() {
+        return cur;
+    }
+    let budget = tile_budget();
+    let count = |ws: u8| s.ws.values().filter(|w| **w == ws).count();
+    if count(cur) < budget {
+        return cur;
+    }
+    for i in 1..WS_COUNT {
+        let ws = (cur + i) % WS_COUNT;
+        if count(ws) < budget {
+            return ws;
+        }
+    }
+    cur
+}
+
+/// The layout of `windows` on `area`: the spiral with the master shrink and the observed
+/// per-window minimum sizes applied (see `geometry::spiral_fitted`).
+fn fitted(
+    area: RECT,
+    windows: &[isize],
+    ratios: &[f32],
+    mins: &HashMap<isize, (i32, i32)>,
+) -> (Vec<RECT>, Vec<RECT>) {
+    let (mw, mh) = config::min_tile();
+    spiral_fitted(area, windows, ratios, mins, mw, mh)
+}
+
 fn work_area() -> RECT {
     unsafe {
         let mon = MonitorFromPoint(POINT { x: 0, y: 0 }, MONITOR_DEFAULTTOPRIMARY);
@@ -905,13 +954,17 @@ fn move_window(s: &mut State, hwnd: HWND, target: RECT, animate: bool) {
     if !animate || !on || ms == 0 || busy || s.anim_timer.is_invalid() {
         place(hwnd, target);
         observe_min_size(s, hwnd, &target);
-        reapply_border(s, h);
+        if s.border_on == Some(h) {
+            place_border(&target, h);
+        }
         return;
     }
     let Some(from) = visible_rect(hwnd) else {
         place(hwnd, target);
         observe_min_size(s, hwnd, &target);
-        reapply_border(s, h);
+        if s.border_on == Some(h) {
+            place_border(&target, h);
+        }
         return;
     };
     if same_rect(&from, &target, 1) {
@@ -1040,13 +1093,16 @@ fn anim_tick() {
                 }
                 a.last = Some(rect);
             }
+            let ahwnd = a.hwnd;
             if done {
                 // the window is at its tile now: note it if the app kept a bigger minimum size
-                observe_min_size(&mut s, HWND(a.hwnd as *mut _), &a.to);
-                // gliding to a new tile resets the DWM border colour: restore it for the focus
-                reapply_border(&s, a.hwnd);
+                observe_min_size(&mut s, HWND(ahwnd as *mut _), &a.to);
             } else {
                 keep.push(a);
+            }
+            // the border overlay follows the window while it glides
+            if s.border_on == Some(ahwnd) {
+                place_border(&rect, ahwnd);
             }
         }
         s.anims = keep;
@@ -1065,83 +1121,74 @@ fn anim_tick() {
 }
 
 // ---------------------------------------------------------------------------
-// focus border
+// focus border (drawn by tile-rs itself, see `overlay.rs`)
 // ---------------------------------------------------------------------------
 
-/// DWM value meaning "use the system's default border colour".
-const DWM_COLOR_DEFAULT: u32 = 0xFFFF_FFFF;
-
-fn set_border(hwnd: isize, color: Option<u32>) {
-    let hw = HWND(hwnd as *mut _);
-    if !unsafe { IsWindow(Some(hw)) }.as_bool() {
+/// Draws the border around the *visible* frame `vis` of `target` (the border window is placed just
+/// below `target` in the z-order, so the window covers the centre of the border).
+fn place_border(vis: &RECT, target: isize) {
+    if config::border_width() <= 0 {
         return;
     }
-    let c = color.unwrap_or(DWM_COLOR_DEFAULT);
-    unsafe {
-        // Windows 11 only; on older systems the call just fails and nothing happens
-        let r = DwmSetWindowAttribute(
-            hw,
-            DWMWA_BORDER_COLOR,
-            &c as *const u32 as *const _,
-            size_of::<u32>() as u32,
-        );
-        if let Err(e) = r {
-            // log the first failure only (the class tells which kind of window does not support it)
-            if color.is_some() && !BORDER_WARNED.swap(true, Ordering::Relaxed) {
-                let class = text_of(|b| GetClassNameW(hw, b));
-                log(format!(
-                    "border: DwmSetWindowAttribute failed for class \"{class}\" ({e}); \
-                     the focus border may not show for such windows"
-                ));
-            }
-        }
-    }
+    let w = config::border_width();
+    let rect = RECT {
+        left: vis.left - w,
+        top: vis.top - w,
+        right: vis.right + w,
+        bottom: vis.bottom + w,
+    };
+    overlay::show_border(rect, HWND(target as *mut _));
 }
 
-/// Moving or resizing a window makes DWM drop its custom border colour, so re-apply it to the
-/// window that currently carries the focus border.
-fn reapply_border(s: &State, h: isize) {
-    if s.border_on == Some(h) {
-        if let Some(c) = config::border() {
-            set_border(h, Some(c));
-        }
-    }
-}
-
-/// Colour the border of `focus` (if it is a tiled window of the current workspace) and take it
-/// away from the window that had it before.
+/// Picks the window that should carry the border (the focused tiled window of the current
+/// workspace) and positions the overlay around it.
 fn update_border(s: &mut State, focus: isize) {
-    let color = config::border();
     // a tiled window of the current workspace: in the applied layout, or (should the layout list
     // be momentarily stale) a known window that belongs to the current workspace
     let tiled = s.last.contains(&focus) || s.ws.get(&focus) == Some(&s.cur);
-    let target = (color.is_some() && !s.paused && tiled).then_some(focus);
-    if s.border_on != target {
-        if let Some(prev) = s.border_on.take() {
-            set_border(prev, None);
-        }
-        s.border_on = target;
-    }
-    // always (re-)apply: a window that lost its colour while it was moved gets it back
-    if let (Some(h), Some(c)) = (target, color) {
-        set_border(h, Some(c));
-    }
+    s.border_on = (config::border().is_some() && !s.paused && tiled).then_some(focus);
 }
 
 /// Re-evaluate which window should have the border (after layout / pause / config changes).
 fn refresh_border() {
     let fg = unsafe { GetForegroundWindow() }.0 as isize;
     STATE.with(|s| update_border(&mut s.borrow_mut(), fg));
+    sync_border();
 }
 
-/// Remove our border colour from every window (pause, quit, colour change).
+/// Repositions the border overlay around the current border window (`State::border_on`).
+fn sync_border() {
+    let target = STATE.with(|s| s.borrow().border_on);
+    match target {
+        Some(h) => match visible_rect(HWND(h as *mut _)) {
+            Some(vis) => place_border(&vis, h),
+            None => overlay::hide_border(),
+        },
+        None => overlay::hide_border(),
+    }
+}
+
+/// Hide the border (pause, quit, colour change).
 fn clear_border() {
-    STATE.with(|s| {
-        let mut s = s.borrow_mut();
-        if let Some(prev) = s.border_on.take() {
-            set_border(prev, None);
+    STATE.with(|s| s.borrow_mut().border_on = None);
+    overlay::hide_border();
+}
+
+/// Updates the small workspace indicator (dots at the top of the screen).
+fn sync_indicator() {
+    if !config::workspace_indicator() {
+        overlay::hide_indicator();
+        return;
+    }
+    let (cur, mask) = STATE.with(|s| {
+        let s = s.borrow();
+        let mut mask = 0u32;
+        for w in s.ws.values().chain(s.fs_ws.values()) {
+            mask |= 1u32 << (*w as u32).min(31);
         }
+        (s.cur, mask)
     });
+    overlay::update_indicator(cur, mask, config::border_color_value());
 }
 
 /// (current workspace 0-based, paused) - for the tray.
@@ -1339,9 +1386,12 @@ unsafe extern "system" fn on_event(
                 if s.paused {
                     return;
                 }
-                // DWM drops the custom border colour whenever a window moves or resizes, so put it
-                // back on the focused window right away
-                reapply_border(&s, h);
+                // the border overlay follows the window it frames
+                if s.border_on == Some(h) {
+                    if let Some(vis) = visible_rect(hwnd) {
+                        place_border(&vis, h);
+                    }
+                }
                 if let Some(d) = s.dragging {
                     // during a drag only the dragged window matters: is it being resized?
                     if d == h {
@@ -1487,7 +1537,7 @@ fn resize_focused(width: bool, grow: bool) {
             }
             rs.clone()
         };
-        let (tiles, regions) = spiral_with_mins(work_area(), &s.last, &ratios, &s.min_size);
+        let (tiles, regions) = fitted(work_area(), &s.last, &ratios, &s.min_size);
         let last = s.last.clone();
         for (i, h) in last.iter().enumerate() {
             // single taps glide; a held key resizes instantly so it stays responsive
@@ -1520,7 +1570,7 @@ fn live_resize() {
         let mut rs = s.ratios.remove(&cur).unwrap_or_default();
         let changed = apply_resize(&mut rs, &tiles, &regions, k, vis);
         if changed {
-            let (new_tiles, new_regions) = spiral_with_mins(work_area(), &s.last, &rs, &s.min_size);
+            let (new_tiles, new_regions) = fitted(work_area(), &s.last, &rs, &s.min_size);
             let last = s.last.clone();
             for (i, hw) in last.iter().enumerate() {
                 if *hw != h {
@@ -1590,6 +1640,9 @@ fn fast_add(s: &mut State, hwnd: HWND) -> bool {
     if s.ws.contains_key(&h) {
         return false; // known window shown again: the normal path decides
     }
+    if config::auto_overflow() && s.last.len() >= tile_budget() {
+        return false; // this workspace is full: the normal path moves it to the next one
+    }
     let style = unsafe { GetWindowLongW(hwnd, GWL_STYLE) } as u32;
     if style & WS_CHILD.0 != 0 {
         return false; // controls and other child windows
@@ -1619,12 +1672,12 @@ fn fast_add(s: &mut State, hwnd: HWND) -> bool {
     };
     // Put the new window in its provisional tile first: an app with a minimum size refuses to
     // shrink below it, and only after it has been placed do we know that minimum.
-    let (prov, _) = spiral_with_mins(work_area(), &layout, &ratios, &s.min_size);
+    let (prov, _) = fitted(work_area(), &layout, &ratios, &s.min_size);
     place(hwnd, prov[layout.len() - 1]);
     observe_min_size(s, hwnd, &prov[layout.len() - 1]);
     // Now that the minimum is known, lay the whole workspace out again (the new window's tile may
     // have grown, and the neighbours move aside).
-    let (rects, regions) = spiral_with_mins(work_area(), &layout, &ratios, &s.min_size);
+    let (rects, regions) = fitted(work_area(), &layout, &ratios, &s.min_size);
     for (i, hh) in layout.iter().enumerate() {
         // the new window appears in its tile instantly; the others glide to make room
         move_window(s, HWND(*hh as *mut _), rects[i], *hh != h);
@@ -1671,12 +1724,25 @@ fn retile() {
         // forget windows that are gone (their observed minimum size goes with them)
         s.min_size
             .retain(|h, _| unsafe { IsWindow(Some(HWND(*h as *mut _))) }.as_bool());
-        // forget windows that are gone; new windows join the current workspace
-        // (or the workspace a config rule asks for)
+        // forget windows that are gone; new windows join the current workspace, the workspace a
+        // config rule asks for, or - if the current workspace is full - the next workspace
         s.ws.retain(|h, _| present.contains(h));
+        let mut overflow: Option<(u8, isize)> = None;
         for w in &c.tileable {
-            s.ws.entry(w.hwnd.0 as isize)
-                .or_insert(w.rule_ws.unwrap_or(cur));
+            let h = w.hwnd.0 as isize;
+            if s.ws.contains_key(&h) {
+                continue;
+            }
+            let ws = w
+                .rule_ws
+                .unwrap_or_else(|| workspace_for_new_window(&s, cur));
+            s.ws.insert(h, ws);
+            if ws != cur && overflow.is_none() {
+                overflow = Some((ws, h));
+            }
+        }
+        if overflow.is_some() {
+            s.follow = overflow; // switch to the new workspace, like the taskbar "follow"
         }
         // keep known windows in their old order, drop the gone ones, append the new ones
         let mut order: Vec<isize> = s
@@ -1703,7 +1769,7 @@ fn retile() {
             rs.resize(layout.len().saturating_sub(1), 0.5);
             rs.clone()
         };
-        let (rects, regions) = spiral_with_mins(work_area(), &layout, &ratios, &s.min_size);
+        let (rects, regions) = fitted(work_area(), &layout, &ratios, &s.min_size);
         if layout == s.last && rects == s.rects {
             // same windows and same tiles: leave them alone (respects manual tweaks). The tile
             // comparison matters: a minimum size learned after the last layout (or after a new
@@ -1729,6 +1795,7 @@ fn retile() {
     });
     // the focused window may only now have joined the layout: make sure it has the border
     refresh_border();
+    sync_indicator();
 }
 
 fn focus_hwnd(h: isize) {
@@ -1738,6 +1805,7 @@ fn focus_hwnd(h: isize) {
     // our own SetForegroundWindow produces a foreground event that the hook skips
     // (WINEVENT_SKIPOWNPROCESS), so update the border here as well
     STATE.with(|s| update_border(&mut s.borrow_mut(), h));
+    sync_border();
 }
 
 fn focus_first_or_desktop() {
@@ -1938,12 +2006,14 @@ fn reload_config() {
     match config::load() {
         Ok(c) => {
             config::set(c);
+            overlay::set_border_color(config::border_color_value());
             let failed = register_hotkeys();
             STATE.with(|s| s.borrow_mut().last.clear());
             retile();
             tray::update();
             clear_border(); // the colour (or the on/off switch) may have changed
             refresh_border();
+            sync_indicator();
             log("config reloaded");
             if !failed.is_empty() {
                 notify(
@@ -2120,6 +2190,11 @@ fn start(interactive: bool) {
     }
     let failed = register_hotkeys();
     tray::create();
+    if !overlay::create_border() {
+        log("could not create the border overlay window");
+    }
+    overlay::set_border_color(config::border_color_value());
+    overlay::create_indicator();
     let anim_timer = create_anim_timer();
     STATE.with(|s| s.borrow_mut().anim_timer = anim_timer);
     log("tile-rs running");
@@ -2187,6 +2262,8 @@ fn start(interactive: bool) {
     clear_border();
     bring_everything_back();
     tray::remove();
+    overlay::destroy_indicator();
+    overlay::destroy_border();
     unsafe {
         let _ = CloseHandle(anim_timer);
     }

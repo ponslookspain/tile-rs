@@ -27,8 +27,14 @@ These keys go at the top of the file, before any `[section]`.
 | `easing` | `"out_cubic"` | Animation curve: `linear`, `out_quad`, `out_cubic`, `out_quart`, `in_out_cubic`. |
 | `resize_step` | `40` | Pixels per key press of the grow/shrink hotkeys, `1`–`500`. A held key uses smaller, instant steps. |
 | `fullscreen_windows` | `"minimize"` | What to do with a window that runs fullscreen or borderless fullscreen (a game, a video player): `"minimize"` hides it while its workspace is not shown and restores it when you switch back; `"ignore"` leaves it completely alone. |
-| `border` | `true` | Colour the border of the focused tiled window (**Windows 11 only**). |
+| `border` | `true` | Draw a border around the focused tiled window (drawn by tile-rs itself, so it works for every window). |
 | `border_color` | `"#8dbcff"` | Border colour, `"#rrggbb"`. |
+| `border_width` | `2` | Border thickness in pixels, `0`–`20`. |
+| `min_tile_width` | `480` | Comfortable minimum tile width; the master tile is narrowed to keep the rest at least this wide. |
+| `min_tile_height` | `320` | Comfortable minimum tile height. |
+| `max_tiles` | `0` | Maximum tiles per workspace; `0` = chosen automatically from the screen size. |
+| `auto_overflow` | `true` | When a workspace is full, open a new window on the next workspace and switch to it. |
+| `workspace_indicator` | `true` | Small row of workspace dots at the top of the screen. |
 
 ## Hotkeys
 

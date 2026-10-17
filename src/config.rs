@@ -84,6 +84,12 @@ struct RawConfig {
     resize_step: Option<u32>,
     border: Option<bool>,
     border_color: Option<String>,
+    border_width: Option<u32>,
+    min_tile_width: Option<i32>,
+    min_tile_height: Option<i32>,
+    max_tiles: Option<u32>,
+    auto_overflow: Option<bool>,
+    workspace_indicator: Option<bool>,
     #[serde(default)]
     hotkeys: BTreeMap<String, OneOrMany>,
     #[serde(default)]
@@ -101,10 +107,22 @@ pub struct Config {
     pub fullscreen_windows: FullscreenWindows,
     /// Pixels per keypress for the resize hotkeys.
     pub resize_step: u32,
-    /// Colour the border of the focused tiled window (Windows 11).
+    /// Draw a border around the focused tiled window.
     pub border: bool,
     /// Border colour as a Windows COLORREF (0x00BBGGRR).
     pub border_color: u32,
+    /// Border thickness in pixels (0 = no border).
+    pub border_width: u32,
+    /// Comfortable minimum tile size; the spiral shrinks the master tile to keep tiles at least
+    /// this big.
+    pub min_tile_width: i32,
+    pub min_tile_height: i32,
+    /// Maximum number of tiles per workspace; `0` = choose automatically from the screen size.
+    pub max_tiles: u32,
+    /// When a workspace is full, open new windows on the next workspace and switch to it.
+    pub auto_overflow: bool,
+    /// Show the small workspace indicator.
+    pub workspace_indicator: bool,
     /// (action, "alt+shift+h")
     pub bindings: Vec<(Action, String)>,
     pub rules: Vec<Rule>,
@@ -140,9 +158,21 @@ easing = "out_cubic"
 # How many pixels the "grow/shrink" hotkeys change a window's width/height per keypress.
 resize_step = 40
 
-# Coloured border around the focused tiled window (Windows 11 only).
+# Border around the focused tiled window (drawn by tile-rs itself).
 border = true
 border_color = "#8dbcff"
+border_width = 2
+
+# Comfortable minimum tile size: when windows would get smaller, tile-rs narrows the left (master)
+# tile to make room, and once a workspace is full new windows go to the next workspace.
+min_tile_width = 480
+min_tile_height = 320
+# Maximum tiles per workspace; 0 = pick automatically from the screen size.
+max_tiles = 0
+# When a workspace is full, open a new window on the next workspace and switch to it.
+auto_overflow = true
+# Small indicator at the top of the screen showing the workspaces (dots).
+workspace_indicator = true
 
 # Windows that run fullscreen or borderless fullscreen (games, video players): "minimize" hides
 # them while their workspace is not shown and restores them when you switch back; "ignore" leaves
@@ -277,6 +307,27 @@ pub fn migrate(text: &str) -> Option<String> {
     }
     if !has("border_color") {
         top.push("border_color = \"#8dbcff\"".into());
+    }
+    if !has("border_width") {
+        top.push("border_width = 2".into());
+    }
+    if !has("min_tile_width") {
+        top.push("# Comfortable minimum tile size (the master tile narrows to make room).".into());
+        top.push("min_tile_width = 480".into());
+    }
+    if !has("min_tile_height") {
+        top.push("min_tile_height = 320".into());
+    }
+    if !has("max_tiles") {
+        top.push("# Maximum tiles per workspace; 0 = automatic (from the screen size).".into());
+        top.push("max_tiles = 0".into());
+    }
+    if !has("auto_overflow") {
+        top.push("# Open a new window on the next workspace when this one is full.".into());
+        top.push("auto_overflow = true".into());
+    }
+    if !has("workspace_indicator") {
+        top.push("workspace_indicator = true".into());
     }
     if !has("fullscreen_windows") {
         top.push(
@@ -507,6 +558,25 @@ pub fn parse(text: &str) -> Result<Config, String> {
     }
     let border = raw.border.unwrap_or(true);
     let border_color = parse_color(raw.border_color.as_deref().unwrap_or("#8dbcff"))?;
+    let border_width = raw.border_width.unwrap_or(2);
+    if border_width > 20 {
+        return Err(format!(
+            "border_width = {border_width}: must be between 0 and 20"
+        ));
+    }
+    let min_tile_width = raw.min_tile_width.unwrap_or(480);
+    let min_tile_height = raw.min_tile_height.unwrap_or(320);
+    if !(100..=4000).contains(&min_tile_width) || !(100..=4000).contains(&min_tile_height) {
+        return Err(format!(
+            "min_tile_width/height = {min_tile_width}/{min_tile_height}: must be between 100 and 4000"
+        ));
+    }
+    let max_tiles = raw.max_tiles.unwrap_or(0);
+    if max_tiles > 20 {
+        return Err(format!("max_tiles = {max_tiles}: must be between 0 and 20"));
+    }
+    let auto_overflow = raw.auto_overflow.unwrap_or(true);
+    let workspace_indicator = raw.workspace_indicator.unwrap_or(true);
     let mut bindings = Vec::new();
     for (name, v) in raw.hotkeys {
         let action =
@@ -554,6 +624,12 @@ pub fn parse(text: &str) -> Result<Config, String> {
         resize_step,
         border,
         border_color,
+        border_width,
+        min_tile_width,
+        min_tile_height,
+        max_tiles,
+        auto_overflow,
+        workspace_indicator,
         bindings,
         rules: raw.rules,
     })
@@ -615,8 +691,38 @@ pub fn border() -> Option<u32> {
         .and_then(|c| c.border.then_some(c.border_color))
 }
 
+/// The configured border colour (COLORREF), whether or not the border is enabled.
+pub fn border_color_value() -> u32 {
+    cell().read().map(|c| c.border_color).unwrap_or(0xFFBC8D)
+}
+
 pub fn resize_step() -> i32 {
     cell().read().map(|c| c.resize_step as i32).unwrap_or(40)
+}
+
+pub fn border_width() -> i32 {
+    cell().read().map(|c| c.border_width as i32).unwrap_or(2)
+}
+
+/// (min tile width, min tile height)
+pub fn min_tile() -> (i32, i32) {
+    cell()
+        .read()
+        .map(|c| (c.min_tile_width, c.min_tile_height))
+        .unwrap_or((480, 320))
+}
+
+/// Configured maximum tiles per workspace (0 = automatic).
+pub fn max_tiles() -> u32 {
+    cell().read().map(|c| c.max_tiles).unwrap_or(0)
+}
+
+pub fn auto_overflow() -> bool {
+    cell().read().map(|c| c.auto_overflow).unwrap_or(true)
+}
+
+pub fn workspace_indicator() -> bool {
+    cell().read().map(|c| c.workspace_indicator).unwrap_or(true)
 }
 
 /// Just the rules (cheaper than cloning the whole config on hot paths).
@@ -639,6 +745,11 @@ mod tests {
         assert_eq!(c.resize_step, 40);
         assert!(c.border);
         assert_eq!(c.border_color, 0xFFBC8D); // #8dbcff as COLORREF (BGR)
+        assert_eq!(c.border_width, 2);
+        assert_eq!((c.min_tile_width, c.min_tile_height), (480, 320));
+        assert_eq!(c.max_tiles, 0);
+        assert!(c.auto_overflow);
+        assert!(c.workspace_indicator);
         assert!(c
             .bindings
             .iter()
@@ -707,7 +818,7 @@ mod tests {
         let once = migrate(OLD_CONFIG).unwrap();
         assert!(migrate(&once).is_none(), "second run must change nothing");
         // a key the user commented out or turned off is not re-added
-        let custom = "gap = 5\nanimations = false\n# animation_ms = 99\neasing = \"linear\"\nfullscreen_windows = \"ignore\"\nresize_step = 10\nborder = false\n# border_color = \"#112233\"\n\n[hotkeys]\n# grow_width = \"alt+plus\"\n# shrink_width = \"alt+minus\"\nminimize = \"alt+shift+m\"\nquit = \"ctrl+alt+q\"\n";
+        let custom = "gap = 5\nanimations = false\n# animation_ms = 99\neasing = \"linear\"\nfullscreen_windows = \"ignore\"\nresize_step = 10\nborder = false\n# border_color = \"#112233\"\nborder_width = 3\nmin_tile_width = 400\nmin_tile_height = 300\nmax_tiles = 6\nauto_overflow = false\nworkspace_indicator = false\n\n[hotkeys]\n# grow_width = \"alt+plus\"\n# shrink_width = \"alt+minus\"\nminimize = \"alt+shift+m\"\nquit = \"ctrl+alt+q\"\n";
         assert!(migrate(custom).is_none());
         // the freshly generated default never needs migrating
         assert!(migrate(&default_config()).is_none());

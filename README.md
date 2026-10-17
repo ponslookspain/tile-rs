@@ -22,7 +22,11 @@ everything lives in one small `.exe` with a tray icon and a plain-text config.
   workspaces.
 - **9 workspaces**, per-app rules (always float, open on workspace N), focus and swap by keyboard.
 - **Tray icon** with pause/resume, reload config, edit config, "Start with Windows", quit.
-- **Coloured border** around the focused window (Windows 11).
+- **Coloured border** around the focused window, drawn by tile-rs itself so it shows for every
+  window (including consoles like Windows PowerShell).
+- **Adapts to your screen**: tiles never get narrower than `min_tile_width`/`min_tile_height` (the
+  master tile narrows to make room), and once a workspace is full a new window opens on the next
+  workspace. A small row of dots at the top shows the workspaces.
 - Everything configurable in `config.toml`: hotkeys, gap, animation, rules.
 
 ## Requirements
@@ -129,8 +133,14 @@ animation_ms = 140
 easing = "out_cubic"     # animation curve: linear, out_quad, out_cubic, out_quart, in_out_cubic
 fullscreen_windows = "minimize"  # or "ignore": never touch fullscreen games
 resize_step = 40         # pixels per Alt+ / Alt- press
-border = true            # coloured border on the focused window (Windows 11)
+border = true            # coloured border on the focused window
 border_color = "#8dbcff"
+border_width = 2
+min_tile_width = 480     # tiles never get narrower; the master tile narrows to make room
+min_tile_height = 320
+max_tiles = 0            # tiles per workspace; 0 = automatic from the screen size
+auto_overflow = true     # a new window goes to the next workspace when this one is full
+workspace_indicator = true  # dots at the top showing the workspaces
 
 [hotkeys]
 focus_left = ["alt+h", "alt+left"]

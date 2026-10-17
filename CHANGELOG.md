@@ -9,6 +9,14 @@ follows [Semantic Versioning](https://semver.org) (see [docs/RELEASING.md](docs/
 ### Added
 - `easing` setting to pick the animation curve: `linear`, `out_quad`, `out_cubic` (the default),
   `out_quart`, `in_out_cubic`.
+- The focus border is now drawn by tile-rs itself (a small click-through overlay window) instead
+  of the Windows DWM border colour, so it always shows - including for console windows such as
+  Windows PowerShell. New `border_width` setting.
+- Adaptive layout: `min_tile_width`/`min_tile_height` keep tiles usable (the master tile is
+  narrowed to make room for the rest), `max_tiles` (`0` = automatic from the screen size) caps the
+  tiles per workspace, and `auto_overflow` moves a new window to the next workspace (and switches
+  to it) when the current workspace is full.
+- A small workspace indicator at the top of the screen (dots); `workspace_indicator` setting.
 - Fullscreen windows (games, video players — windows that cover a whole monitor without a title
   bar) now belong to a workspace: tile-rs minimizes them when you switch to another workspace and
   restores them when you come back. The new `fullscreen_windows = "minimize" | "ignore"` setting
