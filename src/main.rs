@@ -1060,7 +1060,10 @@ fn set_border(hwnd: isize, color: Option<u32>) {
 /// away from the window that had it before.
 fn update_border(s: &mut State, focus: isize) {
     let color = config::border();
-    let target = (color.is_some() && !s.paused && s.last.contains(&focus)).then_some(focus);
+    // a tiled window of the current workspace: in the applied layout, or (should the layout list
+    // be momentarily stale) a known window that belongs to the current workspace
+    let tiled = s.last.contains(&focus) || s.ws.get(&focus) == Some(&s.cur);
+    let target = (color.is_some() && !s.paused && tiled).then_some(focus);
     if s.border_on != target {
         if let Some(prev) = s.border_on.take() {
             set_border(prev, None);
