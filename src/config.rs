@@ -27,7 +27,10 @@ pub enum Action {
     Workspace(u8),
     MoveTo(u8),
     /// Grow / shrink the focused window's width (or height) by `resize_step` pixels.
-    Resize { width: bool, grow: bool },
+    Resize {
+        width: bool,
+        grow: bool,
+    },
     Pause,
     Quit,
     Retile,
@@ -62,6 +65,8 @@ struct RawConfig {
     animations: Option<bool>,
     animation_ms: Option<u32>,
     resize_step: Option<u32>,
+    border: Option<bool>,
+    border_color: Option<String>,
     #[serde(default)]
     hotkeys: BTreeMap<String, OneOrMany>,
     #[serde(default)]
@@ -75,6 +80,10 @@ pub struct Config {
     pub animation_ms: u32,
     /// Pixels per keypress for the resize hotkeys.
     pub resize_step: u32,
+    /// Colour the border of the focused tiled window (Windows 11).
+    pub border: bool,
+    /// Border colour as a Windows COLORREF (0x00BBGGRR).
+    pub border_color: u32,
     /// (action, "alt+shift+h")
     pub bindings: Vec<(Action, String)>,
     pub rules: Vec<Rule>,
@@ -93,7 +102,7 @@ pub fn config_path() -> PathBuf {
 
 pub fn default_config() -> String {
     let mut s = String::from(
-        r#"# tile-rs configuration.
+        r##"# tile-rs configuration.
 # After editing: save the file, then tray icon -> "Reload config".
 
 # Gap between windows and around the screen edges, in pixels.
@@ -107,10 +116,14 @@ animation_ms = 140
 # How many pixels the "grow/shrink" hotkeys change a window's width/height per keypress.
 resize_step = 40
 
+# Coloured border around the focused tiled window (Windows 11 only).
+border = true
+border_color = "#8dbcff"
+
 [hotkeys]
 # Format: "modifiers+key". Modifiers: alt, ctrl, shift, win.
 # Keys: a-z, 0-9, left, right, up, down, space, enter, tab, esc, f1-f12, minus, plus, comma, period.
-# One binding or a list of bindings. Delete a line to disable that hotkey.
+# One binding or a list of bindings. Put # in front of a line to disable that hotkey.
 focus_left  = ["alt+h", "alt+left"]
 focus_down  = ["alt+j", "alt+down"]
 focus_up    = ["alt+k", "alt+up"]
@@ -129,7 +142,7 @@ quit          = "ctrl+alt+q"
 # reload_config = "ctrl+alt+shift+r"
 # retile        = "alt+shift+t"
 # edit_config   = "alt+shift+c"
-"#,
+"##,
     );
     for n in 1..=WS_COUNT {
         s.push_str(&format!("workspace_{n} = \"alt+{n}\"\n"));
@@ -178,7 +191,8 @@ pub fn migrate(text: &str) -> Option<String> {
     let has = |key: &str| {
         text.lines().any(|l| {
             let t = l.trim_start().trim_start_matches('#').trim_start();
-            t.strip_prefix(key).is_some_and(|rest| rest.trim_start().starts_with('='))
+            t.strip_prefix(key)
+                .is_some_and(|rest| rest.trim_start().starts_with('='))
         })
     };
     let mut lines: Vec<String> = text.lines().map(|l| l.to_string()).collect();
@@ -204,7 +218,10 @@ pub fn migrate(text: &str) -> Option<String> {
     // new top-level settings go before the first [table]
     let mut top: Vec<String> = Vec::new();
     if !has("animations") {
-        top.push("# Smooth window movement (animation_ms: 0..1000; animations = false = instant).".into());
+        top.push(
+            "# Smooth window movement (animation_ms: 0..1000; animations = false = instant)."
+                .into(),
+        );
         top.push("animations = true".into());
     }
     if !has("animation_ms") {
@@ -213,6 +230,13 @@ pub fn migrate(text: &str) -> Option<String> {
     if !has("resize_step") {
         top.push("# Pixels per keypress for the grow/shrink hotkeys.".into());
         top.push("resize_step = 40".into());
+    }
+    if !has("border") {
+        top.push("# Coloured border around the focused tiled window (Windows 11 only).".into());
+        top.push("border = true".into());
+    }
+    if !has("border_color") {
+        top.push("border_color = \"#8dbcff\"".into());
     }
     if !top.is_empty() {
         let at = lines
@@ -237,8 +261,12 @@ pub fn migrate(text: &str) -> Option<String> {
 /// Runs `migrate` on the config file (keeping a copy as config.toml.bak). True if it changed.
 pub fn migrate_file() -> bool {
     let p = config_path();
-    let Ok(text) = std::fs::read_to_string(&p) else { return false };
-    let Some(new) = migrate(&text) else { return false };
+    let Ok(text) = std::fs::read_to_string(&p) else {
+        return false;
+    };
+    let Some(new) = migrate(&text) else {
+        return false;
+    };
     // never write something we cannot read back
     if parse(&new).is_err() {
         return false;
@@ -256,7 +284,12 @@ fn parse_action(name: &str) -> Option<Action> {
         "right" => Some(Dir::Right),
         _ => None,
     };
-    let ws = |s: &str| s.parse::<u8>().ok().filter(|n| (1..=WS_COUNT).contains(n)).map(|n| n - 1);
+    let ws = |s: &str| {
+        s.parse::<u8>()
+            .ok()
+            .filter(|n| (1..=WS_COUNT).contains(n))
+            .map(|n| n - 1)
+    };
     if let Some(d) = n.strip_prefix("focus_") {
         return dir(d).map(Action::Focus);
     }
@@ -270,10 +303,22 @@ fn parse_action(name: &str) -> Option<Action> {
         return ws(i).map(Action::Workspace);
     }
     match n.as_str() {
-        "grow_width" => Some(Action::Resize { width: true, grow: true }),
-        "shrink_width" => Some(Action::Resize { width: true, grow: false }),
-        "grow_height" => Some(Action::Resize { width: false, grow: true }),
-        "shrink_height" => Some(Action::Resize { width: false, grow: false }),
+        "grow_width" => Some(Action::Resize {
+            width: true,
+            grow: true,
+        }),
+        "shrink_width" => Some(Action::Resize {
+            width: true,
+            grow: false,
+        }),
+        "grow_height" => Some(Action::Resize {
+            width: false,
+            grow: true,
+        }),
+        "shrink_height" => Some(Action::Resize {
+            width: false,
+            grow: false,
+        }),
         "pause" => Some(Action::Pause),
         "quit" => Some(Action::Quit),
         "retile" => Some(Action::Retile),
@@ -299,7 +344,10 @@ pub fn parse_hotkey(spec: &str) -> Result<(HOT_KEY_MODIFIERS, u32), String> {
                 if key.is_some() {
                     return Err(format!("\"{spec}\": more than one key"));
                 }
-                key = Some(parse_key(other).ok_or_else(|| format!("unknown key \"{other}\" in \"{spec}\""))?);
+                key = Some(
+                    parse_key(other)
+                        .ok_or_else(|| format!("unknown key \"{other}\" in \"{spec}\""))?,
+                );
             }
         }
     }
@@ -349,6 +397,19 @@ fn parse_key(k: &str) -> Option<u32> {
     })
 }
 
+/// "#rrggbb" (or "rrggbb") -> Windows COLORREF (0x00BBGGRR)
+pub fn parse_color(s: &str) -> Result<u32, String> {
+    let h = s.trim().trim_start_matches('#');
+    if h.len() != 6 || !h.chars().all(|c| c.is_ascii_hexdigit()) {
+        return Err(format!(
+            "border_color = \"{s}\": expected a colour like \"#8dbcff\""
+        ));
+    }
+    let v = u32::from_str_radix(h, 16).map_err(|e| e.to_string())?;
+    let (r, g, b) = ((v >> 16) & 0xFF, (v >> 8) & 0xFF, v & 0xFF);
+    Ok((b << 16) | (g << 8) | r)
+}
+
 pub fn parse(text: &str) -> Result<Config, String> {
     let raw: RawConfig = toml::from_str(text).map_err(|e| e.to_string())?;
     let gap = raw.gap.unwrap_or(10);
@@ -357,16 +418,23 @@ pub fn parse(text: &str) -> Result<Config, String> {
     }
     let animation_ms = raw.animation_ms.unwrap_or(140);
     if animation_ms > 1000 {
-        return Err(format!("animation_ms = {animation_ms}: must be between 0 and 1000"));
+        return Err(format!(
+            "animation_ms = {animation_ms}: must be between 0 and 1000"
+        ));
     }
     let animations = raw.animations.unwrap_or(true) && animation_ms > 0;
     let resize_step = raw.resize_step.unwrap_or(40);
     if !(1..=500).contains(&resize_step) {
-        return Err(format!("resize_step = {resize_step}: must be between 1 and 500"));
+        return Err(format!(
+            "resize_step = {resize_step}: must be between 1 and 500"
+        ));
     }
+    let border = raw.border.unwrap_or(true);
+    let border_color = parse_color(raw.border_color.as_deref().unwrap_or("#8dbcff"))?;
     let mut bindings = Vec::new();
     for (name, v) in raw.hotkeys {
-        let action = parse_action(&name).ok_or_else(|| format!("[hotkeys]: unknown action \"{name}\""))?;
+        let action =
+            parse_action(&name).ok_or_else(|| format!("[hotkeys]: unknown action \"{name}\""))?;
         let specs = match v {
             OneOrMany::One(s) => vec![s],
             OneOrMany::Many(v) => v,
@@ -379,24 +447,44 @@ pub fn parse(text: &str) -> Result<Config, String> {
     for (i, r) in raw.rules.iter().enumerate() {
         if let Some(w) = r.workspace {
             if !(1..=WS_COUNT).contains(&w) {
-                return Err(format!("rule #{}: workspace must be 1..{}", i + 1, WS_COUNT));
+                return Err(format!(
+                    "rule #{}: workspace must be 1..{}",
+                    i + 1,
+                    WS_COUNT
+                ));
             }
         }
         if let Some(a) = &r.action {
             if a != "float" {
-                return Err(format!("rule #{}: unknown action \"{a}\" (only \"float\")", i + 1));
+                return Err(format!(
+                    "rule #{}: unknown action \"{a}\" (only \"float\")",
+                    i + 1
+                ));
             }
         }
         if r.process.is_none() && r.class.is_none() && r.title.is_none() {
-            return Err(format!("rule #{}: needs at least one of process / class / title", i + 1));
+            return Err(format!(
+                "rule #{}: needs at least one of process / class / title",
+                i + 1
+            ));
         }
     }
-    Ok(Config { gap, animations, animation_ms, resize_step, bindings, rules: raw.rules })
+    Ok(Config {
+        gap,
+        animations,
+        animation_ms,
+        resize_step,
+        border,
+        border_color,
+        bindings,
+        rules: raw.rules,
+    })
 }
 
 pub fn load() -> Result<Config, String> {
     let p = config_path();
-    let text = std::fs::read_to_string(&p).map_err(|e| format!("cannot read {}: {e}", p.display()))?;
+    let text =
+        std::fs::read_to_string(&p).map_err(|e| format!("cannot read {}: {e}", p.display()))?;
     parse(&text)
 }
 
@@ -422,7 +510,18 @@ pub fn gap() -> i32 {
 
 /// (animations enabled, duration in ms)
 pub fn animation() -> (bool, u32) {
-    cell().read().map(|c| (c.animations, c.animation_ms)).unwrap_or((true, 140))
+    cell()
+        .read()
+        .map(|c| (c.animations, c.animation_ms))
+        .unwrap_or((true, 140))
+}
+
+/// The border colour (COLORREF) if the border is enabled.
+pub fn border() -> Option<u32> {
+    cell()
+        .read()
+        .ok()
+        .and_then(|c| c.border.then_some(c.border_color))
 }
 
 pub fn resize_step() -> i32 {
@@ -445,19 +544,32 @@ mod tests {
         assert!(c.animations);
         assert_eq!(c.animation_ms, 140);
         assert_eq!(c.resize_step, 40);
+        assert!(c.border);
+        assert_eq!(c.border_color, 0xFFBC8D); // #8dbcff as COLORREF (BGR)
         assert!(c.bindings.iter().any(|(a, s)| {
-            *a == Action::Resize { width: true, grow: true } && s == "alt+plus"
+            *a == Action::Resize {
+                width: true,
+                grow: true,
+            } && s == "alt+plus"
         }));
         assert!(c.bindings.iter().any(|(a, s)| {
-            *a == Action::Resize { width: true, grow: false } && s == "alt+minus"
+            *a == Action::Resize {
+                width: true,
+                grow: false,
+            } && s == "alt+minus"
         }));
         // 16 direction bindings + 18 workspace bindings + 4 resize + pause x2 + quit
         assert!(c.bindings.len() >= 16 + 18 + 4 + 3);
         assert_eq!(c.rules.len(), 1);
-        assert!(c.bindings.iter().any(|(a, s)| *a == Action::Workspace(0) && s == "alt+1"));
-        assert!(c.bindings.iter().any(|(a, s)| *a == Action::MoveTo(8) && s == "alt+shift+9"));
+        assert!(c
+            .bindings
+            .iter()
+            .any(|(a, s)| *a == Action::Workspace(0) && s == "alt+1"));
+        assert!(c
+            .bindings
+            .iter()
+            .any(|(a, s)| *a == Action::MoveTo(8) && s == "alt+shift+9"));
     }
-
 
     /// What the first versions generated (no animations, no resize hotkeys).
     const OLD_CONFIG: &str = "# tile-rs configuration.\n\ngap = 10\n\n[hotkeys]\nfocus_left  = [\"alt+h\", \"alt+left\"]\npause = \"ctrl+alt+p\"\nquit = \"ctrl+alt+q\"\n\n[[rules]]\nprocess = \"Taskmgr\"\naction = \"float\"\n";
@@ -470,10 +582,16 @@ mod tests {
         assert_eq!(c.animation_ms, 140);
         assert_eq!(c.resize_step, 40);
         assert!(c.bindings.iter().any(|(a, s)| {
-            *a == Action::Resize { width: true, grow: true } && s == "alt+plus"
+            *a == Action::Resize {
+                width: true,
+                grow: true,
+            } && s == "alt+plus"
         }));
         assert!(c.bindings.iter().any(|(a, s)| {
-            *a == Action::Resize { width: true, grow: false } && s == "alt+minus"
+            *a == Action::Resize {
+                width: true,
+                grow: false,
+            } && s == "alt+minus"
         }));
         // old content is untouched
         assert!(new.contains("focus_left  = [\"alt+h\", \"alt+left\"]"));
@@ -486,7 +604,7 @@ mod tests {
         let once = migrate(OLD_CONFIG).unwrap();
         assert!(migrate(&once).is_none(), "second run must change nothing");
         // a key the user commented out or turned off is not re-added
-        let custom = "gap = 5\nanimations = false\n# animation_ms = 99\nresize_step = 10\n\n[hotkeys]\n# grow_width = \"alt+plus\"\n# shrink_width = \"alt+minus\"\nquit = \"ctrl+alt+q\"\n";
+        let custom = "gap = 5\nanimations = false\n# animation_ms = 99\nresize_step = 10\nborder = false\n# border_color = \"#112233\"\n\n[hotkeys]\n# grow_width = \"alt+plus\"\n# shrink_width = \"alt+minus\"\nquit = \"ctrl+alt+q\"\n";
         assert!(migrate(custom).is_none());
         // the freshly generated default never needs migrating
         assert!(migrate(&default_config()).is_none());
@@ -496,8 +614,22 @@ mod tests {
     fn migrate_keeps_crlf_line_endings() {
         let crlf = OLD_CONFIG.replace('\n', "\r\n");
         let new = migrate(&crlf).unwrap();
-        assert!(!new.replace("\r\n", "").contains('\n'), "only CRLF line breaks");
+        assert!(
+            !new.replace("\r\n", "").contains('\n'),
+            "only CRLF line breaks"
+        );
         assert!(parse(&new).is_ok());
+    }
+
+    #[test]
+    fn colors_parse() {
+        assert_eq!(parse_color("#ff0000").unwrap(), 0x0000FF); // red in COLORREF
+        assert_eq!(parse_color("00FF00").unwrap(), 0x00FF00);
+        assert_eq!(parse_color(" #8DBCFF ").unwrap(), 0xFFBC8D);
+        assert!(parse_color("#fff").is_err());
+        assert!(parse_color("#gg0000").is_err());
+        assert!(parse("border_color = \"nope\"").is_err());
+        assert!(!parse("border = false").unwrap().border);
     }
 
     #[test]
@@ -523,7 +655,9 @@ mod tests {
         assert!(parse("resize_step = 900").is_err());
         assert!(!parse("animations = false").unwrap().animations);
         assert!(!parse("animation_ms = 0").unwrap().animations);
-        assert!(parse("[hotkeys]\nteleport = \"alt+t\"").unwrap_err().contains("teleport"));
+        assert!(parse("[hotkeys]\nteleport = \"alt+t\"")
+            .unwrap_err()
+            .contains("teleport"));
         assert!(parse("[[rules]]\naction = \"float\"").is_err()); // no matcher
         assert!(parse("[[rules]]\nprocess = \"x\"\nworkspace = 12").is_err());
         assert!(parse("this is not toml").is_err());
