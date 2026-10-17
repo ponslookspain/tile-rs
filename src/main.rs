@@ -11,6 +11,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod config;
+mod geometry;
 mod tray;
 
 use std::cell::RefCell;
@@ -29,7 +30,8 @@ use windows::Win32::Foundation::{
     CloseHandle, GetLastError, ERROR_ALREADY_EXISTS, HWND, LPARAM, POINT, RECT,
 };
 use windows::Win32::Graphics::Dwm::{
-    DwmGetWindowAttribute, DWMWA_CLOAKED, DWMWA_EXTENDED_FRAME_BOUNDS,
+    DwmGetWindowAttribute, DwmSetWindowAttribute, DWMWA_BORDER_COLOR, DWMWA_CLOAKED,
+    DWMWA_EXTENDED_FRAME_BOUNDS,
 };
 use windows::Win32::Graphics::Gdi::{
     GetMonitorInfoW, MonitorFromPoint, MONITORINFO, MONITOR_DEFAULTTOPRIMARY,
@@ -44,9 +46,7 @@ use windows::Win32::UI::Accessibility::{SetWinEventHook, HWINEVENTHOOK};
 use windows::Win32::UI::HiDpi::{
     SetProcessDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
 };
-use windows::Win32::UI::Input::KeyboardAndMouse::{
-    RegisterHotKey, UnregisterHotKey, MOD_NOREPEAT,
-};
+use windows::Win32::UI::Input::KeyboardAndMouse::{RegisterHotKey, UnregisterHotKey, MOD_NOREPEAT};
 use windows::Win32::UI::WindowsAndMessaging::{
     DispatchMessageW, EnumWindows, GetClassNameW, GetCursorPos, GetForegroundWindow, GetMessageW,
     GetShellWindow, GetWindow, GetWindowLongW, GetWindowRect, GetWindowTextW,
@@ -63,6 +63,10 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 
 use config::{Action, Dir, Rule, WS_COUNT};
+use geometry::{
+    apply_resize, ease_out_cubic, effective_step, lerp_rect, neighbour, same_rect, spiral,
+    split_for, MAX_RATIO, MIN_RATIO, RESIZE_PX,
+};
 
 /// Where windows of inactive workspaces are parked (the same spot Windows uses for minimized ones).
 const PARK_X: i32 = -32000;
@@ -99,7 +103,11 @@ pub fn log_file() -> &'static PathBuf {
 }
 
 pub fn log(msg: impl AsRef<str>) {
-    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(log_file()) {
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(log_file())
+    {
         let _ = writeln!(f, "{}", msg.as_ref());
     }
 }
@@ -111,8 +119,19 @@ fn log_reset() {
 /// Message box. Returns true if the user pressed Yes (only meaningful when `question`).
 pub fn msgbox(title: &str, text: &str, question: bool) -> bool {
     let (t, x) = (tray::wide(title), tray::wide(text));
-    let flags = if question { MB_YESNO | MB_ICONQUESTION } else { MB_OK | MB_ICONINFORMATION };
-    unsafe { MessageBoxW(None, PCWSTR(x.as_ptr()), PCWSTR(t.as_ptr()), flags | MB_TOPMOST) == IDYES }
+    let flags = if question {
+        MB_YESNO | MB_ICONQUESTION
+    } else {
+        MB_OK | MB_ICONINFORMATION
+    };
+    unsafe {
+        MessageBoxW(
+            None,
+            PCWSTR(x.as_ptr()),
+            PCWSTR(t.as_ptr()),
+            flags | MB_TOPMOST,
+        ) == IDYES
+    }
 }
 
 /// Non-blocking message box (own thread), so the main message loop keeps running.
@@ -146,9 +165,13 @@ pub fn autostart_enabled() -> bool {
 
 pub fn set_autostart(on: bool) -> bool {
     if on {
-        let Ok(exe) = std::env::current_exe() else { return false };
+        let Ok(exe) = std::env::current_exe() else {
+            return false;
+        };
         let value = format!("\"{}\" --autostart", exe.display());
-        reg(&["add", RUN_KEY, "/v", "tile-rs", "/t", "REG_SZ", "/d", &value, "/f"])
+        reg(&[
+            "add", RUN_KEY, "/v", "tile-rs", "/t", "REG_SZ", "/d", &value, "/f",
+        ])
     } else {
         !autostart_enabled() || reg(&["delete", RUN_KEY, "/v", "tile-rs", "/f"])
     }
@@ -182,13 +205,19 @@ fn process_name(pid: u32) -> String {
         };
         let mut buf = [0u16; 520];
         let mut len = buf.len() as u32;
-        let ok = QueryFullProcessImageNameW(h, PROCESS_NAME_WIN32, PWSTR(buf.as_mut_ptr()), &mut len).is_ok();
+        let ok =
+            QueryFullProcessImageNameW(h, PROCESS_NAME_WIN32, PWSTR(buf.as_mut_ptr()), &mut len)
+                .is_ok();
         let _ = CloseHandle(h);
         if !ok {
             return String::new();
         }
         let path = String::from_utf16_lossy(&buf[..len as usize]);
-        let file = path.rsplit(['\\', '/']).next().unwrap_or("").to_ascii_lowercase();
+        let file = path
+            .rsplit(['\\', '/'])
+            .next()
+            .unwrap_or("")
+            .to_ascii_lowercase();
         file.strip_suffix(".exe").unwrap_or(&file).to_string()
     }
 }
@@ -291,7 +320,13 @@ fn win_info(hwnd: HWND) -> Win {
     unsafe {
         GetWindowThreadProcessId(hwnd, Some(&mut pid));
     }
-    Win { hwnd, title, class, pid, rule_ws: None }
+    Win {
+        hwnd,
+        title,
+        class,
+        pid,
+        rule_ws: None,
+    }
 }
 
 enum Verdict {
@@ -339,7 +374,11 @@ unsafe extern "system" fn enum_proc(hwnd: HWND, lparam: LPARAM) -> BOOL {
 }
 
 fn collect() -> Collector {
-    let mut c = Collector { tileable: vec![], skipped: vec![], rules: config::rules() };
+    let mut c = Collector {
+        tileable: vec![],
+        skipped: vec![],
+        rules: config::rules(),
+    };
     unsafe {
         let _ = EnumWindows(Some(enum_proc), LPARAM(&mut c as *mut _ as isize));
     }
@@ -350,7 +389,10 @@ fn collect() -> Collector {
 fn work_area() -> RECT {
     unsafe {
         let mon = MonitorFromPoint(POINT { x: 0, y: 0 }, MONITOR_DEFAULTTOPRIMARY);
-        let mut mi = MONITORINFO { cbSize: size_of::<MONITORINFO>() as u32, ..Default::default() };
+        let mut mi = MONITORINFO {
+            cbSize: size_of::<MONITORINFO>() as u32,
+            ..Default::default()
+        };
         let _ = GetMonitorInfoW(mon, &mut mi);
         mi.rcWork
     }
@@ -359,119 +401,6 @@ fn work_area() -> RECT {
 // ---------------------------------------------------------------------------
 // layout
 // ---------------------------------------------------------------------------
-
-/// Spiral / dwindle: the first window takes the left half of the free area, the next takes
-/// the top half of what is left, then left again, and so on (strict alternation); the last
-/// window takes the remainder.
-///
-/// `ratios[i]` is the share (0..1) of split `i` that window `i` gets (default 0.5); the user
-/// changes them by dragging window edges.
-/// Returns (tile of every window, free region that window `i` was cut out of).
-fn spiral(area: RECT, n: usize, ratios: &[f32]) -> (Vec<RECT>, Vec<RECT>) {
-    let gap = config::gap();
-    let mut tiles = Vec::with_capacity(n);
-    let mut regions = Vec::with_capacity(n);
-    if n == 0 {
-        return (tiles, regions);
-    }
-    let mut r = RECT {
-        left: area.left + gap,
-        top: area.top + gap,
-        right: area.right - gap,
-        bottom: area.bottom - gap,
-    };
-    for i in 0..n {
-        regions.push(r);
-        if i == n - 1 {
-            tiles.push(r);
-            break;
-        }
-        let ratio = ratios.get(i).copied().unwrap_or(0.5).clamp(MIN_RATIO, MAX_RATIO);
-        let horizontal = i % 2 == 0; // strict alternation: right, down, right, down, ...
-        if horizontal {
-            let mid = r.left + ((r.right - r.left - gap) as f32 * ratio) as i32;
-            tiles.push(RECT { left: r.left, top: r.top, right: mid, bottom: r.bottom });
-            r.left = mid + gap;
-        } else {
-            let mid = r.top + ((r.bottom - r.top - gap) as f32 * ratio) as i32;
-            tiles.push(RECT { left: r.left, top: r.top, right: r.right, bottom: mid });
-            r.top = mid + gap;
-        }
-    }
-    (tiles, regions)
-}
-
-const MIN_RATIO: f32 = 0.12;
-const MAX_RATIO: f32 = 0.88;
-/// Pixels an edge must move before it counts as "the user is resizing".
-const RESIZE_PX: i32 = 6;
-
-/// The user dragged edges of window `k`; turn that into new split ratios.
-/// In the spiral, window `k`'s edges belong to these splits (j = split index):
-///   k even: left -> j=k-2, top -> j=k-1, right -> j=k      (bottom is the screen edge)
-///   k odd : left -> j=k-1, top -> j=k-2, bottom -> j=k     (right is the screen edge)
-/// Returns true if any ratio changed.
-fn apply_resize(
-    ratios: &mut Vec<f32>,
-    tiles: &[RECT],
-    regions: &[RECT],
-    k: usize,
-    new: RECT,
-) -> bool {
-    let n = tiles.len();
-    if k >= n || regions.len() != n {
-        return false;
-    }
-    let gap = config::gap();
-    let t = tiles[k];
-    if ratios.len() < n.saturating_sub(1) {
-        ratios.resize(n.saturating_sub(1), 0.5);
-    }
-    let moved = |a: i32, b: i32| (a - b).abs() > 3;
-    let mut changed = false;
-
-    // set the ratio of split j so that window j's far edge (right for even j, bottom for odd j)
-    // lands at `edge`
-    let mut set = |j: usize, edge: i32, ratios: &mut Vec<f32>| {
-        if j >= n - 1 {
-            return;
-        }
-        let q = regions[j];
-        let r = if j % 2 == 0 {
-            (edge - q.left) as f32 / ((q.right - q.left - gap).max(1)) as f32
-        } else {
-            (edge - q.top) as f32 / ((q.bottom - q.top - gap).max(1)) as f32
-        }
-        .clamp(MIN_RATIO, MAX_RATIO);
-        if (r - ratios[j]).abs() > 0.002 {
-            ratios[j] = r;
-            changed = true;
-        }
-    };
-
-    if k % 2 == 0 {
-        if k >= 2 && moved(new.left, t.left) {
-            set(k - 2, new.left - gap, ratios);
-        }
-        if k >= 1 && moved(new.top, t.top) {
-            set(k - 1, new.top - gap, ratios);
-        }
-        if k < n - 1 && moved(new.right, t.right) {
-            set(k, new.right, ratios);
-        }
-    } else {
-        if moved(new.left, t.left) {
-            set(k - 1, new.left - gap, ratios);
-        }
-        if k >= 3 && moved(new.top, t.top) {
-            set(k - 2, new.top - gap, ratios);
-        }
-        if k < n - 1 && moved(new.bottom, t.bottom) {
-            set(k, new.bottom, ratios);
-        }
-    }
-    changed
-}
 
 fn visible_rect(hwnd: HWND) -> Option<RECT> {
     let mut vis = RECT::default();
@@ -505,7 +434,12 @@ fn place(hwnd: HWND, target: RECT) {
         )
         .is_ok();
         let (dl, dt, dr, db) = if ok {
-            (vis.left - win.left, vis.top - win.top, win.right - vis.right, win.bottom - vis.bottom)
+            (
+                vis.left - win.left,
+                vis.top - win.top,
+                win.right - vis.right,
+                win.bottom - vis.bottom,
+            )
         } else {
             (0, 0, 0, 0)
         };
@@ -597,6 +531,8 @@ struct State {
     ignore_until: Option<Instant>,
     /// When the last resize hotkey fired (to recognise a held key).
     last_resize: Option<Instant>,
+    /// Window that currently has our coloured border.
+    border_on: Option<isize>,
     /// Windows currently gliding to their new tiles.
     anims: Vec<Anim>,
     /// Frame timer of the animations (0 = none running).
@@ -624,32 +560,6 @@ struct Anim {
     /// invisible resize border: (left, top, right, bottom)
     border: (i32, i32, i32, i32),
     t0: Instant,
-}
-
-/// Fast start, gentle stop.
-fn ease_out_cubic(t: f32) -> f32 {
-    let u = 1.0 - t.clamp(0.0, 1.0);
-    1.0 - u * u * u
-}
-
-fn lerp_i(a: i32, b: i32, t: f32) -> i32 {
-    a + ((b - a) as f32 * t).round() as i32
-}
-
-fn lerp_rect(a: &RECT, b: &RECT, t: f32) -> RECT {
-    RECT {
-        left: lerp_i(a.left, b.left, t),
-        top: lerp_i(a.top, b.top, t),
-        right: lerp_i(a.right, b.right, t),
-        bottom: lerp_i(a.bottom, b.bottom, t),
-    }
-}
-
-fn same_rect(a: &RECT, b: &RECT, tol: i32) -> bool {
-    (a.left - b.left).abs() <= tol
-        && (a.top - b.top).abs() <= tol
-        && (a.right - b.right).abs() <= tol
-        && (a.bottom - b.bottom).abs() <= tol
 }
 
 /// Put the *visible* frame of a window at `vis`, given its invisible border.
@@ -689,8 +599,19 @@ fn move_window(s: &mut State, hwnd: HWND, target: RECT, animate: bool) {
     unsafe {
         let _ = GetWindowRect(hwnd, &mut win);
     }
-    let border = (from.left - win.left, from.top - win.top, win.right - from.right, win.bottom - from.bottom);
-    s.anims.push(Anim { hwnd: h, from, to: target, border, t0: Instant::now() });
+    let border = (
+        from.left - win.left,
+        from.top - win.top,
+        win.right - from.right,
+        win.bottom - from.bottom,
+    );
+    s.anims.push(Anim {
+        hwnd: h,
+        from,
+        to: target,
+        border,
+        t0: Instant::now(),
+    });
     if s.anim_timer == 0 {
         unsafe {
             timeBeginPeriod(1); // ask for a 1 ms timer so frames are not rounded to 15.6 ms
@@ -715,7 +636,11 @@ fn anim_tick() {
             if t >= 1.0 {
                 set_frame(a.hwnd, &a.to, a.border); // exact final position
             } else {
-                set_frame(a.hwnd, &lerp_rect(&a.from, &a.to, ease_out_cubic(t)), a.border);
+                set_frame(
+                    a.hwnd,
+                    &lerp_rect(&a.from, &a.to, ease_out_cubic(t)),
+                    a.border,
+                );
                 keep.push(a);
             }
         }
@@ -728,6 +653,63 @@ fn anim_tick() {
                 timeEndPeriod(1);
             }
             s.anim_timer = 0;
+        }
+    });
+}
+
+// ---------------------------------------------------------------------------
+// focus border
+// ---------------------------------------------------------------------------
+
+/// DWM value meaning "use the system's default border colour".
+const DWM_COLOR_DEFAULT: u32 = 0xFFFF_FFFF;
+
+fn set_border(hwnd: isize, color: Option<u32>) {
+    let hw = HWND(hwnd as *mut _);
+    if !unsafe { IsWindow(Some(hw)) }.as_bool() {
+        return;
+    }
+    let c = color.unwrap_or(DWM_COLOR_DEFAULT);
+    unsafe {
+        // Windows 11 only; on older systems the call just fails and nothing happens
+        let _ = DwmSetWindowAttribute(
+            hw,
+            DWMWA_BORDER_COLOR,
+            &c as *const u32 as *const _,
+            size_of::<u32>() as u32,
+        );
+    }
+}
+
+/// Colour the border of `focus` (if it is a tiled window of the current workspace) and take it
+/// away from the window that had it before.
+fn update_border(s: &mut State, focus: isize) {
+    let color = config::border();
+    let target = (color.is_some() && !s.paused && s.last.contains(&focus)).then_some(focus);
+    if s.border_on == target {
+        return;
+    }
+    if let Some(prev) = s.border_on.take() {
+        set_border(prev, None);
+    }
+    if let (Some(h), Some(c)) = (target, color) {
+        set_border(h, Some(c));
+        s.border_on = Some(h);
+    }
+}
+
+/// Re-evaluate which window should have the border (after layout / pause / config changes).
+fn refresh_border() {
+    let fg = unsafe { GetForegroundWindow() }.0 as isize;
+    STATE.with(|s| update_border(&mut s.borrow_mut(), fg));
+}
+
+/// Remove our border colour from every window (pause, quit, colour change).
+fn clear_border() {
+    STATE.with(|s| {
+        let mut s = s.borrow_mut();
+        if let Some(prev) = s.border_on.take() {
+            set_border(prev, None);
         }
     });
 }
@@ -776,7 +758,10 @@ fn register_hotkeys() -> Vec<String> {
     let cfg = config::current();
     let (old, paused) = STATE.with(|s| {
         let s = s.borrow();
-        (s.hotkeys.iter().map(|(i, _)| *i).collect::<Vec<_>>(), s.paused)
+        (
+            s.hotkeys.iter().map(|(i, _)| *i).collect::<Vec<_>>(),
+            s.paused,
+        )
     });
     for id in old {
         unsafe {
@@ -799,11 +784,19 @@ fn register_hotkeys() -> Vec<String> {
                 let id = next;
                 next += 1;
                 // resize keys keep firing while held; everything else fires once per press
-                let flags = if matches!(action, Action::Resize { .. }) { mods } else { mods | MOD_NOREPEAT };
+                let flags = if matches!(action, Action::Resize { .. }) {
+                    mods
+                } else {
+                    mods | MOD_NOREPEAT
+                };
                 if unsafe { RegisterHotKey(None, id, flags, vk) }.is_ok() {
                     new.push((id, *action));
                 } else {
-                    failed.push(format!("{} = {} (already used by another program?)", action_name(*action), spec));
+                    failed.push(format!(
+                        "{} = {} (already used by another program?)",
+                        action_name(*action),
+                        spec
+                    ));
                 }
             }
             Err(e) => failed.push(e),
@@ -919,7 +912,7 @@ unsafe extern "system" fn on_event(
                     return;
                 }
                 // a tiled window moved/resized outside of a drag (and not because of us)
-                let quiet = s.ignore_until.map_or(true, |t| Instant::now() >= t);
+                let quiet = s.ignore_until.is_none_or(|t| Instant::now() >= t);
                 if !quiet || !s.last.contains(&h) {
                     return;
                 }
@@ -935,8 +928,10 @@ unsafe extern "system" fn on_event(
                 }
             }
             EVENT_SYSTEM_FOREGROUND => {
-                let recently =
-                    s.last_switch.is_some_and(|t| t.elapsed() < Duration::from_millis(500));
+                update_border(&mut s, h);
+                let recently = s
+                    .last_switch
+                    .is_some_and(|t| t.elapsed() < Duration::from_millis(500));
                 match s.ws.get(&h) {
                     Some(&w) if w != s.cur && !s.paused && !recently => {
                         s.follow = Some((w, h));
@@ -973,44 +968,6 @@ fn off_target(hwnd: HWND, target: &RECT) -> bool {
         || (vis.bottom - target.bottom).abs() > t
 }
 
-/// Which split controls the width (or height) of window `k` among `n` windows, and in which
-/// direction: returns (split index, +1 if raising that ratio makes the window larger, else -1).
-///   width : k even, not last -> own split k (right edge moves)   k even, last -> split k-2
-///           k odd            -> split k-1 (left edge moves)
-///   height: k odd, not last  -> own split k (bottom edge moves)  k odd, last   -> split k-2
-///           k even >= 2      -> split k-1 (top edge moves)
-fn split_for(k: usize, n: usize, width: bool) -> Option<(usize, f32)> {
-    if n < 2 || k >= n {
-        return None;
-    }
-    let last = k == n - 1;
-    let r = if width {
-        match (k % 2 == 0, last) {
-            (true, false) => (k, 1.0),
-            (true, true) if k >= 2 => (k - 2, -1.0),
-            (false, _) => (k - 1, -1.0),
-            _ => return None,
-        }
-    } else {
-        match (k % 2 == 1, last) {
-            (true, false) => (k, 1.0),
-            (true, true) if k >= 3 => (k - 2, -1.0),
-            (false, _) if k >= 2 => (k - 1, -1.0),
-            _ => return None,
-        }
-    };
-    Some(r)
-}
-
-/// A key held down repeats faster than a person taps it: use smaller steps then.
-fn effective_step(step: i32, held: bool) -> i32 {
-    if held {
-        (step / 3).max(4)
-    } else {
-        step
-    }
-}
-
 /// Two resize hotkeys closer together than this are treated as one held key.
 const HOLD_GAP_MS: u128 = 200;
 
@@ -1028,12 +985,22 @@ fn resize_focused(width: bool, grow: bool) {
             return;
         }
         let n = s.last.len();
-        let Some(k) = s.last.iter().position(|h| *h == fg) else { return };
-        let Some((j, sign)) = split_for(k, n, width) else { return };
+        let Some(k) = s.last.iter().position(|h| *h == fg) else {
+            return;
+        };
+        let Some((j, sign)) = split_for(k, n, width) else {
+            return;
+        };
         let gap = config::gap();
         let q = s.regions[j];
-        let span = if j % 2 == 0 { q.right - q.left - gap } else { q.bottom - q.top - gap };
-        let held = s.last_resize.is_some_and(|t| t.elapsed().as_millis() < HOLD_GAP_MS);
+        let span = if j % 2 == 0 {
+            q.right - q.left - gap
+        } else {
+            q.bottom - q.top - gap
+        };
+        let held = s
+            .last_resize
+            .is_some_and(|t| t.elapsed().as_millis() < HOLD_GAP_MS);
         s.last_resize = Some(Instant::now());
         let step = effective_step(config::resize_step(), held) as f32 / span.max(1) as f32;
         let delta = step * sign * if grow { 1.0 } else { -1.0 };
@@ -1069,8 +1036,12 @@ fn live_resize() {
             return;
         }
         let Some(h) = s.dragging else { return };
-        let Some(k) = s.last.iter().position(|x| *x == h) else { return };
-        let Some(vis) = visible_rect(HWND(h as *mut _)) else { return };
+        let Some(k) = s.last.iter().position(|x| *x == h) else {
+            return;
+        };
+        let Some(vis) = visible_rect(HWND(h as *mut _)) else {
+            return;
+        };
         let cur = s.cur;
         let (tiles, regions) = (s.rects.clone(), s.regions.clone());
         let mut rs = s.ratios.remove(&cur).unwrap_or_default();
@@ -1164,7 +1135,11 @@ fn fast_add(s: &mut State, hwnd: HWND) -> bool {
     s.regions = regions;
     s.last = layout;
     s.ignore_until = Some(Instant::now() + Duration::from_millis(60));
-    log(format!("workspace {}: new window placed instantly ({} tiled)", cur + 1, s.last.len()));
+    log(format!(
+        "workspace {}: new window placed instantly ({} tiled)",
+        cur + 1,
+        s.last.len()
+    ));
     true
 }
 
@@ -1178,17 +1153,26 @@ fn retile() {
         let present: Vec<isize> = c.tileable.iter().map(|w| w.hwnd.0 as isize).collect();
         let cur = s.cur;
         // windows we have not seen before are placed instantly; known ones glide
-        let fresh: Vec<isize> = present.iter().copied().filter(|h| !s.ws.contains_key(h)).collect();
+        let fresh: Vec<isize> = present
+            .iter()
+            .copied()
+            .filter(|h| !s.ws.contains_key(h))
+            .collect();
         let animate_all = !std::mem::take(&mut s.no_anim);
         // forget windows that are gone; new windows join the current workspace
         // (or the workspace a config rule asks for)
         s.ws.retain(|h, _| present.contains(h));
         for w in &c.tileable {
-            s.ws.entry(w.hwnd.0 as isize).or_insert(w.rule_ws.unwrap_or(cur));
+            s.ws.entry(w.hwnd.0 as isize)
+                .or_insert(w.rule_ws.unwrap_or(cur));
         }
         // keep known windows in their old order, drop the gone ones, append the new ones
-        let mut order: Vec<isize> =
-            s.order.iter().copied().filter(|h| present.contains(h)).collect();
+        let mut order: Vec<isize> = s
+            .order
+            .iter()
+            .copied()
+            .filter(|h| present.contains(h))
+            .collect();
         for h in &present {
             if !order.contains(h) {
                 order.push(*h);
@@ -1217,7 +1201,11 @@ fn retile() {
             let animate = animate_all && !fresh.contains(h);
             move_window(&mut s, HWND(*h as *mut _), r, animate);
         }
-        log(format!("workspace {}: tiled {} window(s)", cur + 1, layout.len()));
+        log(format!(
+            "workspace {}: tiled {} window(s)",
+            cur + 1,
+            layout.len()
+        ));
         s.last = layout;
         s.ignore_until = Some(Instant::now() + Duration::from_millis(500));
     });
@@ -1240,34 +1228,6 @@ fn focus_first_or_desktop() {
     }
 }
 
-/// Nearest tiled neighbour of `cur` in direction `dir`, judged by the centres of the rects.
-fn neighbour(rects: &[RECT], cur: usize, dir: Dir) -> Option<usize> {
-    let c = |r: &RECT| ((r.left + r.right) as f64 / 2.0, (r.top + r.bottom) as f64 / 2.0);
-    let (cx, cy) = c(&rects[cur]);
-    let mut best: Option<(usize, f64)> = None;
-    for (j, r) in rects.iter().enumerate() {
-        if j == cur {
-            continue;
-        }
-        let (x, y) = c(r);
-        let (dx, dy) = (x - cx, y - cy);
-        let (along, across) = match dir {
-            Dir::Left => (-dx, dy.abs()),
-            Dir::Right => (dx, dy.abs()),
-            Dir::Up => (-dy, dx.abs()),
-            Dir::Down => (dy, dx.abs()),
-        };
-        if along <= 1.0 {
-            continue; // not in that direction
-        }
-        let score = along + 2.0 * across;
-        if best.map_or(true, |(_, s)| score < s) {
-            best = Some((j, score));
-        }
-    }
-    best.map(|(j, _)| j)
-}
-
 fn focus_or_swap(dir: Dir, swap: bool) {
     let fg = unsafe { GetForegroundWindow() }.0 as isize;
     let mut do_retile = false;
@@ -1284,7 +1244,9 @@ fn focus_or_swap(dir: Dir, swap: bool) {
             }
             return;
         };
-        let Some(to) = neighbour(&s.rects, cur, dir) else { return };
+        let Some(to) = neighbour(&s.rects, cur, dir) else {
+            return;
+        };
         if swap {
             let (a, b) = (s.last[cur], s.last[to]);
             let (ia, ib) = (
@@ -1400,9 +1362,13 @@ fn toggle_pause() {
     log(if paused { "paused" } else { "resumed" });
     register_hotkeys();
     tray::update();
+    if paused {
+        clear_border();
+    }
     if !paused {
         STATE.with(|s| s.borrow_mut().last.clear());
         retile();
+        refresh_border();
     }
 }
 
@@ -1414,9 +1380,14 @@ fn reload_config() {
             STATE.with(|s| s.borrow_mut().last.clear());
             retile();
             tray::update();
+            clear_border(); // the colour (or the on/off switch) may have changed
+            refresh_border();
             log("config reloaded");
             if !failed.is_empty() {
-                notify("tile-rs: some hotkeys were not registered", &failed.join("\n"));
+                notify(
+                    "tile-rs: some hotkeys were not registered",
+                    &failed.join("\n"),
+                );
             }
         }
         Err(e) => {
@@ -1448,7 +1419,10 @@ pub fn dispatch(a: Action) {
         Action::ReloadConfig => reload_config(),
         Action::EditConfig => {
             config::ensure_default();
-            tray::open("notepad.exe", &format!("\"{}\"", config::config_path().display()));
+            tray::open(
+                "notepad.exe",
+                &format!("\"{}\"", config::config_path().display()),
+            );
         }
     }
 }
@@ -1528,9 +1502,13 @@ fn start(interactive: bool) {
     tray::create();
     log("tile-rs running");
     if !failed.is_empty() {
-        notify("tile-rs: some hotkeys were not registered", &failed.join("\n"));
+        notify(
+            "tile-rs: some hotkeys were not registered",
+            &failed.join("\n"),
+        );
     }
     retile();
+    refresh_border();
 
     unsafe {
         let mut msg = MSG::default();
@@ -1571,8 +1549,13 @@ fn start(interactive: bool) {
                 }
             } else if msg.message == WM_HOTKEY {
                 let id = msg.wParam.0 as i32;
-                let action = STATE
-                    .with(|s| s.borrow().hotkeys.iter().find(|(i, _)| *i == id).map(|(_, a)| *a));
+                let action = STATE.with(|s| {
+                    s.borrow()
+                        .hotkeys
+                        .iter()
+                        .find(|(i, _)| *i == id)
+                        .map(|(_, a)| *a)
+                });
                 if let Some(a) = action {
                     dispatch(a);
                 }
@@ -1582,6 +1565,7 @@ fn start(interactive: bool) {
             DispatchMessageW(&msg);
         }
     }
+    clear_border();
     bring_everything_back();
     tray::remove();
     log("bye");
@@ -1602,6 +1586,30 @@ fn main() {
     match cmd.as_deref() {
         None => start(true),
         Some("run") | Some("--autostart") => start(false),
+        Some("--version") | Some("-V") => {
+            let mut out = console_out();
+            let _ = writeln!(out, "tile-rs {}", env!("CARGO_PKG_VERSION"));
+        }
+        Some("--help") | Some("-h") => {
+            let mut out = console_out();
+            let _ = writeln!(
+                out,
+                "tile-rs {} - spiral tiling window manager for Windows",
+                env!("CARGO_PKG_VERSION")
+            );
+            let _ = writeln!(out, "\nUSAGE:\n  tile-rs.exe              start (asks about autostart on the first run)");
+            let _ = writeln!(
+                out,
+                "  tile-rs.exe --autostart  start silently (used by the autostart entry)"
+            );
+            let _ = writeln!(out, "  tile-rs.exe list         show which windows would be tiled, and why others are not");
+            let _ = writeln!(
+                out,
+                "  tile-rs.exe tile         arrange the current windows once and exit"
+            );
+            let _ = writeln!(out, "  tile-rs.exe --version    print the version");
+            let _ = writeln!(out, "\nConfig: {}", config::config_path().display());
+        }
         Some("list") | Some("tile") => {
             unsafe {
                 let _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
@@ -1618,200 +1626,43 @@ fn main() {
                 }
                 let _ = writeln!(out, "\nSKIPPED ({}):", c.skipped.len());
                 for (w, r) in &c.skipped {
-                    let _ = writeln!(out, "  [{:>6}] {:<28} {}  <- {}", w.pid, w.class, w.title, r);
+                    let _ = writeln!(
+                        out,
+                        "  [{:>6}] {:<28} {}  <- {}",
+                        w.pid, w.class, w.title, r
+                    );
                 }
                 let a = work_area();
-                let _ = writeln!(out, "\nWork area: {}x{} at ({}, {})", a.right - a.left, a.bottom - a.top, a.left, a.top);
+                let _ = writeln!(
+                    out,
+                    "\nWork area: {}x{} at ({}, {})",
+                    a.right - a.left,
+                    a.bottom - a.top,
+                    a.left,
+                    a.top
+                );
             } else {
                 let (rects, _) = spiral(work_area(), c.tileable.len(), &[]);
                 for (w, r) in c.tileable.iter().zip(rects) {
-                    let _ = writeln!(out, "{} -> {}x{} at ({}, {})", w.title, r.right - r.left, r.bottom - r.top, r.left, r.top);
+                    let _ = writeln!(
+                        out,
+                        "{} -> {}x{} at ({}, {})",
+                        w.title,
+                        r.right - r.left,
+                        r.bottom - r.top,
+                        r.left,
+                        r.top
+                    );
                     place(w.hwnd, r);
                 }
             }
         }
         Some(_) => {
             let mut out = console_out();
-            let _ = writeln!(out, "usage: tile-rs [--autostart | list | tile]");
+            let _ = writeln!(
+                out,
+                "usage: tile-rs [--autostart | list | tile | --version | --help]"
+            );
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    const AREA: RECT = RECT { left: 0, top: 0, right: 3440, bottom: 1392 };
-
-    fn layout(n: usize, ratios: &[f32]) -> (Vec<RECT>, Vec<RECT>) {
-        spiral(AREA, n, ratios)
-    }
-
-    /// Drag one edge of window k to `v`, rebuild the layout, return the new tiles.
-    fn drag(n: usize, k: usize, edit: impl Fn(&mut RECT)) -> Vec<RECT> {
-        let (tiles, regions) = layout(n, &[]);
-        let mut new = tiles[k];
-        edit(&mut new);
-        let mut ratios = vec![0.5; n - 1];
-        assert!(apply_resize(&mut ratios, &tiles, &regions, k, new), "ratios should change");
-        layout(n, &ratios).0
-    }
-
-    fn near(a: i32, b: i32) -> bool {
-        (a - b).abs() <= 2
-    }
-
-    #[test]
-    fn default_layout_is_a_spiral() {
-        let (t, _) = layout(3, &[]);
-        assert_eq!(t.len(), 3);
-        // window 0: left half; window 1: top-right; window 2: bottom-right
-        assert!(t[0].right < t[1].left);
-        assert!(t[1].bottom < t[2].top);
-        assert_eq!(t[1].left, t[2].left);
-        assert_eq!(t[1].right, t[2].right);
-    }
-
-    #[test]
-    fn dragging_own_right_edge_of_first_window() {
-        let t = drag(3, 0, |r| r.right = 2000);
-        assert!(near(t[0].right, 2000), "{:?}", t[0]);
-    }
-
-    #[test]
-    fn dragging_left_edge_of_second_window_moves_first_split() {
-        let t = drag(3, 1, |r| r.left = 1500);
-        assert!(near(t[1].left, 1500), "{:?}", t[1]);
-        assert!(near(t[2].left, 1500), "bottom-right moves with it: {:?}", t[2]);
-    }
-
-    #[test]
-    fn dragging_bottom_edge_of_second_window() {
-        let t = drag(3, 1, |r| r.bottom = 900);
-        assert!(near(t[1].bottom, 900), "{:?}", t[1]);
-        assert!(t[2].top > t[1].bottom);
-    }
-
-    #[test]
-    fn dragging_top_and_left_edges_of_last_window() {
-        let t = drag(3, 2, |r| r.top = 800);
-        assert!(near(t[2].top, 800), "{:?}", t[2]);
-        let t = drag(3, 2, |r| r.left = 1900);
-        assert!(near(t[2].left, 1900), "{:?}", t[2]);
-    }
-
-    #[test]
-    fn dragging_the_screen_edge_changes_nothing() {
-        // last window, right/bottom edges are screen edges
-        let (tiles, regions) = layout(3, &[]);
-        let mut new = tiles[2];
-        new.right -= 200;
-        new.bottom -= 200;
-        let mut ratios = vec![0.5; 2];
-        assert!(!apply_resize(&mut ratios, &tiles, &regions, 2, new));
-    }
-
-    #[test]
-    fn ratios_are_clamped() {
-        let t = drag(2, 0, |r| r.right = 3400);
-        let (full, _) = layout(2, &[]);
-        assert!(t[0].right > full[0].right);
-        assert!(t[1].right - t[1].left > 200, "other window keeps a sane minimum width");
-    }
-
-    #[test]
-    fn easing_is_monotonic_and_hits_the_ends() {
-        assert_eq!(ease_out_cubic(0.0), 0.0);
-        assert_eq!(ease_out_cubic(1.0), 1.0);
-        assert_eq!(ease_out_cubic(2.0), 1.0, "clamped above 1");
-        assert_eq!(ease_out_cubic(-1.0), 0.0, "clamped below 0");
-        let mut prev = 0.0;
-        for i in 1..=100 {
-            let v = ease_out_cubic(i as f32 / 100.0);
-            assert!(v >= prev, "not monotonic at {i}");
-            prev = v;
-        }
-        // fast start: more than half of the way after a quarter of the time
-        assert!(ease_out_cubic(0.25) > 0.5);
-    }
-
-    #[test]
-    fn lerp_rect_interpolates_and_ends_exactly() {
-        let a = RECT { left: 0, top: 0, right: 100, bottom: 50 };
-        let b = RECT { left: 200, top: 100, right: 400, bottom: 250 };
-        let m = lerp_rect(&a, &b, 0.5);
-        assert_eq!((m.left, m.top, m.right, m.bottom), (100, 50, 250, 150));
-        let e = lerp_rect(&a, &b, 1.0);
-        assert!(same_rect(&e, &b, 0));
-        let s0 = lerp_rect(&a, &b, 0.0);
-        assert!(same_rect(&s0, &a, 0));
-    }
-
-    #[test]
-    fn same_rect_tolerance() {
-        let a = RECT { left: 10, top: 10, right: 110, bottom: 60 };
-        let mut b = a;
-        b.right += 1;
-        assert!(same_rect(&a, &b, 1));
-        assert!(!same_rect(&a, &b, 0));
-    }
-
-    #[test]
-    fn held_keys_use_smaller_steps() {
-        assert_eq!(effective_step(40, false), 40);
-        assert_eq!(effective_step(40, true), 13);
-        assert_eq!(effective_step(6, true), 4, "never below 4 px");
-        assert!(effective_step(500, true) < 500);
-    }
-
-    #[test]
-    fn split_for_width_and_height() {
-        // 3 windows: 0 = left half, 1 = top right, 2 = bottom right
-        assert_eq!(split_for(0, 3, true), Some((0, 1.0)));
-        assert_eq!(split_for(1, 3, true), Some((0, -1.0)));
-        assert_eq!(split_for(2, 3, true), Some((0, -1.0)));
-        assert_eq!(split_for(0, 3, false), None); // full height already
-        assert_eq!(split_for(1, 3, false), Some((1, 1.0)));
-        assert_eq!(split_for(2, 3, false), Some((1, -1.0)));
-        assert_eq!(split_for(0, 1, true), None); // a single window
-        assert_eq!(split_for(5, 3, true), None); // out of range
-    }
-
-    #[test]
-    fn grow_width_really_widens_the_window() {
-        for n in 2..=6usize {
-            let (base, _) = layout(n, &[]);
-            for k in 0..n {
-                let Some((j, sign)) = split_for(k, n, true) else { continue };
-                let mut ratios = vec![0.5; n - 1];
-                ratios[j] = (ratios[j] + 0.08 * sign).clamp(MIN_RATIO, MAX_RATIO);
-                let (t, _) = layout(n, &ratios);
-                let (w0, w1) = (base[k].right - base[k].left, t[k].right - t[k].left);
-                assert!(w1 > w0, "n={n} k={k}: width {w0} -> {w1}");
-            }
-        }
-    }
-
-    #[test]
-    fn grow_height_really_heightens_the_window() {
-        for n in 3..=6usize {
-            let (base, _) = layout(n, &[]);
-            for k in 0..n {
-                let Some((j, sign)) = split_for(k, n, false) else { continue };
-                let mut ratios = vec![0.5; n - 1];
-                ratios[j] = (ratios[j] + 0.08 * sign).clamp(MIN_RATIO, MAX_RATIO);
-                let (t, _) = layout(n, &ratios);
-                let (h0, h1) = (base[k].bottom - base[k].top, t[k].bottom - t[k].top);
-                assert!(h1 > h0, "n={n} k={k}: height {h0} -> {h1}");
-            }
-        }
-    }
-
-    #[test]
-    fn four_windows_chain() {
-        // window 3 (odd): its left edge belongs to split 2
-        let t = drag(4, 3, |r| r.left += 150);
-        let (base, _) = layout(4, &[]);
-        assert!(t[3].left > base[3].left);
     }
 }

@@ -11,12 +11,12 @@ use windows::Win32::UI::Shell::{
     NIM_MODIFY, NOTIFYICONDATAW,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    AppendMenuW, CreateIconIndirect, CreatePopupMenu, CreateWindowExW, DefWindowProcW,
-    DestroyIcon, DestroyMenu, GetCursorPos, PostMessageW, PostQuitMessage, RegisterClassW,
+    AppendMenuW, CreateIconIndirect, CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyIcon,
+    DestroyMenu, GetCursorPos, PostMessageW, PostQuitMessage, RegisterClassW,
     RegisterWindowMessageW, SetForegroundWindow, TrackPopupMenu, HICON, ICONINFO, MF_CHECKED,
-    MF_SEPARATOR, MF_STRING, SW_SHOWNORMAL, TPM_RETURNCMD, TPM_RIGHTBUTTON, WINDOW_EX_STYLE,
-    WM_APP, WM_DESTROY, WM_LBUTTONDBLCLK, WM_NULL, WM_RBUTTONUP, WNDCLASSW, WS_EX_TOOLWINDOW,
-    WS_OVERLAPPED,
+    MF_GRAYED, MF_SEPARATOR, MF_STRING, SW_SHOWNORMAL, TPM_RETURNCMD, TPM_RIGHTBUTTON,
+    WINDOW_EX_STYLE, WM_APP, WM_DESTROY, WM_LBUTTONDBLCLK, WM_NULL, WM_RBUTTONUP, WNDCLASSW,
+    WS_EX_TOOLWINDOW, WS_OVERLAPPED,
 };
 
 use crate::config::{self, Action};
@@ -46,7 +46,11 @@ pub fn wide(s: &str) -> Vec<u16> {
 fn make_icon(active: bool) -> Option<HICON> {
     const N: usize = 32;
     let mut px = vec![0u8; N * N * 4]; // BGRA
-    let (r, g, b) = if active { (0x8d_u8, 0xbc_u8, 0xff_u8) } else { (0x90, 0x90, 0x90) };
+    let (r, g, b) = if active {
+        (0x8d_u8, 0xbc_u8, 0xff_u8)
+    } else {
+        (0x90, 0x90, 0x90)
+    };
     let mut fill = |x0: usize, y0: usize, x1: usize, y1: usize, shade: f32| {
         for y in y0..y1 {
             for x in x0..x1 {
@@ -158,7 +162,10 @@ pub fn create() {
             ..Default::default()
         };
         RegisterClassW(&wc);
-        TASKBAR_CREATED.store(RegisterWindowMessageW(w!("TaskbarCreated")), Ordering::Relaxed);
+        TASKBAR_CREATED.store(
+            RegisterWindowMessageW(w!("TaskbarCreated")),
+            Ordering::Relaxed,
+        );
         let Ok(hwnd) = CreateWindowExW(
             WINDOW_EX_STYLE(0) | WS_EX_TOOLWINDOW,
             class,
@@ -181,9 +188,18 @@ pub fn create() {
     }
 }
 
-fn item(menu: windows::Win32::UI::WindowsAndMessaging::HMENU, id: usize, text: &str, checked: bool) {
+fn item(
+    menu: windows::Win32::UI::WindowsAndMessaging::HMENU,
+    id: usize,
+    text: &str,
+    checked: bool,
+) {
     let t = wide(text);
-    let flags = if checked { MF_STRING | MF_CHECKED } else { MF_STRING };
+    let flags = if checked {
+        MF_STRING | MF_CHECKED
+    } else {
+        MF_STRING
+    };
     unsafe {
         let _ = AppendMenuW(menu, flags, id, PCWSTR(t.as_ptr()));
     }
@@ -193,7 +209,19 @@ fn show_menu(hwnd: HWND) {
     let (_, paused) = crate::ui_state();
     unsafe {
         let Ok(menu) = CreatePopupMenu() else { return };
-        item(menu, M_PAUSE, if paused { "Resume tiling" } else { "Pause tiling" }, false);
+        let ver = wide(&format!("tile-rs v{}", env!("CARGO_PKG_VERSION")));
+        let _ = AppendMenuW(menu, MF_STRING | MF_GRAYED, 0, PCWSTR(ver.as_ptr()));
+        let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
+        item(
+            menu,
+            M_PAUSE,
+            if paused {
+                "Resume tiling"
+            } else {
+                "Pause tiling"
+            },
+            false,
+        );
         item(menu, M_RETILE, "Re-tile now", false);
         let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
         item(menu, M_EDIT, "Edit config (hotkeys, rules)...", false);
@@ -202,7 +230,12 @@ fn show_menu(hwnd: HWND) {
         item(menu, M_FOLDER, "Open config folder", false);
         item(menu, M_LOG, "Open log", false);
         let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
-        item(menu, M_AUTOSTART, "Start with Windows", crate::autostart_enabled());
+        item(
+            menu,
+            M_AUTOSTART,
+            "Start with Windows",
+            crate::autostart_enabled(),
+        );
         let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
         item(menu, M_QUIT, "Quit tile-rs", false);
 
@@ -210,7 +243,15 @@ fn show_menu(hwnd: HWND) {
         let _ = GetCursorPos(&mut pt);
         // required so the menu closes when the user clicks elsewhere
         let _ = SetForegroundWindow(hwnd);
-        let cmd = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_RIGHTBUTTON, pt.x, pt.y, Some(0), hwnd, None);
+        let cmd = TrackPopupMenu(
+            menu,
+            TPM_RETURNCMD | TPM_RIGHTBUTTON,
+            pt.x,
+            pt.y,
+            Some(0),
+            hwnd,
+            None,
+        );
         let _ = PostMessageW(Some(hwnd), WM_NULL, WPARAM(0), LPARAM(0));
         let _ = DestroyMenu(menu);
 
@@ -220,8 +261,14 @@ fn show_menu(hwnd: HWND) {
             M_RELOAD => crate::dispatch(Action::ReloadConfig),
             M_EDIT => crate::dispatch(Action::EditConfig),
             M_HOTKEYS => show_hotkeys(),
-            M_FOLDER => open("explorer.exe", &format!("\"{}\"", config::config_dir().display())),
-            M_LOG => open("notepad.exe", &format!("\"{}\"", crate::log_file().display())),
+            M_FOLDER => open(
+                "explorer.exe",
+                &format!("\"{}\"", config::config_dir().display()),
+            ),
+            M_LOG => open(
+                "notepad.exe",
+                &format!("\"{}\"", crate::log_file().display()),
+            ),
             M_AUTOSTART => {
                 let want = !crate::autostart_enabled();
                 if !crate::set_autostart(want) {
@@ -239,7 +286,14 @@ pub fn open(exe: &str, args: &str) {
     let e = wide(exe);
     let a = wide(args);
     unsafe {
-        ShellExecuteW(None, w!("open"), PCWSTR(e.as_ptr()), PCWSTR(a.as_ptr()), PCWSTR::null(), SW_SHOWNORMAL);
+        ShellExecuteW(
+            None,
+            w!("open"),
+            PCWSTR(e.as_ptr()),
+            PCWSTR(a.as_ptr()),
+            PCWSTR::null(),
+            SW_SHOWNORMAL,
+        );
     }
 }
 
