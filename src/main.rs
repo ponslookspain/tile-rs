@@ -13,6 +13,7 @@
 mod config;
 mod geometry;
 mod launcher;
+mod monitor;
 mod overlay;
 mod prof;
 mod tray;
@@ -36,10 +37,7 @@ use windows::Win32::Foundation::{
     HWND, LPARAM, POINT, RECT, WAIT_FAILED, WAIT_OBJECT_0, WPARAM,
 };
 use windows::Win32::Graphics::Dwm::{DwmGetWindowAttribute, DWMWA_EXTENDED_FRAME_BOUNDS};
-use windows::Win32::Graphics::Gdi::{
-    GetDC, GetDeviceCaps, GetMonitorInfoW, MonitorFromPoint, ReleaseDC, MONITORINFO,
-    MONITOR_DEFAULTTOPRIMARY, VREFRESH,
-};
+use windows::Win32::Graphics::Gdi::{GetDC, GetDeviceCaps, ReleaseDC, VREFRESH};
 use windows::Win32::System::Console::{AttachConsole, ATTACH_PARENT_PROCESS};
 use windows::Win32::System::Registry::{
     RegDeleteKeyValueW, RegGetValueW, RegSetKeyValueW, HKEY_CURRENT_USER, REG_SZ, RRF_RT_REG_SZ,
@@ -425,17 +423,9 @@ fn fitted(
     )
 }
 
-/// The monitor's work area (taskbar excluded), as Windows reports it.
+/// The work area (taskbar excluded) of the primary monitor, as Windows reports it.
 fn raw_work_area() -> RECT {
-    unsafe {
-        let mon = MonitorFromPoint(POINT { x: 0, y: 0 }, MONITOR_DEFAULTTOPRIMARY);
-        let mut mi = MONITORINFO {
-            cbSize: size_of::<MONITORINFO>() as u32,
-            ..Default::default()
-        };
-        let _ = GetMonitorInfoW(mon, &mut mi);
-        mi.rcWork
-    }
+    monitor::primary_work()
 }
 
 /// The area the windows are tiled in: the work area minus the indicator bar at the top.
@@ -1056,6 +1046,7 @@ pub fn ui_state() -> (u8, bool) {
 
 /// The screen work area changed (display mode, taskbar size / auto-hide): rebuild the layout.
 pub fn request_relayout() {
+    monitor::refresh();
     STATE.with(|s| {
         let mut s = s.borrow_mut();
         s.reflow = true;
