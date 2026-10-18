@@ -106,6 +106,8 @@ it immediately.
 | `Alt+Shift+H/J/K/L` or `Alt+Shift+←↓↑→` | swap the focused window with that neighbour |
 | `Alt+1` … `Alt+9` | switch to workspace 1…9 |
 | `Alt+Shift+1` … `Alt+Shift+9` | move the focused window to workspace 1…9 and follow it there |
+| `Alt+Shift+.` / `Alt+Shift+,` | go to the next / previous workspace (wraps around) |
+| `Ctrl+Alt+.` / `Ctrl+Alt+,` | move the focused window to the next / previous workspace and follow it |
 | `Alt+=` / `Alt+-` (also `Alt+Num+` / `Alt+Num-`) | make the focused window wider / narrower (hold to repeat) |
 | `Alt+Shift+M` | minimize the focused window |
 | `Alt+Shift+F` | float the focused window in place, or tile it again |

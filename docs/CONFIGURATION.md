@@ -70,6 +70,8 @@ you which one and carries on with the rest.
 | `swap_left`, `swap_down`, `swap_up`, `swap_right` | Swap the focused window with its neighbour. |
 | `workspace_1` … `workspace_9` | Switch to a workspace. |
 | `move_to_workspace_1` … `move_to_workspace_9` | Move the focused window to a workspace and switch to it (the window keeps focus). |
+| `workspace_next`, `workspace_prev` | Switch to the next / previous workspace, wrapping around at the ends. |
+| `move_to_next_workspace`, `move_to_prev_workspace` | Move the focused window to the next / previous workspace (wrapping) and follow it. |
 | `grow_width`, `shrink_width` | Make the focused window wider / narrower. Repeats while the key is held. |
 | `grow_height`, `shrink_height` | Make the focused window taller / shorter. Repeats while the key is held. |
 | `minimize` | Minimize the focused window (a fullscreen game or a normal tiled window). |
@@ -92,6 +94,8 @@ An unknown action name is an error (it is reported on reload, with the name).
 | `swap_*` | `alt+shift+h/j/k/l`, `alt+shift+left/down/up/right` |
 | `workspace_N` | `alt+N` |
 | `move_to_workspace_N` | `alt+shift+N` |
+| `workspace_next` / `workspace_prev` | `alt+shift+period` / `alt+shift+comma` |
+| `move_to_next_workspace` / `move_to_prev_workspace` | `ctrl+alt+period` / `ctrl+alt+comma` |
 | `grow_width` / `shrink_width` | `alt+plus`, `alt+numpad_add` / `alt+minus`, `alt+numpad_subtract` |
 | `minimize` | `alt+shift+m` |
 | `toggle_float` | `alt+shift+f` |
@@ -104,7 +108,8 @@ No default keys: `grow_height`, `shrink_height`, `retile`, `reload_config`, `edi
 (present as commented examples in the generated file).
 
 An older `config.toml` is updated in place on start-up: missing `toggle_float`, `close`,
-`cycle_layout` and `quit` bindings are added (a commented-out or removed one is left alone).
+`cycle_layout`, `quit`, `workspace_next`, `workspace_prev`, `move_to_next_workspace` and
+`move_to_prev_workspace` bindings are added (a commented-out or removed one is left alone).
 
 ## Window rules
 

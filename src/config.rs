@@ -29,6 +29,12 @@ pub enum Action {
     /// 0-based workspace index
     Workspace(u8),
     MoveTo(u8),
+    /// Switch to the next / previous workspace, wrapping around at the ends.
+    WorkspaceNext,
+    WorkspacePrev,
+    /// Move the focused window to the next / previous workspace (wrapping) and follow it.
+    MoveToNext,
+    MoveToPrev,
     /// Grow / shrink the focused window's width (or height) by `resize_step` pixels.
     Resize {
         width: bool,
@@ -282,6 +288,10 @@ quit          = "ctrl+alt+q"
     for n in 1..=WS_COUNT {
         s.push_str(&format!("move_to_workspace_{n} = \"alt+shift+{n}\"\n"));
     }
+    s.push_str("workspace_next = \"alt+shift+period\"\n");
+    s.push_str("workspace_prev = \"alt+shift+comma\"\n");
+    s.push_str("move_to_next_workspace = \"ctrl+alt+period\"\n");
+    s.push_str("move_to_prev_workspace = \"ctrl+alt+comma\"\n");
     s.push_str(
         r#"
 # Rules. A window matches when ALL given fields match
@@ -352,6 +362,16 @@ pub fn migrate(text: &str) -> Option<String> {
     }
     if !has("quit") {
         hot.push(r#"quit          = "ctrl+alt+q""#.into());
+    }
+    for (key, spec) in [
+        ("workspace_next", "alt+shift+period"),
+        ("workspace_prev", "alt+shift+comma"),
+        ("move_to_next_workspace", "ctrl+alt+period"),
+        ("move_to_prev_workspace", "ctrl+alt+comma"),
+    ] {
+        if !has(key) {
+            hot.push(format!("{key} = \"{spec}\""));
+        }
     }
     if !hot.is_empty() {
         if let Some(i) = lines.iter().position(|l| l.trim() == "[hotkeys]") {
@@ -531,6 +551,14 @@ fn parse_action(name: &str) -> Option<Action> {
     }
     if let Some(d) = n.strip_prefix("swap_") {
         return dir(d).map(Action::Swap);
+    }
+    // "next"/"prev" are not numbers, so they must be matched before the numbered prefixes
+    match n.as_str() {
+        "workspace_next" => return Some(Action::WorkspaceNext),
+        "workspace_prev" => return Some(Action::WorkspacePrev),
+        "move_to_next_workspace" => return Some(Action::MoveToNext),
+        "move_to_prev_workspace" => return Some(Action::MoveToPrev),
+        _ => {}
     }
     if let Some(i) = n.strip_prefix("move_to_workspace_") {
         return ws(i).map(Action::MoveTo);
@@ -989,8 +1017,17 @@ mod tests {
                 grow: false,
             } && s == "alt+minus"
         }));
-        // 16 direction + 18 workspace + 4 resize + pause x2 + toggle_float + close + cycle_layout + quit
-        assert!(c.bindings.len() >= 16 + 18 + 4 + 6);
+        // 16 direction + 18 workspace + 4 resize + 4 misc (pause x2, toggle_float, close,
+        // cycle_layout, quit) + 4 next/prev switch & move
+        assert!(c.bindings.len() >= 16 + 18 + 4 + 10);
+        assert!(c
+            .bindings
+            .iter()
+            .any(|(a, s)| *a == Action::WorkspaceNext && s == "alt+shift+period"));
+        assert!(c
+            .bindings
+            .iter()
+            .any(|(a, s)| *a == Action::MoveToPrev && s == "ctrl+alt+comma"));
         assert_eq!(c.rules.len(), 1);
         assert!(c
             .bindings
@@ -1057,7 +1094,7 @@ mod tests {
         let once = migrate(OLD_CONFIG).unwrap();
         assert!(migrate(&once).is_none(), "second run must change nothing");
         // a key the user commented out or turned off is not re-added
-        let custom = "layout = \"spiral\"\ngap = 5\nanimations = false\n# animation_ms = 99\neasing = \"linear\"\nfullscreen_windows = \"ignore\"\nmedia_windows = \"tile\"\nresize_step = 10\nborder = false\n# border_color = \"#112233\"\nborder_width = 3\nmin_tile_width = 400\nmin_tile_height = 300\nmax_tiles = 6\nauto_overflow = false\nworkspace_indicator = false\nfocus_follows_mouse = true\n\n[hotkeys]\n# grow_width = \"alt+plus\"\n# shrink_width = \"alt+minus\"\nminimize = \"alt+shift+m\"\ntoggle_float = \"alt+shift+f\"\nclose = \"alt+shift+q\"\ncycle_layout = \"ctrl+alt+l\"\nquit = \"ctrl+alt+q\"\n";
+        let custom = "layout = \"spiral\"\ngap = 5\nanimations = false\n# animation_ms = 99\neasing = \"linear\"\nfullscreen_windows = \"ignore\"\nmedia_windows = \"tile\"\nresize_step = 10\nborder = false\n# border_color = \"#112233\"\nborder_width = 3\nmin_tile_width = 400\nmin_tile_height = 300\nmax_tiles = 6\nauto_overflow = false\nworkspace_indicator = false\nfocus_follows_mouse = true\n\n[hotkeys]\n# grow_width = \"alt+plus\"\n# shrink_width = \"alt+minus\"\nminimize = \"alt+shift+m\"\ntoggle_float = \"alt+shift+f\"\nclose = \"alt+shift+q\"\ncycle_layout = \"ctrl+alt+l\"\nquit = \"ctrl+alt+q\"\nworkspace_next = \"alt+shift+period\"\nworkspace_prev = \"alt+shift+comma\"\nmove_to_next_workspace = \"ctrl+alt+period\"\nmove_to_prev_workspace = \"ctrl+alt+comma\"\n";
         assert!(migrate(custom).is_none());
         // the freshly generated default never needs migrating
         assert!(migrate(&default_config()).is_none());

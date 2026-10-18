@@ -1074,6 +1074,10 @@ pub fn action_name(a: Action) -> String {
         Action::Swap(d) => format!("swap_{}", dir(d)),
         Action::Workspace(n) => format!("workspace_{}", n + 1),
         Action::MoveTo(n) => format!("move_to_workspace_{}", n + 1),
+        Action::WorkspaceNext => "workspace_next".into(),
+        Action::WorkspacePrev => "workspace_prev".into(),
+        Action::MoveToNext => "move_to_next_workspace".into(),
+        Action::MoveToPrev => "move_to_prev_workspace".into(),
         Action::Resize { width, grow } => format!(
             "{}_{}",
             if grow { "grow" } else { "shrink" },
@@ -1866,6 +1870,24 @@ fn focus_or_swap(dir: Dir, swap: bool) {
     }
 }
 
+/// Switch to the workspace `step` away from the current one, wrapping around at the ends.
+fn switch_ws_relative(step: i8) {
+    let n = relative_ws(step);
+    switch_ws(n, None);
+}
+
+/// Move the focused window to the workspace `step` away (wrapping) and follow it there.
+fn move_ws_relative(step: i8) {
+    let n = relative_ws(step);
+    move_to_ws(n);
+}
+
+/// The current workspace index offset by `step`, wrapped into `0..WS_COUNT`.
+fn relative_ws(step: i8) -> u8 {
+    let cur = STATE.with(|s| s.borrow().cur) as i8;
+    (cur + step).rem_euclid(WS_COUNT as i8) as u8
+}
+
 fn switch_ws(n: u8, focus: Option<isize>) {
     let changed = STATE.with(|s| {
         let mut s = s.borrow_mut();
@@ -2126,6 +2148,10 @@ pub fn dispatch(a: Action) {
         Action::Swap(d) => focus_or_swap(d, true),
         Action::Workspace(n) => switch_ws(n, None),
         Action::MoveTo(n) => move_to_ws(n),
+        Action::WorkspaceNext => switch_ws_relative(1),
+        Action::WorkspacePrev => switch_ws_relative(-1),
+        Action::MoveToNext => move_ws_relative(1),
+        Action::MoveToPrev => move_ws_relative(-1),
         Action::Resize { width, grow } => resize_focused(width, grow),
         Action::Minimize => minimize_focused(),
         Action::ToggleFloat => toggle_float(),
