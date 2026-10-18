@@ -16,6 +16,7 @@ mod launcher;
 mod overlay;
 mod prof;
 mod tray;
+mod update;
 mod window;
 
 use window::{classify, collect, is_fullscreen, visible_rect, Verdict, Win};

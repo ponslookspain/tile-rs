@@ -28,8 +28,6 @@ use crate::config::{self, FullscreenWindows, Layout, MediaWindows};
 use crate::geometry::Easing;
 use crate::tray;
 
-const GITHUB: &str = "https://github.com/ponslookspain/tile-rs";
-
 // control ids
 const ID_SAVE: usize = 100;
 const ID_UPDATES: usize = 101;
@@ -364,7 +362,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
         WM_COMMAND => {
             match wparam.0 & 0xFFFF {
                 ID_SAVE => save_and_apply(hwnd),
-                ID_UPDATES => tray::open(GITHUB, ""),
+                ID_UPDATES => crate::update::check_and_notify(),
                 ID_CONFIG => {
                     config::ensure_default();
                     tray::open(

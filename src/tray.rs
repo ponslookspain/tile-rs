@@ -37,6 +37,7 @@ const M_FOLDER: usize = 6;
 const M_LOG: usize = 7;
 const M_AUTOSTART: usize = 8;
 const M_HOTKEYS: usize = 9;
+const M_UPDATE: usize = 11;
 const M_QUIT: usize = 10;
 
 pub fn wide(s: &str) -> Vec<u16> {
@@ -242,6 +243,7 @@ fn show_menu(hwnd: HWND) {
         item(menu, M_HOTKEYS, "Show hotkeys", false);
         item(menu, M_FOLDER, "Open config folder", false);
         item(menu, M_LOG, "Open log", false);
+        item(menu, M_UPDATE, "Check for updates", false);
         let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
         item(
             menu,
@@ -283,6 +285,7 @@ fn show_menu(hwnd: HWND) {
                 "notepad.exe",
                 &format!("\"{}\"", crate::log_file().display()),
             ),
+            M_UPDATE => crate::update::check_and_notify(),
             M_AUTOSTART => {
                 let want = !crate::autostart_enabled();
                 if !crate::set_autostart(want) {

@@ -131,7 +131,7 @@ Optional actions without a default key: `grow_height`, `shrink_height`, `retile`
 
 *Settings...*, *Pause / Resume tiling*, *Re-tile now* (also resets all sizes to equal halves),
 *Edit config*, *Reload config*, *Show hotkeys*, *Open config folder*, *Open log*,
-*Start with Windows*, *Quit*.
+*Check for updates*, *Start with Windows*, *Quit*.
 Double-clicking the icon pauses / resumes. While paused, every hotkey except pause/quit/reload/edit
 is handed back to your applications.
 

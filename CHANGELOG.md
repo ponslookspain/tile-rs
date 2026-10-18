@@ -7,6 +7,9 @@ follows [Semantic Versioning](https://semver.org) (see [docs/RELEASING.md](docs/
 ## [Unreleased]
 
 ### Added
+- A "Check for updates" item in the tray menu and in the settings launcher. It asks the GitHub
+  releases API for the latest tag and reports whether a newer version is available. It runs only
+  when you ask for it; there is no background network access.
 - `workspace_next` / `workspace_prev` and `move_to_next_workspace` / `move_to_prev_workspace`
   actions that step through workspaces and wrap around at the ends (default keys `Alt+Shift+.`/`,`
   and `Ctrl+Alt+.`/`,`).
