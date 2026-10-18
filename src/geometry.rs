@@ -8,7 +8,7 @@ use std::collections::HashMap;
 
 use windows::Win32::Foundation::RECT;
 
-use crate::config::{self, Dir};
+use crate::config::Dir;
 
 pub const MIN_RATIO: f32 = 0.12;
 pub const MAX_RATIO: f32 = 0.88;
@@ -20,10 +20,10 @@ pub const RESIZE_PX: i32 = 6;
 /// window takes the remainder.
 ///
 /// `ratios[i]` is the share (0..1) of split `i` that window `i` gets (default 0.5); the user
-/// changes them by dragging window edges.
+/// changes them by dragging window edges. `gap` is the gap between windows and around the edges
+/// (passed in so this module stays pure, with no global state).
 /// Returns (tile of every window, free region that window `i` was cut out of).
-pub fn spiral(area: RECT, n: usize, ratios: &[f32]) -> (Vec<RECT>, Vec<RECT>) {
-    let gap = config::gap();
+pub fn spiral(area: RECT, n: usize, ratios: &[f32], gap: i32) -> (Vec<RECT>, Vec<RECT>) {
     let mut tiles = Vec::with_capacity(n);
     let mut regions = Vec::with_capacity(n);
     if n == 0 {
@@ -81,12 +81,12 @@ pub fn apply_resize(
     regions: &[RECT],
     k: usize,
     new: RECT,
+    gap: i32,
 ) -> bool {
     let n = tiles.len();
     if k >= n || regions.len() != n {
         return false;
     }
-    let gap = config::gap();
     let t = tiles[k];
     if ratios.len() < n.saturating_sub(1) {
         ratios.resize(n.saturating_sub(1), 0.5);
@@ -150,7 +150,7 @@ fn tiles_at_least(tiles: &[RECT], min_w: i32, min_h: i32) -> bool {
 ///    neighbours give up the space instead, so such a window does not overlap them.
 ///
 /// `min_w`/`min_h` is the comfortable minimum tile; `mins` maps a window handle to the minimum
-/// size that window's application enforces.
+/// size that window's application enforces. `gap` is passed through to `spiral`/`apply_resize`.
 pub fn spiral_fitted(
     area: RECT,
     windows: &[isize],
@@ -158,6 +158,7 @@ pub fn spiral_fitted(
     mins: &HashMap<isize, (i32, i32)>,
     min_w: i32,
     min_h: i32,
+    gap: i32,
 ) -> (Vec<RECT>, Vec<RECT>) {
     let n = windows.len();
     let mut rs = ratios.to_vec();
@@ -166,14 +167,13 @@ pub fn spiral_fitted(
     // narrow the master tile while that makes the other tiles fit the comfortable minimum; the
     // master itself never goes below `min_w`
     if n >= 2 {
-        let gap = config::gap();
         let master_span = (area.right - area.left - 2 * gap - gap).max(1);
         let floor = (min_w as f32 / master_span as f32).clamp(MIN_RATIO, 0.5);
         let mut r0 = rs[0].clamp(floor, MAX_RATIO);
         while r0 > floor {
             let mut trial = rs.clone();
             trial[0] = r0;
-            if tiles_at_least(&spiral(area, n, &trial).0, min_w, min_h) {
+            if tiles_at_least(&spiral(area, n, &trial, gap).0, min_w, min_h) {
                 break;
             }
             r0 = (r0 - 0.02).max(floor);
@@ -181,7 +181,7 @@ pub fn spiral_fitted(
         rs[0] = r0;
     }
 
-    let mut out = spiral(area, n, &rs);
+    let mut out = spiral(area, n, &rs, gap);
     // each pass grows the tiles that are still too small; a few passes are enough in practice
     for _ in 0..4 {
         let (tiles, regions) = (out.0.clone(), out.1.clone());
@@ -221,14 +221,14 @@ pub fn spiral_fitted(
                     d.top -= dh;
                 }
             }
-            if apply_resize(&mut rs, &tiles, &regions, k, d) {
+            if apply_resize(&mut rs, &tiles, &regions, k, d, gap) {
                 changed = true;
             }
         }
         if !changed {
             break;
         }
-        out = spiral(area, n, &rs);
+        out = spiral(area, n, &rs, gap);
     }
     out
 }
@@ -412,8 +412,11 @@ mod tests {
         bottom: 1392,
     };
 
+    /// The default gap (`config.toml` default), passed explicitly now that the module is pure.
+    const GAP: i32 = 10;
+
     fn layout(n: usize, ratios: &[f32]) -> (Vec<RECT>, Vec<RECT>) {
-        spiral(AREA, n, ratios)
+        spiral(AREA, n, ratios, GAP)
     }
 
     /// Drag one edge of window k to `v`, rebuild the layout, return the new tiles.
@@ -423,7 +426,7 @@ mod tests {
         edit(&mut new);
         let mut ratios = vec![0.5; n - 1];
         assert!(
-            apply_resize(&mut ratios, &tiles, &regions, k, new),
+            apply_resize(&mut ratios, &tiles, &regions, k, new, GAP),
             "ratios should change"
         );
         layout(n, &ratios).0
@@ -453,12 +456,12 @@ mod tests {
     #[test]
     fn a_minimum_size_grows_the_tile_and_pushes_neighbours() {
         let windows = [10isize, 20, 30];
-        let (base, _) = spiral(AREA, 3, &[]);
+        let (base, _) = spiral(AREA, 3, &[], GAP);
         let w0 = base[0].right - base[0].left;
         let min_w = w0 + 200;
         let mut mins = HashMap::new();
         mins.insert(10isize, (min_w, 0));
-        let (t, _) = spiral_fitted(AREA, &windows, &[], &mins, 0, 0);
+        let (t, _) = spiral_fitted(AREA, &windows, &[], &mins, 0, 0, GAP);
         assert!(
             (t[0].right - t[0].left) >= min_w - 4,
             "tile 0 grew to fit its minimum: {:?}",
@@ -470,8 +473,8 @@ mod tests {
         assert_eq!(t[1].left, t[2].left);
         assert_eq!(t[1].right, t[2].right);
         // without a minimum and no comfortable minimum the layout is unchanged
-        let (same, _) = spiral_fitted(AREA, &windows, &[], &HashMap::new(), 0, 0);
-        let (plain, _) = spiral(AREA, 3, &[]);
+        let (same, _) = spiral_fitted(AREA, &windows, &[], &HashMap::new(), 0, 0, GAP);
+        let (plain, _) = spiral(AREA, 3, &[], GAP);
         assert_eq!(same, plain);
     }
 
@@ -479,8 +482,8 @@ mod tests {
     fn the_master_tile_is_narrowed_so_every_tile_fits_the_comfortable_minimum() {
         // many windows: with equal halves the last tiles are narrower than the comfortable minimum
         let windows: Vec<isize> = (0..6).map(|i| 100 + i).collect();
-        let (plain, _) = spiral(AREA, 6, &[]);
-        let (fitted, _) = spiral_fitted(AREA, &windows, &[], &HashMap::new(), 480, 320);
+        let (plain, _) = spiral(AREA, 6, &[], GAP);
+        let (fitted, _) = spiral_fitted(AREA, &windows, &[], &HashMap::new(), 480, 320, GAP);
         assert!(
             !tiles_at_least(&plain, 480, 320),
             "with equal halves a tile is too narrow: {plain:?}"
@@ -495,12 +498,12 @@ mod tests {
     #[test]
     fn a_minimum_size_of_a_last_window_grows_it_to_the_left() {
         let windows = [10isize, 20, 30];
-        let (base, _) = spiral(AREA, 3, &[]);
+        let (base, _) = spiral(AREA, 3, &[], GAP);
         let w2 = base[2].right - base[2].left;
         let min_w = w2 + 150;
         let mut mins = HashMap::new();
         mins.insert(30isize, (min_w, 0)); // window 2 is the last one
-        let (t, _) = spiral_fitted(AREA, &windows, &[], &mins, 0, 0);
+        let (t, _) = spiral_fitted(AREA, &windows, &[], &mins, 0, 0, GAP);
         assert!(
             (t[2].right - t[2].left) >= min_w - 4,
             "last tile grew to the left: {:?}",
@@ -544,7 +547,7 @@ mod tests {
         new.right -= 200;
         new.bottom -= 200;
         let mut ratios = vec![0.5; 2];
-        assert!(!apply_resize(&mut ratios, &tiles, &regions, 2, new));
+        assert!(!apply_resize(&mut ratios, &tiles, &regions, 2, new, GAP));
     }
 
     #[test]

@@ -3,24 +3,28 @@
 //! `config.toml` and applies it right away.
 
 use std::cell::RefCell;
-use std::sync::atomic::{AtomicIsize, Ordering};
+use std::sync::atomic::{AtomicIsize, AtomicU32, Ordering};
 
 use windows::core::{w, PCWSTR};
 use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, RECT, WPARAM};
-use windows::Win32::Graphics::Gdi::{GetStockObject, DEFAULT_GUI_FONT};
+use windows::Win32::Graphics::Gdi::{
+    CreateFontW, DeleteObject, GetStockObject, CLEARTYPE_QUALITY, CLIP_DEFAULT_PRECIS,
+    DEFAULT_CHARSET, DEFAULT_GUI_FONT, DEFAULT_PITCH, FW_NORMAL, HFONT, HGDIOBJ,
+    OUT_DEFAULT_PRECIS,
+};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+use windows::Win32::UI::HiDpi::{AdjustWindowRectExForDpi, GetDpiForSystem};
 use windows::Win32::UI::WindowsAndMessaging::{
-    AdjustWindowRect, CreateWindowExW, DefWindowProcW, DestroyWindow, GetSystemMetrics,
-    GetWindowTextW, IsIconic, RegisterClassW, SendMessageW, SetForegroundWindow, SetWindowTextW,
-    ShowWindow, BM_GETCHECK, BM_SETCHECK, BS_AUTOCHECKBOX, BS_AUTORADIOBUTTON, BS_GROUPBOX,
-    BS_PUSHBUTTON, CBS_DROPDOWNLIST, CB_ADDSTRING, CB_GETCURSEL, CB_SETCURSEL, ES_AUTOHSCROLL,
-    ES_AUTOVSCROLL, ES_MULTILINE, HMENU, SM_CXSCREEN, SM_CYSCREEN, SW_HIDE, SW_RESTORE, SW_SHOW,
-    WINDOW_EX_STYLE, WINDOW_STYLE, WM_CLOSE, WM_COMMAND, WM_CREATE, WM_SETFONT, WNDCLASSW,
-    WS_BORDER, WS_CAPTION, WS_CHILD, WS_CLIPCHILDREN, WS_DISABLED, WS_MINIMIZEBOX, WS_SYSMENU,
-    WS_TABSTOP, WS_VISIBLE, WS_VSCROLL,
+    CreateWindowExW, DefWindowProcW, DestroyWindow, GetSystemMetrics, GetWindowTextW, IsIconic,
+    RegisterClassW, SendMessageW, SetForegroundWindow, SetWindowTextW, ShowWindow, BM_GETCHECK,
+    BM_SETCHECK, BS_AUTOCHECKBOX, BS_AUTORADIOBUTTON, BS_GROUPBOX, BS_PUSHBUTTON, CBS_DROPDOWNLIST,
+    CB_ADDSTRING, CB_GETCURSEL, CB_SETCURSEL, ES_AUTOHSCROLL, ES_AUTOVSCROLL, ES_MULTILINE, HMENU,
+    SM_CXSCREEN, SM_CYSCREEN, SW_HIDE, SW_RESTORE, SW_SHOW, WINDOW_EX_STYLE, WINDOW_STYLE,
+    WM_CLOSE, WM_COMMAND, WM_CREATE, WM_SETFONT, WNDCLASSW, WS_BORDER, WS_CAPTION, WS_CHILD,
+    WS_CLIPCHILDREN, WS_DISABLED, WS_MINIMIZEBOX, WS_SYSMENU, WS_TABSTOP, WS_VISIBLE, WS_VSCROLL,
 };
 
-use crate::config::{self, FullscreenWindows, Layout};
+use crate::config::{self, FullscreenWindows, Layout, MediaWindows};
 use crate::geometry::Easing;
 use crate::tray;
 
@@ -34,7 +38,7 @@ const ID_LOG: usize = 103;
 const ID_QUIT: usize = 104;
 
 const CLIENT_W: i32 = 540;
-const CLIENT_H: i32 = 785;
+const CLIENT_H: i32 = 815;
 const WIN_STYLE: u32 = WS_CAPTION.0 | WS_SYSMENU.0 | WS_MINIMIZEBOX.0 | WS_CLIPCHILDREN.0;
 
 // styles (windows-rs 0.61: WS_* are WINDOW_STYLE, BS_/ES_/CBS_ are plain i32)
@@ -56,6 +60,40 @@ const S_HOTKEYS: u32 = WS_CHILD.0
     | ES_AUTOVSCROLL as u32;
 
 static LAUNCHER: AtomicIsize = AtomicIsize::new(0);
+/// DPI of the display the launcher is built for (96 = 100%). All control coordinates are written
+/// in these 96-DPI "design" units and scaled by `scale` at creation, so the window and its text
+/// stay readable on high-DPI screens.
+static DPI: AtomicU32 = AtomicU32::new(96);
+/// The DPI-scaled UI font (0 = fall back to the stock GUI font).
+static FONT: AtomicIsize = AtomicIsize::new(0);
+
+/// Scales a design-unit coordinate / size to physical pixels for the current `DPI`.
+fn scale(v: i32) -> i32 {
+    (v as f64 * DPI.load(Ordering::Relaxed) as f64 / 96.0).round() as i32
+}
+
+/// Creates a UI font at 9 pt scaled for `dpi` (the process is per-monitor-DPI aware, so a stock
+/// font would be unscaled and look tiny on a high-DPI display).
+fn make_font(dpi: u32) -> HFONT {
+    unsafe {
+        CreateFontW(
+            -(9 * dpi as i32 / 72), // negative height = character height in pixels
+            0,
+            0,
+            0,
+            FW_NORMAL.0 as i32,
+            0,
+            0,
+            0,
+            DEFAULT_CHARSET,
+            OUT_DEFAULT_PRECIS,
+            CLIP_DEFAULT_PRECIS,
+            CLEARTYPE_QUALITY,
+            DEFAULT_PITCH.0 as u32,
+            w!("Segoe UI"),
+        )
+    }
+}
 
 #[derive(Default)]
 struct Controls {
@@ -74,6 +112,7 @@ struct Controls {
     border_color: HWND,
     border_width: HWND,
     fullscreen: HWND,
+    media: HWND,
     hotkeys: HWND,
     autostart: HWND,
 }
@@ -104,6 +143,7 @@ unsafe fn mk(
 ) -> HWND {
     let hmod = GetModuleHandleW(None).unwrap_or_default();
     let t = wide(text);
+    let (x, y, w, h) = (scale(x), scale(y), scale(w), scale(h));
     let h = CreateWindowExW(
         WINDOW_EX_STYLE(0),
         class,
@@ -119,7 +159,12 @@ unsafe fn mk(
         None,
     )
     .unwrap_or_default();
-    let font = GetStockObject(DEFAULT_GUI_FONT);
+    let raw = FONT.load(Ordering::Relaxed);
+    let font = if raw != 0 {
+        HGDIOBJ(raw as *mut _)
+    } else {
+        GetStockObject(DEFAULT_GUI_FONT)
+    };
     sm(h, WM_SETFONT, font.0 as usize, 1);
     h
 }
@@ -276,7 +321,7 @@ fn build_controls(parent: HWND) {
             true,
         );
 
-        group(parent, "Border", 10, 415, 520, 120);
+        group(parent, "Windows & border", 10, 415, 520, 150);
         c.border = check(
             parent,
             "Draw a border around the focused window",
@@ -291,23 +336,25 @@ fn build_controls(parent: HWND) {
         c.border_width = edit(parent, 460, 442, 60);
         label(parent, "Fullscreen windows:", 20, 501);
         c.fullscreen = combo(parent, &["minimize", "ignore"], 0, 200, 499, 160);
+        label(parent, "Media (photo/video):", 20, 529);
+        c.media = combo(parent, &["float", "tile"], 0, 200, 527, 160);
 
         group(
             parent,
             "Hotkeys  (one per line, e.g.  focus_left = alt+h)",
             10,
-            545,
+            575,
             520,
             150,
         );
-        c.hotkeys = mk(parent, w!("EDIT"), "", S_HOTKEYS, 0, 20, 570, 500, 115);
+        c.hotkeys = mk(parent, w!("EDIT"), "", S_HOTKEYS, 0, 20, 600, 500, 115);
 
-        button(parent, "Save && apply", ID_SAVE, 10, 705, 120);
-        button(parent, "Check for updates", ID_UPDATES, 140, 705, 150);
-        button(parent, "Open config", ID_CONFIG, 300, 705, 110);
-        button(parent, "Open log", ID_LOG, 420, 705, 100);
-        c.autostart = check(parent, "Start with Windows", 10, 748, 300, false);
-        button(parent, "Quit tile-rs", ID_QUIT, 430, 742, 100);
+        button(parent, "Save && apply", ID_SAVE, 10, 735, 120);
+        button(parent, "Check for updates", ID_UPDATES, 140, 735, 150);
+        button(parent, "Open config", ID_CONFIG, 300, 735, 110);
+        button(parent, "Open log", ID_LOG, 420, 735, 100);
+        c.autostart = check(parent, "Start with Windows", 10, 778, 300, false);
+        button(parent, "Quit tile-rs", ID_QUIT, 430, 772, 100);
     }
     C.with(|cc| *cc.borrow_mut() = c);
 }
@@ -366,6 +413,11 @@ fn save_and_apply(hwnd: HWND) {
         } else {
             "minimize"
         };
+        let media = if combo_sel(c.media) == 1 {
+            "tile"
+        } else {
+            "float"
+        };
         let num = |h: HWND| get_text(h).trim().to_string();
         let pairs: Vec<(&str, String)> = vec![
             ("layout", format!("\"{}\"", layout.name())),
@@ -383,6 +435,7 @@ fn save_and_apply(hwnd: HWND) {
             ("border_color", format!("\"{}\"", num(c.border_color))),
             ("border_width", num(c.border_width)),
             ("fullscreen_windows", format!("\"{fullscreen}\"")),
+            ("media_windows", format!("\"{media}\"")),
         ];
         (pairs, get_text(c.hotkeys), is_checked(c.autostart))
     });
@@ -482,6 +535,12 @@ fn populate() {
             usize::from(c.fullscreen_windows == FullscreenWindows::Ignore),
             0,
         );
+        sm(
+            cc.media,
+            CB_SETCURSEL,
+            usize::from(c.media_windows == MediaWindows::Tile),
+            0,
+        );
         let col = c.border_color;
         set_text(
             cc.border_color,
@@ -539,13 +598,23 @@ pub fn create() -> bool {
             ..Default::default()
         };
         RegisterClassW(&wc);
+        // build the launcher for the display's DPI before the controls are created (WM_CREATE)
+        let dpi = GetDpiForSystem().max(96);
+        DPI.store(dpi, Ordering::Relaxed);
+        FONT.store(make_font(dpi).0 as isize, Ordering::Relaxed);
         let mut rc = RECT {
             left: 0,
             top: 0,
-            right: CLIENT_W,
-            bottom: CLIENT_H,
+            right: scale(CLIENT_W),
+            bottom: scale(CLIENT_H),
         };
-        let _ = AdjustWindowRect(&mut rc, WINDOW_STYLE(WIN_STYLE), false);
+        let _ = AdjustWindowRectExForDpi(
+            &mut rc,
+            WINDOW_STYLE(WIN_STYLE),
+            false,
+            WINDOW_EX_STYLE(0),
+            dpi,
+        );
         let (w, h) = (rc.right - rc.left, rc.bottom - rc.top);
         let x = (GetSystemMetrics(SM_CXSCREEN) - w) / 2;
         let y = (GetSystemMetrics(SM_CYSCREEN) - h) / 2;
@@ -601,6 +670,12 @@ pub fn destroy() {
     if raw != 0 {
         unsafe {
             let _ = DestroyWindow(HWND(raw as *mut _));
+        }
+    }
+    let font = FONT.swap(0, Ordering::Relaxed);
+    if font != 0 {
+        unsafe {
+            let _ = DeleteObject(HGDIOBJ(font as *mut _));
         }
     }
 }

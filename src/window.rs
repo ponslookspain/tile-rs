@@ -23,7 +23,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
     GW_OWNER, WS_CAPTION, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_POPUP, WS_THICKFRAME,
 };
 
-use crate::config::{self, FullscreenWindows, Rule};
+use crate::config::{self, FullscreenWindows, MediaWindows, Rule};
 use crate::prof;
 
 /// In `run` mode, windows the user maximized / made fullscreen are left alone.
@@ -31,6 +31,9 @@ pub static SKIP_ZOOMED: AtomicBool = AtomicBool::new(false);
 
 /// Skip reason for a window that runs fullscreen / borderless fullscreen.
 pub const FULLSCREEN_REASON: &str = "fullscreen (game / borderless)";
+
+/// Skip reason for a photo / video window left floating by the `media_windows` setting.
+pub const MEDIA_REASON: &str = "media (photo/video): floating";
 
 /// Window classes that are never tiled (shell UI, overlays, our own overlays).
 const SKIP_CLASSES: &[&str] = &[
@@ -44,6 +47,91 @@ const SKIP_CLASSES: &[&str] = &[
     "tile-rs-indicator",
 ];
 
+/// Photo and video file extensions (lower-case, without the dot). Audio is deliberately left out:
+/// an audio player is an ordinary window, while a photo/video viewer is usually best left floating.
+const MEDIA_EXTS: &[&str] = &[
+    // photos
+    "jpg", "jpeg", "jfif", "png", "gif", "bmp", "webp", "tif", "tiff", "heic", "heif", "avif",
+    "svg", "raw", "cr2", "nef", "arw", "dng", // videos
+    "mp4", "mkv", "avi", "mov", "wmv", "flv", "webm", "m4v", "mpg", "mpeg", "m2ts", "3gp", "ogv",
+    "vob", "rmvb", "divx",
+];
+
+/// Executables (lower-case, without ".exe") that are photo / video viewers or players, so a window
+/// of one of them counts as a media window even if its title does not name the file.
+const MEDIA_PROCESSES: &[&str] = &[
+    // photos
+    "microsoft.photos",
+    "photosapp",
+    "imageglass",
+    "irfanview",
+    "irfanview64",
+    "honeyview",
+    "xnview",
+    "xnviewmp",
+    "nomacs",
+    "jpegview",
+    "fsviewer",
+    "fsviewer64",
+    // video
+    "vlc",
+    "mpv",
+    "mpvnet",
+    "mpc-hc",
+    "mpc-hc64",
+    "mpc-be",
+    "mpc-be64",
+    "wmplayer",
+    "potplayer",
+    "potplayermini",
+    "potplayermini64",
+    "kmplayer",
+    "kmplayer64",
+    "5kplayer",
+];
+
+/// Executables (lower-case, without ".exe") that are web browsers. A browser tab that opens an
+/// image or video names it in the window title ("holiday.jpg - Google Chrome"), but the browser is
+/// an ordinary window, so a title match from one of these is ignored.
+const BROWSER_PROCESSES: &[&str] = &[
+    "chrome",
+    "msedge",
+    "firefox",
+    "brave",
+    "opera",
+    "opera_gx",
+    "vivaldi",
+    "chromium",
+    "iexplore",
+    "waterfox",
+    "librewolf",
+    "thorium",
+    "arc",
+];
+
+/// True if `title` names a photo / video file: the extension must be followed by a boundary, so a
+/// title like "index.ts" or a word merely containing the letters is not mistaken for a media file.
+fn title_has_media_ext(title: &str) -> bool {
+    let t = title.to_ascii_lowercase();
+    let bytes = t.as_bytes();
+    MEDIA_EXTS.iter().any(|e| {
+        let needle = format!(".{e}");
+        t.match_indices(&needle)
+            .any(|(i, _)| match bytes.get(i + needle.len()) {
+                None => true,
+                Some(&c) => !c.is_ascii_alphanumeric() && c != b'_',
+            })
+    })
+}
+
+/// True if the window looks like a photo / video opened in a viewer or player: its title names a
+/// media file ("holiday.jpg - Photos", "clip.mp4 - VLC media player") or its process is a known
+/// viewer / player. A browser is never treated as a viewer just because its title names a file.
+fn is_media(title: &str, process: &str) -> bool {
+    MEDIA_PROCESSES.contains(&process)
+        || (!BROWSER_PROCESSES.contains(&process) && title_has_media_ext(title))
+}
+
 #[derive(Debug)]
 pub struct Win {
     pub hwnd: HWND,
@@ -55,7 +143,8 @@ pub struct Win {
 }
 
 fn text_of(f: impl Fn(&mut [u16]) -> i32) -> String {
-    let mut buf = [0u16; 256];
+    // window titles can be long; a small buffer would truncate them (and break `title` rules)
+    let mut buf = [0u16; 1024];
     let n = f(&mut buf);
     String::from_utf16_lossy(&buf[..n.max(0) as usize])
 }
@@ -66,7 +155,9 @@ fn process_name(pid: u32) -> String {
         let Ok(h) = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) else {
             return String::new();
         };
-        let mut buf = [0u16; 520];
+        // a full executable path can be very long (up to ~32767 chars with a \\?\ prefix), so use
+        // a buffer big enough that `process` rules match even for unusually deep installations
+        let mut buf = vec![0u16; 32768];
         let mut len = buf.len() as u32;
         let ok =
             QueryFullProcessImageNameW(h, PROCESS_NAME_WIN32, PWSTR(buf.as_mut_ptr()), &mut len)
@@ -259,17 +350,30 @@ pub enum Verdict {
     Skipped(Win, &'static str),
 }
 
-/// Applies the config rules to `w`. Returns true if a rule asked to float it.
-fn apply_rules(w: &mut Win, rules: &[Rule]) -> bool {
+/// What a matching config rule asked for.
+enum RuleAction {
+    /// Rule matched but only set a workspace (or nothing actionable).
+    None,
+    /// `action = "float"`: never tile this window.
+    Float,
+    /// `action = "tile"`: tile it even if it would otherwise float (e.g. a media window).
+    Tile,
+}
+
+/// Applies the config rules to `w`. `process` is the cached executable name of `w`.
+fn apply_rules(w: &mut Win, rules: &[Rule], process: &str) -> RuleAction {
     if rules.is_empty() {
-        return false;
+        return RuleAction::None;
     }
-    let pn = process_name_cached(w.pid);
-    if let Some(r) = rules.iter().find(|r| rule_matches(r, w, &pn)) {
+    if let Some(r) = rules.iter().find(|r| rule_matches(r, w, process)) {
         w.rule_ws = r.workspace.map(|n| n - 1);
-        return r.action.as_deref() == Some("float");
+        return match r.action.as_deref() {
+            Some("float") => RuleAction::Float,
+            Some("tile") => RuleAction::Tile,
+            _ => RuleAction::None,
+        };
     }
-    false
+    RuleAction::None
 }
 
 /// Decides what to do with one window. Cheap checks first: invisible windows (the vast majority
@@ -281,8 +385,19 @@ pub fn classify(hwnd: HWND, rules: &[Rule]) -> Verdict {
     let mut w = win_info(hwnd);
     match skip_reason(hwnd, &w.title, &w.class) {
         None => {
-            if apply_rules(&mut w, rules) {
-                return Verdict::Skipped(w, "rule: float");
+            let media_float = config::media_windows() == MediaWindows::Float;
+            let pn = if !rules.is_empty() || media_float {
+                process_name_cached(w.pid)
+            } else {
+                String::new()
+            };
+            match apply_rules(&mut w, rules, &pn) {
+                RuleAction::Float => return Verdict::Skipped(w, "rule: float"),
+                RuleAction::Tile => return Verdict::Tileable(w),
+                RuleAction::None => {}
+            }
+            if media_float && is_media(&w.title, &pn) {
+                return Verdict::Skipped(w, MEDIA_REASON);
             }
             Verdict::Tileable(w)
         }
@@ -290,7 +405,9 @@ pub fn classify(hwnd: HWND, rules: &[Rule]) -> Verdict {
             if config::fullscreen_windows() == FullscreenWindows::Ignore {
                 Verdict::Skipped(w, r)
             } else {
-                apply_rules(&mut w, rules); // a rule may assign it to a workspace
+                // a rule may assign it to a workspace
+                let pn = process_name_cached(w.pid);
+                apply_rules(&mut w, rules, &pn);
                 Verdict::Fullscreen(w)
             }
         }
@@ -326,4 +443,35 @@ pub fn collect() -> Collector {
     }
     // EnumWindows walks top-to-bottom in Z order; keep that, it is a stable, sensible order.
     c
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn media_titles_are_detected_with_a_boundary() {
+        assert!(title_has_media_ext("holiday.jpg - Photos"));
+        assert!(title_has_media_ext("clip.mp4"));
+        assert!(title_has_media_ext("movie.MKV - VLC")); // case-insensitive
+        assert!(title_has_media_ext("clip.mp4"));
+        // the extension must end the token, so words that merely contain it do not match
+        assert!(!title_has_media_ext("report.pngs.zip"));
+        assert!(!title_has_media_ext("my_mp4_notes.txt"));
+        assert!(!title_has_media_ext("index.ts")); // ts is deliberately not a video extension
+        assert!(!title_has_media_ext("Just a normal document"));
+    }
+
+    #[test]
+    fn is_media_uses_the_process_or_the_title_but_not_for_browsers() {
+        // a known player/viewer is media even without a file in the title
+        assert!(is_media("VLC media player", "vlc"));
+        assert!(is_media("", "microsoft.photos"));
+        // an unknown process is media only when its title names a file
+        assert!(is_media("holiday.jpg", "someviewer"));
+        assert!(!is_media("Notepad", "notepad"));
+        // a browser is never a viewer, even when a tab names an image
+        assert!(!is_media("holiday.jpg - Google Chrome", "chrome"));
+        assert!(!is_media("clip.mp4 - Microsoft Edge", "msedge"));
+    }
 }

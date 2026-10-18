@@ -53,6 +53,16 @@ pub enum FullscreenWindows {
     Ignore,
 }
 
+/// How to treat a window that has a photo or video open (a viewer / player showing a media file).
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum MediaWindows {
+    /// Leave it as the app opened it (a movable floating window). The default.
+    #[default]
+    Float,
+    /// Tile it like any other window.
+    Tile,
+}
+
 /// The tiling layout. Only `Spiral` is implemented so far; the others are placeholders (they are
 /// shown in the launcher as "coming soon" and fall back to the spiral).
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
@@ -106,6 +116,7 @@ struct RawConfig {
     animation_ms: Option<u32>,
     easing: Option<String>,
     fullscreen_windows: Option<String>,
+    media_windows: Option<String>,
     resize_step: Option<u32>,
     border: Option<bool>,
     border_color: Option<String>,
@@ -132,6 +143,8 @@ pub struct Config {
     pub easing: Easing,
     /// How to handle windows that run fullscreen / borderless fullscreen.
     pub fullscreen_windows: FullscreenWindows,
+    /// How to handle a window with a photo / video open.
+    pub media_windows: MediaWindows,
     /// Pixels per keypress for the resize hotkeys.
     pub resize_step: u32,
     /// Draw a border around the focused tiled window.
@@ -209,6 +222,11 @@ workspace_indicator = true
 # them while their workspace is not shown and restores them when you switch back; "ignore" leaves
 # them completely alone.
 fullscreen_windows = "minimize"
+
+# Windows with a photo or video open (a viewer / player showing a media file): "float" leaves the
+# window as the app opened it (a movable window you can put anywhere), "tile" treats it like any
+# other window. Fullscreen playback is still handled by fullscreen_windows above.
+media_windows = "float"
 
 [hotkeys]
 # Format: "modifiers+key". Modifiers: alt, ctrl, shift, win.
@@ -370,6 +388,13 @@ pub fn migrate(text: &str) -> Option<String> {
                 .into(),
         );
         top.push("fullscreen_windows = \"minimize\"".into());
+    }
+    if !has("media_windows") {
+        top.push(
+            "# Windows with a photo/video open: \"float\" (as the app opened it) or \"tile\"."
+                .into(),
+        );
+        top.push("media_windows = \"float\"".into());
     }
     if !top.is_empty() {
         let at = lines
@@ -601,6 +626,17 @@ pub fn parse_fullscreen_windows(s: &str) -> Result<FullscreenWindows, String> {
     }
 }
 
+/// "float", "tile" -> `MediaWindows`.
+pub fn parse_media_windows(s: &str) -> Result<MediaWindows, String> {
+    match s.trim().to_ascii_lowercase().as_str() {
+        "float" => Ok(MediaWindows::Float),
+        "tile" => Ok(MediaWindows::Tile),
+        other => Err(format!(
+            "media_windows = \"{other}\": expected \"float\" or \"tile\""
+        )),
+    }
+}
+
 /// "#rrggbb" (or "rrggbb") -> Windows COLORREF (0x00BBGGRR)
 pub fn parse_color(s: &str) -> Result<u32, String> {
     let h = s.trim().trim_start_matches('#');
@@ -631,6 +667,7 @@ pub fn parse(text: &str) -> Result<Config, String> {
     let easing = parse_easing(raw.easing.as_deref().unwrap_or("out_cubic"))?;
     let fullscreen_windows =
         parse_fullscreen_windows(raw.fullscreen_windows.as_deref().unwrap_or("minimize"))?;
+    let media_windows = parse_media_windows(raw.media_windows.as_deref().unwrap_or("float"))?;
     let resize_step = raw.resize_step.unwrap_or(40);
     if !(1..=500).contains(&resize_step) {
         return Err(format!(
@@ -682,9 +719,9 @@ pub fn parse(text: &str) -> Result<Config, String> {
             }
         }
         if let Some(a) = &r.action {
-            if a != "float" {
+            if a != "float" && a != "tile" {
                 return Err(format!(
-                    "rule #{}: unknown action \"{a}\" (only \"float\")",
+                    "rule #{}: unknown action \"{a}\" (only \"float\" or \"tile\")",
                     i + 1
                 ));
             }
@@ -703,6 +740,7 @@ pub fn parse(text: &str) -> Result<Config, String> {
         animation_ms,
         easing,
         fullscreen_windows,
+        media_windows,
         resize_step,
         border,
         border_color,
@@ -770,6 +808,11 @@ pub fn fullscreen_windows() -> FullscreenWindows {
         .unwrap_or_default()
 }
 
+/// How to treat a window with a photo / video open.
+pub fn media_windows() -> MediaWindows {
+    cell().read().map(|c| c.media_windows).unwrap_or_default()
+}
+
 /// The border colour (COLORREF) if the border is enabled.
 pub fn border() -> Option<u32> {
     cell()
@@ -830,6 +873,7 @@ mod tests {
         assert_eq!(c.animation_ms, 140);
         assert_eq!(c.easing, Easing::OutCubic);
         assert_eq!(c.fullscreen_windows, FullscreenWindows::Minimize);
+        assert_eq!(c.media_windows, MediaWindows::Float);
         assert_eq!(c.resize_step, 40);
         assert!(c.border);
         assert_eq!(c.border_color, 0xFFBC8D); // #8dbcff as COLORREF (BGR)
@@ -878,6 +922,7 @@ mod tests {
         assert_eq!(c.animation_ms, 140);
         assert_eq!(c.easing, Easing::OutCubic);
         assert_eq!(c.fullscreen_windows, FullscreenWindows::Minimize);
+        assert_eq!(c.media_windows, MediaWindows::Float);
         assert_eq!(c.resize_step, 40);
         assert!(c
             .bindings
@@ -906,7 +951,7 @@ mod tests {
         let once = migrate(OLD_CONFIG).unwrap();
         assert!(migrate(&once).is_none(), "second run must change nothing");
         // a key the user commented out or turned off is not re-added
-        let custom = "layout = \"spiral\"\ngap = 5\nanimations = false\n# animation_ms = 99\neasing = \"linear\"\nfullscreen_windows = \"ignore\"\nresize_step = 10\nborder = false\n# border_color = \"#112233\"\nborder_width = 3\nmin_tile_width = 400\nmin_tile_height = 300\nmax_tiles = 6\nauto_overflow = false\nworkspace_indicator = false\n\n[hotkeys]\n# grow_width = \"alt+plus\"\n# shrink_width = \"alt+minus\"\nminimize = \"alt+shift+m\"\nquit = \"ctrl+alt+q\"\n";
+        let custom = "layout = \"spiral\"\ngap = 5\nanimations = false\n# animation_ms = 99\neasing = \"linear\"\nfullscreen_windows = \"ignore\"\nmedia_windows = \"tile\"\nresize_step = 10\nborder = false\n# border_color = \"#112233\"\nborder_width = 3\nmin_tile_width = 400\nmin_tile_height = 300\nmax_tiles = 6\nauto_overflow = false\nworkspace_indicator = false\n\n[hotkeys]\n# grow_width = \"alt+plus\"\n# shrink_width = \"alt+minus\"\nminimize = \"alt+shift+m\"\nquit = \"ctrl+alt+q\"\n";
         assert!(migrate(custom).is_none());
         // the freshly generated default never needs migrating
         assert!(migrate(&default_config()).is_none());
@@ -980,6 +1025,24 @@ mod tests {
                 .fullscreen_windows,
             FullscreenWindows::Ignore
         );
+    }
+
+    #[test]
+    fn media_windows_parses_and_rejects_unknown() {
+        assert_eq!(parse_media_windows("float").unwrap(), MediaWindows::Float);
+        assert_eq!(parse_media_windows("TILE").unwrap(), MediaWindows::Tile);
+        assert_eq!(parse_media_windows(" tile ").unwrap(), MediaWindows::Tile);
+        assert!(parse_media_windows("hide").is_err());
+        assert!(parse("media_windows = \"hide\"").is_err());
+        assert_eq!(
+            parse("media_windows = \"tile\"").unwrap().media_windows,
+            MediaWindows::Tile
+        );
+        // a rule may force a media window back into the tiling
+        let c = parse("media_windows = \"float\"\n[[rules]]\nprocess = \"vlc\"\naction = \"tile\"")
+            .unwrap();
+        assert_eq!(c.media_windows, MediaWindows::Float);
+        assert_eq!(c.rules[0].action.as_deref(), Some("tile"));
     }
 
     #[test]
