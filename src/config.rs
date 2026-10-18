@@ -319,6 +319,9 @@ pub fn migrate(text: &str) -> Option<String> {
     if !has("minimize") {
         hot.push(r#"minimize      = "alt+shift+m""#.into());
     }
+    if !has("quit") {
+        hot.push(r#"quit          = "ctrl+alt+q""#.into());
+    }
     if !hot.is_empty() {
         if let Some(i) = lines.iter().position(|l| l.trim() == "[hotkeys]") {
             for (n, l) in hot.into_iter().enumerate() {
@@ -952,6 +955,17 @@ mod tests {
         assert!(new.contains("focus_left  = [\"alt+h\", \"alt+left\"]"));
         assert!(new.contains("process = \"Taskmgr\""));
         assert_eq!(c.rules.len(), 1);
+    }
+
+    #[test]
+    fn migrate_adds_the_quit_hotkey_to_a_config_that_lacks_it() {
+        let old = "[hotkeys]\nfocus_left = \"alt+h\"\n";
+        let new = migrate(old).expect("quit must be added");
+        let c = parse(&new).unwrap();
+        assert!(c
+            .bindings
+            .iter()
+            .any(|(a, s)| *a == Action::Quit && s == "ctrl+alt+q"));
     }
 
     #[test]

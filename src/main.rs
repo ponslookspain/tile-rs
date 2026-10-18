@@ -1856,45 +1856,38 @@ fn focus_workspace(n: u8) {
 
 fn move_to_ws(n: u8) {
     let fg = unsafe { GetForegroundWindow() }.0 as isize;
-    // which kind of window are we moving?
-    let fullscreen = STATE.with(|s| {
+    let cur = STATE.with(|s| s.borrow().cur);
+    // Reassign the window to workspace `n`: a tiled window moves its `ws` entry, a fullscreen one
+    // its `fs_ws` entry. Either way `retile` below makes the new workspace show the right set.
+    let moved = STATE.with(|s| {
         let mut s = s.borrow_mut();
         if s.paused || n >= WS_COUNT {
-            return None;
+            return false;
         }
-        if let Some(&w) = s.fs_ws.get(&fg) {
+        if let Some(w) = s.fs_ws.get(&fg).copied() {
             if w == n {
-                return None;
+                return false;
             }
             s.fs_ws.insert(fg, n);
-            return Some(true);
+            return true;
         }
         if !s.ws.contains_key(&fg) || s.ws[&fg] == n {
-            return None;
+            return false;
         }
         s.ws.insert(fg, n);
         s.last.clear();
         s.last_switch = Some(Instant::now());
-        Some(false)
+        true
     });
-    let Some(fullscreen) = fullscreen else {
+    if !moved {
         return;
-    };
-    let cur = STATE.with(|s| s.borrow().cur);
-    if fullscreen {
-        // retile syncs visibility: hidden if `n` is not the current workspace, shown if it is
-        retile();
-        if n == cur {
-            focus_hwnd(fg);
-        } else {
-            focus_first_or_desktop();
-        }
+    }
+    if n != cur {
+        // follow the window: open the target workspace with the moved window focused
+        switch_ws(n, Some(fg));
     } else {
-        if n != cur {
-            park(HWND(fg as *mut _));
-        }
         retile();
-        focus_first_or_desktop();
+        focus_hwnd(fg);
     }
     log(format!("moved a window to workspace {}", n + 1));
 }
