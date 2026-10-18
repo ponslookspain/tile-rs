@@ -22,7 +22,8 @@ These keys go at the top of the file, before any `[section]`.
 | Key | Default | Meaning |
 |---|---|---|
 | `layout` | `"spiral"` | Tiling layout: `spiral` (dwindle, the default), `master_stack` (a master column on the left, the rest stacked on the right), `grid` or `columns`. |
-| `gap` | `10` | Pixels between windows and around the screen edges. `0`–`200`. |
+| `inner_gap` | `10` | Pixels between neighbouring windows. `0`–`200`. |
+| `outer_gap` | `10` | Pixels around the screen edges. `0`–`200`. The old `gap` still sets both. |
 | `animations` | `true` | Smooth movement of windows when the layout changes. |
 | `animation_ms` | `140` | Duration of the animation, `0`–`1000` ms. `0` turns animations off. Short moves take proportionally less time. |
 | `easing` | `"out_cubic"` | Animation curve: `linear`, `out_quad`, `out_cubic`, `out_quart`, `in_out_cubic`. |
@@ -137,7 +138,8 @@ windows you have maximized yourself.
 ## Example: a compact personal config
 
 ```toml
-gap = 6
+inner_gap = 4
+outer_gap = 10
 animation_ms = 100
 border_color = "#ff9e64"
 

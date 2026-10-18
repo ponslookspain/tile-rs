@@ -7,6 +7,8 @@ follows [Semantic Versioning](https://semver.org) (see [docs/RELEASING.md](docs/
 ## [Unreleased]
 
 ### Added
+- Separate `inner_gap` (between windows) and `outer_gap` (around the screen edges) settings. The
+  old single `gap` still works and sets both, so existing configs are unchanged.
 - A `focus_follows_mouse` setting (default `false`) that moves focus to the tiled window under the
   mouse pointer when the pointer moves onto it. It runs on a timer only while enabled.
 - A `toggle_float` action (default `Alt+Shift+F`) that floats the focused window in place, or tiles

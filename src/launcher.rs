@@ -97,7 +97,8 @@ fn make_font(dpi: u32) -> HFONT {
 
 #[derive(Default)]
 struct Controls {
-    gap: HWND,
+    inner_gap: HWND,
+    outer_gap: HWND,
     animations: HWND,
     anim_ms: HWND,
     easing: HWND,
@@ -277,14 +278,16 @@ fn build_controls(parent: HWND) {
     unsafe {
         group(parent, "General", 10, 10, 520, 170);
         label(parent, "Gap between windows (px):", 20, 40);
-        c.gap = edit(parent, 200, 37, 60);
+        c.inner_gap = edit(parent, 200, 37, 55);
+        label(parent, "Screen edge gap (px):", 280, 40);
+        c.outer_gap = edit(parent, 440, 37, 55);
         c.animations = check(parent, "Smooth animations", 20, 68, 300, true);
         label(parent, "Animation duration (ms):", 20, 96);
         c.anim_ms = edit(parent, 200, 93, 60);
         label(parent, "Easing:", 20, 124);
         c.easing = combo(parent, &EASING_NAMES, 2, 200, 122, 160);
-        label(parent, "Resize step (px):", 360, 40);
-        c.resize_step = edit(parent, 470, 37, 50);
+        label(parent, "Resize step (px):", 20, 152);
+        c.resize_step = edit(parent, 200, 149, 60);
 
         group(parent, "Layout", 10, 190, 520, 215);
         c.layout[0] = radio(parent, "Spiral (dwindle)", 20, 220, true, true);
@@ -414,7 +417,8 @@ fn save_and_apply(hwnd: HWND) {
         let num = |h: HWND| get_text(h).trim().to_string();
         let pairs: Vec<(&str, String)> = vec![
             ("layout", format!("\"{}\"", layout.name())),
-            ("gap", num(c.gap)),
+            ("inner_gap", num(c.inner_gap)),
+            ("outer_gap", num(c.outer_gap)),
             ("animations", is_checked(c.animations).to_string()),
             ("animation_ms", num(c.anim_ms)),
             ("easing", format!("\"{easing}\"")),
@@ -500,7 +504,8 @@ fn populate() {
     let c = config::current();
     C.with(|cc| {
         let cc = cc.borrow();
-        set_text(cc.gap, &c.gap.to_string());
+        set_text(cc.inner_gap, &c.inner_gap.to_string());
+        set_text(cc.outer_gap, &c.outer_gap.to_string());
         set_check(cc.animations, c.animations);
         set_text(cc.anim_ms, &c.animation_ms.to_string());
         let ei = EASINGS.iter().position(|e| *e == c.easing).unwrap_or(2);

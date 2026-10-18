@@ -151,7 +151,8 @@ line, and the previous settings stay active. To get the defaults back, delete th
 tile-rs again.
 
 ```toml
-gap = 10                 # pixels between windows
+inner_gap = 10           # pixels between windows
+outer_gap = 10           # pixels around the screen edges
 animations = true
 animation_ms = 140
 easing = "out_cubic"     # animation curve: linear, out_quad, out_cubic, out_quart, in_out_cubic

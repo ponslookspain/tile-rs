@@ -118,7 +118,10 @@ enum OneOrMany {
 #[derive(Deserialize, Default, Debug)]
 struct RawConfig {
     layout: Option<String>,
+    /// Legacy single gap (used for both inner and outer unless either is set).
     gap: Option<i32>,
+    inner_gap: Option<i32>,
+    outer_gap: Option<i32>,
     animations: Option<bool>,
     animation_ms: Option<u32>,
     easing: Option<String>,
@@ -144,7 +147,10 @@ struct RawConfig {
 pub struct Config {
     /// The tiling layout (`spiral` for now).
     pub layout: Layout,
-    pub gap: i32,
+    /// Gap between neighbouring windows, in pixels.
+    pub inner_gap: i32,
+    /// Gap around the screen edges, in pixels.
+    pub outer_gap: i32,
     pub animations: bool,
     pub animation_ms: u32,
     /// Easing curve of the animations.
@@ -198,8 +204,9 @@ pub fn default_config() -> String {
 # are planned.
 layout = "spiral"
 
-# Gap between windows and around the screen edges, in pixels.
-gap = 10
+# Gap between neighbouring windows (inner) and around the screen edges (outer), in pixels.
+inner_gap = 10
+outer_gap = 10
 
 # Smooth window movement when the layout changes (0..1000 ms; 0 or false = instant).
 # If windows feel laggy on your PC, set animations = false.
@@ -360,6 +367,13 @@ pub fn migrate(text: &str) -> Option<String> {
     if !has("layout") {
         top.push("# Tiling layout: spiral (the only one for now).".into());
         top.push("layout = \"spiral\"".into());
+    }
+    if !has("inner_gap") && !has("gap") {
+        top.push("# Gap between neighbouring windows (inner) and around the edges (outer).".into());
+        top.push("inner_gap = 10".into());
+    }
+    if !has("outer_gap") && !has("gap") {
+        top.push("outer_gap = 10".into());
     }
     if !has("animations") {
         top.push(
@@ -688,9 +702,17 @@ pub fn parse_color(s: &str) -> Result<u32, String> {
 pub fn parse(text: &str) -> Result<Config, String> {
     let raw: RawConfig = toml::from_str(text).map_err(|e| e.to_string())?;
     let layout = parse_layout(raw.layout.as_deref().unwrap_or("spiral"))?;
-    let gap = raw.gap.unwrap_or(10);
-    if !(0..=200).contains(&gap) {
-        return Err(format!("gap = {gap}: must be between 0 and 200"));
+    let inner_gap = raw.inner_gap.or(raw.gap).unwrap_or(10);
+    let outer_gap = raw.outer_gap.or(raw.gap).unwrap_or(10);
+    if !(0..=200).contains(&inner_gap) {
+        return Err(format!(
+            "inner_gap = {inner_gap}: must be between 0 and 200"
+        ));
+    }
+    if !(0..=200).contains(&outer_gap) {
+        return Err(format!(
+            "outer_gap = {outer_gap}: must be between 0 and 200"
+        ));
     }
     let animation_ms = raw.animation_ms.unwrap_or(140);
     if animation_ms > 1000 {
@@ -771,7 +793,8 @@ pub fn parse(text: &str) -> Result<Config, String> {
     }
     Ok(Config {
         layout,
-        gap,
+        inner_gap,
+        outer_gap,
         animations,
         animation_ms,
         easing,
@@ -839,8 +862,14 @@ pub fn layout() -> Layout {
     with_cfg(|c| c.layout)
 }
 
-pub fn gap() -> i32 {
-    with_cfg(|c| c.gap)
+/// Gap between neighbouring windows.
+pub fn inner_gap() -> i32 {
+    with_cfg(|c| c.inner_gap)
+}
+
+/// Gap around the screen edges.
+pub fn outer_gap() -> i32 {
+    with_cfg(|c| c.outer_gap)
 }
 
 /// (animations enabled, duration in ms)
@@ -917,7 +946,7 @@ mod tests {
     fn default_config_parses() {
         let c = parse(&default_config()).expect("default config must parse");
         assert_eq!(c.layout, Layout::Spiral);
-        assert_eq!(c.gap, 10);
+        assert_eq!((c.inner_gap, c.outer_gap), (10, 10));
         assert!(c.animations);
         assert_eq!(c.animation_ms, 140);
         assert_eq!(c.easing, Easing::OutCubic);
@@ -1043,6 +1072,22 @@ mod tests {
             "only CRLF line breaks"
         );
         assert!(parse(&new).is_ok());
+    }
+
+    #[test]
+    fn gaps_split_from_the_legacy_single_gap() {
+        // the old `gap` still sets both
+        let c = parse("gap = 4").unwrap();
+        assert_eq!((c.inner_gap, c.outer_gap), (4, 4));
+        // separate values win
+        let c = parse("inner_gap = 2\nouter_gap = 8").unwrap();
+        assert_eq!((c.inner_gap, c.outer_gap), (2, 8));
+        // one set, the other falls back to the legacy gap
+        let c = parse("gap = 6\ninner_gap = 1").unwrap();
+        assert_eq!((c.inner_gap, c.outer_gap), (1, 6));
+        // out of range is rejected
+        assert!(parse("inner_gap = 999").is_err());
+        assert!(parse("outer_gap = -1").is_err());
     }
 
     #[test]

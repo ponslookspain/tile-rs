@@ -145,7 +145,8 @@ tile-rs.exe --version
 tile-rs заново.
 
 ```toml
-gap = 10                 # пиксели между окнами
+inner_gap = 10           # пиксели между окнами
+outer_gap = 10           # пиксели по краям экрана
 animations = true
 animation_ms = 140
 easing = "out_cubic"     # кривая анимации: linear, out_quad, out_cubic, out_quart, in_out_cubic

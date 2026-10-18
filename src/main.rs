@@ -71,7 +71,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 use config::{Action, Dir, FullscreenWindows, Layout, WS_COUNT};
 use geometry::{
     anim_duration, apply_resize_for, ease, effective_step, fullscreen_action, lerp_rect, neighbour,
-    place as layout_tiles, place_fitted, same_rect, split_for_layout, FsAction, MAX_RATIO,
+    place as layout_tiles, place_fitted, same_rect, split_for_layout, FsAction, Gaps, MAX_RATIO,
     MIN_RATIO, RESIZE_PX,
 };
 
@@ -396,6 +396,14 @@ fn workspace_for_new_window(s: &State, cur: u8) -> u8 {
     cur
 }
 
+/// The configured inner (between windows) and outer (screen edge) gaps.
+fn gaps() -> Gaps {
+    Gaps {
+        inner: config::inner_gap(),
+        outer: config::outer_gap(),
+    }
+}
+
 /// The layout of `windows` on `area`: the configured layout with the adaptive fitting
 /// (master shrink / observed per-window minimum sizes) applied (see `geometry::place_fitted`).
 fn fitted(
@@ -412,7 +420,7 @@ fn fitted(
         ratios,
         mins,
         (mw, mh),
-        config::gap(),
+        gaps(),
     )
 }
 
@@ -1237,7 +1245,7 @@ unsafe extern "system" fn on_event(
                                 &regions,
                                 k,
                                 vis,
-                                config::gap(),
+                                config::inner_gap(),
                             );
                             s.ratios.insert(cur, rs);
                         }
@@ -1438,7 +1446,7 @@ fn resize_focused(width: bool, grow: bool) {
         let Some((j, sign)) = split_for_layout(config::layout(), k, n, width) else {
             return;
         };
-        let gap = config::gap();
+        let gap = config::inner_gap();
         let q = s.regions[j];
         let span = if j % 2 == 0 {
             q.right - q.left - gap
@@ -1558,20 +1566,15 @@ fn live_resize() {
             &regions,
             k,
             vis,
-            config::gap(),
+            config::inner_gap(),
         );
         if changed {
             // While the user is dragging, lay out the *plain* layout straight from the ratios:
             // the adaptive fitting (`fitted`) reshuffles every tile the moment a minimum size or
             // the narrowed master crosses a threshold, which makes the neighbours jump around
             // mid-drag. The full fitted layout is applied once on release (see `retile`).
-            let (new_tiles, new_regions) = layout_tiles(
-                config::layout(),
-                work_area(),
-                s.last.len(),
-                &rs,
-                config::gap(),
-            );
+            let (new_tiles, new_regions) =
+                layout_tiles(config::layout(), work_area(), s.last.len(), &rs, gaps());
             let last = s.last.clone();
             for (i, hw) in last.iter().enumerate() {
                 if *hw != h {
@@ -2528,13 +2531,8 @@ fn main() {
                     a.top
                 );
             } else {
-                let (rects, _) = layout_tiles(
-                    config::layout(),
-                    work_area(),
-                    c.tileable.len(),
-                    &[],
-                    config::gap(),
-                );
+                let (rects, _) =
+                    layout_tiles(config::layout(), work_area(), c.tileable.len(), &[], gaps());
                 for (w, r) in c.tileable.iter().zip(rects) {
                     let _ = writeln!(
                         out,
