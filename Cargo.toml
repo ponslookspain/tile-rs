@@ -1,6 +1,6 @@
 [package]
 name = "tile-rs"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
 description = "A small spiral tiling window manager for Windows 10/11 with workspaces, animations and a tray icon"
 license = "MIT"
@@ -14,16 +14,19 @@ publish = false
 serde = { version = "1", features = ["derive"] }
 toml = "0.8"
 
+[build-dependencies]
+winres = "0.1"
+
 [dependencies.windows]
 version = "0.61"
 features = [
     "Win32_Foundation",
     "Win32_Graphics_Dwm",
     "Win32_Graphics_Gdi",
-    "Win32_Media",
     "Win32_Security",
     "Win32_System_Console",
     "Win32_System_LibraryLoader",
+    "Win32_System_Registry",
     "Win32_System_Threading",
     "Win32_UI_Shell",
     "Win32_UI_Accessibility",
@@ -35,4 +38,5 @@ features = [
 [profile.release]
 opt-level = 3
 lto = true
+codegen-units = 1
 strip = true

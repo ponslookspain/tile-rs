@@ -4,6 +4,8 @@
 //! left, window 2 the left part of the rest, and so on (strictly alternating). Every split has
 //! a ratio, which the user changes by resizing windows.
 
+use std::collections::HashMap;
+
 use windows::Win32::Foundation::RECT;
 
 use crate::config::{self, Dir};
@@ -135,6 +137,102 @@ pub fn apply_resize(
     changed
 }
 
+fn tiles_at_least(tiles: &[RECT], min_w: i32, min_h: i32) -> bool {
+    tiles
+        .iter()
+        .all(|t| (t.right - t.left) >= min_w && (t.bottom - t.top) >= min_h)
+}
+
+/// Like `spiral`, but keeps every tile usable:
+///  * the first (master) split is narrowed (down to a floor) so the rest of the screen has more
+///    room, which keeps the smallest tiles from collapsing when there are many windows;
+///  * the tiles of windows that cannot shrink below their own minimum size (`mins`) are grown, the
+///    neighbours give up the space instead, so such a window does not overlap them.
+///
+/// `min_w`/`min_h` is the comfortable minimum tile; `mins` maps a window handle to the minimum
+/// size that window's application enforces.
+pub fn spiral_fitted(
+    area: RECT,
+    windows: &[isize],
+    ratios: &[f32],
+    mins: &HashMap<isize, (i32, i32)>,
+    min_w: i32,
+    min_h: i32,
+) -> (Vec<RECT>, Vec<RECT>) {
+    let n = windows.len();
+    let mut rs = ratios.to_vec();
+    rs.resize(n.saturating_sub(1), 0.5);
+
+    // narrow the master tile while that makes the other tiles fit the comfortable minimum; the
+    // master itself never goes below `min_w`
+    if n >= 2 {
+        let gap = config::gap();
+        let master_span = (area.right - area.left - 2 * gap - gap).max(1);
+        let floor = (min_w as f32 / master_span as f32).clamp(MIN_RATIO, 0.5);
+        let mut r0 = rs[0].clamp(floor, MAX_RATIO);
+        while r0 > floor {
+            let mut trial = rs.clone();
+            trial[0] = r0;
+            if tiles_at_least(&spiral(area, n, &trial).0, min_w, min_h) {
+                break;
+            }
+            r0 = (r0 - 0.02).max(floor);
+        }
+        rs[0] = r0;
+    }
+
+    let mut out = spiral(area, n, &rs);
+    // each pass grows the tiles that are still too small; a few passes are enough in practice
+    for _ in 0..4 {
+        let (tiles, regions) = (out.0.clone(), out.1.clone());
+        let mut changed = false;
+        for (k, h) in windows.iter().enumerate() {
+            let Some(&(mw, mh)) = mins.get(h) else {
+                continue;
+            };
+            let t = tiles[k];
+            let dw = (mw - (t.right - t.left)).max(0);
+            let dh = (mh - (t.bottom - t.top)).max(0);
+            if dw == 0 && dh == 0 {
+                continue;
+            }
+            // move only the edges that actually belong to a split of this window
+            let last = k == n - 1;
+            let mut d = t;
+            if dw > 0 {
+                if k.is_multiple_of(2) {
+                    if last {
+                        d.left -= dw;
+                    } else {
+                        d.right += dw;
+                    }
+                } else {
+                    d.left -= dw;
+                }
+            }
+            if dh > 0 {
+                if k % 2 == 1 {
+                    if !last {
+                        d.bottom += dh;
+                    } else if k >= 3 {
+                        d.top -= dh;
+                    }
+                } else if k >= 1 {
+                    d.top -= dh;
+                }
+            }
+            if apply_resize(&mut rs, &tiles, &regions, k, d) {
+                changed = true;
+            }
+        }
+        if !changed {
+            break;
+        }
+        out = spiral(area, n, &rs);
+    }
+    out
+}
+
 /// Which split controls the width (or height) of window `k` among `n` windows, and in which
 /// direction: returns (split index, +1 if raising that ratio makes the window larger, else -1).
 ///   width : k even, not last -> own split k (right edge moves)   k even, last -> split k-2
@@ -212,6 +310,77 @@ pub fn ease_out_cubic(t: f32) -> f32 {
     1.0 - u * u * u
 }
 
+/// Easing of the window animations (`config.toml` -> `easing`).
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum Easing {
+    Linear,
+    OutQuad,
+    #[default]
+    OutCubic,
+    OutQuart,
+    InOutCubic,
+}
+
+/// Applies the easing curve to a normalized time `t` (clamped to 0..1). `ease(_, 0) = 0` and
+/// `ease(_, 1) = 1` for every curve.
+pub fn ease(e: Easing, t: f32) -> f32 {
+    let t = t.clamp(0.0, 1.0);
+    match e {
+        Easing::Linear => t,
+        Easing::OutQuad => 1.0 - (1.0 - t) * (1.0 - t),
+        Easing::OutCubic => ease_out_cubic(t),
+        Easing::OutQuart => {
+            let u = 1.0 - t;
+            1.0 - u * u * u * u
+        }
+        Easing::InOutCubic => {
+            if t < 0.5 {
+                4.0 * t * t * t
+            } else {
+                1.0 - (-2.0 * t + 2.0).powi(3) / 2.0
+            }
+        }
+    }
+}
+
+/// Duration of an animation for a window that has to travel `dist_px` (the largest edge move).
+/// Short trips are quicker; a full reflow keeps the configured duration. `base_ms` is
+/// `animation_ms` from the config.
+pub fn anim_duration(base_ms: u32, dist_px: i32) -> u32 {
+    if base_ms == 0 {
+        return 0;
+    }
+    let f = (dist_px.max(0) as f32 / 400.0).clamp(0.45, 1.0);
+    (base_ms as f32 * f).round() as u32
+}
+
+/// What to do with a tracked fullscreen window when its workspace is shown or hidden.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum FsAction {
+    /// Restore it (it was minimized by us while its workspace was inactive).
+    Show,
+    /// Minimize it (its workspace is not the current one).
+    Hide,
+    /// Leave it as it is.
+    None,
+}
+
+/// Decides the visibility action for a fullscreen window. `hidden` = we minimized it earlier
+/// (so we may restore it); `minimized` = it is minimized right now (by us or by the user).
+pub fn fullscreen_action(ws: u8, cur: u8, hidden: bool, minimized: bool) -> FsAction {
+    if ws == cur {
+        if hidden {
+            FsAction::Show
+        } else {
+            FsAction::None
+        }
+    } else if !hidden && !minimized {
+        FsAction::Hide
+    } else {
+        FsAction::None
+    }
+}
+
 pub fn lerp_i(a: i32, b: i32, t: f32) -> i32 {
     a + ((b - a) as f32 * t).round() as i32
 }
@@ -282,6 +451,66 @@ mod tests {
     }
 
     #[test]
+    fn a_minimum_size_grows_the_tile_and_pushes_neighbours() {
+        let windows = [10isize, 20, 30];
+        let (base, _) = spiral(AREA, 3, &[]);
+        let w0 = base[0].right - base[0].left;
+        let min_w = w0 + 200;
+        let mut mins = HashMap::new();
+        mins.insert(10isize, (min_w, 0));
+        let (t, _) = spiral_fitted(AREA, &windows, &[], &mins, 0, 0);
+        assert!(
+            (t[0].right - t[0].left) >= min_w - 4,
+            "tile 0 grew to fit its minimum: {:?}",
+            t[0]
+        );
+        // the layout is still a valid, non-overlapping spiral
+        assert!(t[0].right <= t[1].left, "{t:?}");
+        assert!(t[1].bottom <= t[2].top, "{t:?}");
+        assert_eq!(t[1].left, t[2].left);
+        assert_eq!(t[1].right, t[2].right);
+        // without a minimum and no comfortable minimum the layout is unchanged
+        let (same, _) = spiral_fitted(AREA, &windows, &[], &HashMap::new(), 0, 0);
+        let (plain, _) = spiral(AREA, 3, &[]);
+        assert_eq!(same, plain);
+    }
+
+    #[test]
+    fn the_master_tile_is_narrowed_so_every_tile_fits_the_comfortable_minimum() {
+        // many windows: with equal halves the last tiles are narrower than the comfortable minimum
+        let windows: Vec<isize> = (0..6).map(|i| 100 + i).collect();
+        let (plain, _) = spiral(AREA, 6, &[]);
+        let (fitted, _) = spiral_fitted(AREA, &windows, &[], &HashMap::new(), 480, 320);
+        assert!(
+            !tiles_at_least(&plain, 480, 320),
+            "with equal halves a tile is too narrow: {plain:?}"
+        );
+        assert!(tiles_at_least(&fitted, 480, 320), "{fitted:?}");
+        // the master is narrower than in the plain layout, the rest is wider
+        assert!(fitted[0].right < plain[0].right);
+        // still a valid, non-overlapping spiral
+        assert!(fitted[0].right <= fitted[1].left, "{fitted:?}");
+    }
+
+    #[test]
+    fn a_minimum_size_of_a_last_window_grows_it_to_the_left() {
+        let windows = [10isize, 20, 30];
+        let (base, _) = spiral(AREA, 3, &[]);
+        let w2 = base[2].right - base[2].left;
+        let min_w = w2 + 150;
+        let mut mins = HashMap::new();
+        mins.insert(30isize, (min_w, 0)); // window 2 is the last one
+        let (t, _) = spiral_fitted(AREA, &windows, &[], &mins, 0, 0);
+        assert!(
+            (t[2].right - t[2].left) >= min_w - 4,
+            "last tile grew to the left: {:?}",
+            t[2]
+        );
+        assert!(t[0].right <= t[1].left, "{t:?}");
+        assert!(t[1].bottom <= t[2].top, "{t:?}");
+    }
+
+    #[test]
     fn dragging_left_edge_of_second_window_moves_first_split() {
         let t = drag(3, 1, |r| r.left = 1500);
         assert!(near(t[1].left, 1500), "{:?}", t[1]);
@@ -343,6 +572,62 @@ mod tests {
         }
         // fast start: more than half of the way after a quarter of the time
         assert!(ease_out_cubic(0.25) > 0.5);
+    }
+
+    #[test]
+    fn easing_curves_are_monotonic_and_hit_the_ends() {
+        let curves = [
+            Easing::Linear,
+            Easing::OutQuad,
+            Easing::OutCubic,
+            Easing::OutQuart,
+            Easing::InOutCubic,
+        ];
+        for e in curves {
+            assert_eq!(ease(e, 0.0), 0.0, "{e:?} at 0");
+            assert_eq!(ease(e, 1.0), 1.0, "{e:?} at 1");
+            assert_eq!(ease(e, -1.0), 0.0, "{e:?} clamped below 0");
+            assert_eq!(ease(e, 2.0), 1.0, "{e:?} clamped above 1");
+            let mut prev = 0.0;
+            for i in 1..=100 {
+                let v = ease(e, i as f32 / 100.0);
+                assert!(v >= prev - 1e-6, "{e:?} not monotonic at {i}");
+                prev = v;
+            }
+        }
+    }
+
+    #[test]
+    fn anim_duration_scales_with_distance() {
+        assert_eq!(anim_duration(0, 1000), 0, "0 ms stays 0 ms");
+        // short trip: the lower bound (45% of the base)
+        assert_eq!(anim_duration(200, 0), 90);
+        // a full-screen reflow keeps the base duration
+        assert_eq!(anim_duration(200, 400), 200);
+        assert_eq!(anim_duration(200, 10_000), 200, "clamped at the base");
+        // negative distance is treated as zero
+        assert_eq!(anim_duration(200, -50), 90);
+        // monotonic in distance
+        let mut prev = 0;
+        for d in 0..=500 {
+            let v = anim_duration(200, d);
+            assert!(v >= prev, "not monotonic at {d}");
+            prev = v;
+        }
+        // monotonic in the base duration
+        assert!(anim_duration(200, 400) > anim_duration(100, 400));
+    }
+
+    #[test]
+    fn fullscreen_action_visibility() {
+        // on the current workspace
+        assert_eq!(fullscreen_action(1, 1, false, false), FsAction::None); // visible, leave it
+        assert_eq!(fullscreen_action(1, 1, true, true), FsAction::Show); // we hid it: restore
+        assert_eq!(fullscreen_action(1, 1, false, true), FsAction::None); // user minimized it
+                                                                          // on another workspace
+        assert_eq!(fullscreen_action(1, 2, false, false), FsAction::Hide); // visible: minimize
+        assert_eq!(fullscreen_action(1, 2, true, true), FsAction::None); // already hidden by us
+        assert_eq!(fullscreen_action(1, 2, false, true), FsAction::None); // minimized: leave it
     }
 
     #[test]

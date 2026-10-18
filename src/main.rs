@@ -12,35 +12,39 @@
 
 mod config;
 mod geometry;
+mod launcher;
+mod overlay;
+mod prof;
 mod tray;
+mod window;
+
+use window::{classify, collect, is_fullscreen, visible_rect, Verdict, Win};
 
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::Write;
 use std::mem::size_of;
-use std::os::windows::process::CommandExt;
 use std::path::PathBuf;
-use std::process::{Command, Stdio};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::Ordering;
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
-use windows::core::{w, BOOL, PCWSTR, PWSTR};
+use windows::core::{w, PCWSTR};
 use windows::Win32::Foundation::{
-    CloseHandle, GetLastError, ERROR_ALREADY_EXISTS, HWND, LPARAM, POINT, RECT,
+    CloseHandle, GetLastError, ERROR_ALREADY_EXISTS, ERROR_FILE_NOT_FOUND, ERROR_SUCCESS, HANDLE,
+    HWND, POINT, RECT, WAIT_FAILED, WAIT_OBJECT_0,
 };
-use windows::Win32::Graphics::Dwm::{
-    DwmGetWindowAttribute, DwmSetWindowAttribute, DWMWA_BORDER_COLOR, DWMWA_CLOAKED,
-    DWMWA_EXTENDED_FRAME_BOUNDS,
-};
+use windows::Win32::Graphics::Dwm::{DwmGetWindowAttribute, DWMWA_EXTENDED_FRAME_BOUNDS};
 use windows::Win32::Graphics::Gdi::{
     GetMonitorInfoW, MonitorFromPoint, MONITORINFO, MONITOR_DEFAULTTOPRIMARY,
 };
-use windows::Win32::Media::{timeBeginPeriod, timeEndPeriod};
 use windows::Win32::System::Console::{AttachConsole, ATTACH_PARENT_PROCESS};
+use windows::Win32::System::Registry::{
+    RegDeleteKeyValueW, RegGetValueW, RegSetKeyValueW, HKEY_CURRENT_USER, REG_SZ, RRF_RT_REG_SZ,
+};
 use windows::Win32::System::Threading::{
-    CreateMutexW, OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32,
-    PROCESS_QUERY_LIMITED_INFORMATION,
+    CancelWaitableTimer, CreateMutexW, CreateWaitableTimerExW, CreateWaitableTimerW,
+    SetWaitableTimer, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, INFINITE, TIMER_ALL_ACCESS,
 };
 use windows::Win32::UI::Accessibility::{SetWinEventHook, HWINEVENTHOOK};
 use windows::Win32::UI::HiDpi::{
@@ -48,42 +52,28 @@ use windows::Win32::UI::HiDpi::{
 };
 use windows::Win32::UI::Input::KeyboardAndMouse::{RegisterHotKey, UnregisterHotKey, MOD_NOREPEAT};
 use windows::Win32::UI::WindowsAndMessaging::{
-    DispatchMessageW, EnumWindows, GetClassNameW, GetCursorPos, GetForegroundWindow, GetMessageW,
-    GetShellWindow, GetWindow, GetWindowLongW, GetWindowRect, GetWindowTextW,
-    GetWindowThreadProcessId, IsIconic, IsWindow, IsWindowVisible, IsZoomed, KillTimer,
-    MessageBoxW, PostQuitMessage, SetForegroundWindow, SetTimer, SetWindowPos, ShowWindow,
-    TranslateMessage, EVENT_OBJECT_CLOAKED, EVENT_OBJECT_CREATE, EVENT_OBJECT_HIDE,
-    EVENT_OBJECT_LOCATIONCHANGE, EVENT_OBJECT_SHOW, EVENT_OBJECT_UNCLOAKED,
-    EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_MINIMIZEEND, EVENT_SYSTEM_MINIMIZESTART,
-    EVENT_SYSTEM_MOVESIZEEND, EVENT_SYSTEM_MOVESIZESTART, GWL_EXSTYLE, GWL_STYLE, GW_OWNER, IDYES,
-    MB_ICONINFORMATION, MB_ICONQUESTION, MB_OK, MB_TOPMOST, MB_YESNO, MSG, SWP_NOACTIVATE,
-    SWP_NOOWNERZORDER, SWP_NOSIZE, SWP_NOZORDER, SW_RESTORE, WINEVENT_OUTOFCONTEXT,
-    WINEVENT_SKIPOWNPROCESS, WM_HOTKEY, WM_TIMER, WS_CHILD, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
-    WS_THICKFRAME,
+    DispatchMessageW, GetCursorPos, GetForegroundWindow, GetShellWindow, GetWindowLongW,
+    GetWindowRect, IsIconic, IsWindow, IsZoomed, KillTimer, MessageBoxW,
+    MsgWaitForMultipleObjectsEx, PeekMessageW, PostQuitMessage, SetForegroundWindow, SetTimer,
+    SetWindowPos, ShowWindow, TranslateMessage, EVENT_OBJECT_CLOAKED, EVENT_OBJECT_CREATE,
+    EVENT_OBJECT_DESTROY, EVENT_OBJECT_HIDE, EVENT_OBJECT_LOCATIONCHANGE, EVENT_OBJECT_SHOW,
+    EVENT_OBJECT_UNCLOAKED, EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_MINIMIZEEND,
+    EVENT_SYSTEM_MINIMIZESTART, EVENT_SYSTEM_MOVESIZEEND, EVENT_SYSTEM_MOVESIZESTART, GWL_STYLE,
+    IDYES, MB_ICONINFORMATION, MB_ICONQUESTION, MB_OK, MB_TOPMOST, MB_YESNO, MSG,
+    MWMO_INPUTAVAILABLE, PM_REMOVE, QS_ALLINPUT, SWP_NOACTIVATE, SWP_NOOWNERZORDER, SWP_NOSIZE,
+    SWP_NOZORDER, SW_MINIMIZE, SW_RESTORE, WINEVENT_OUTOFCONTEXT, WINEVENT_SKIPOWNPROCESS,
+    WM_HOTKEY, WM_QUIT, WM_TIMER, WS_CHILD,
 };
 
-use config::{Action, Dir, Rule, WS_COUNT};
+use config::{Action, Dir, FullscreenWindows, WS_COUNT};
 use geometry::{
-    apply_resize, ease_out_cubic, effective_step, lerp_rect, neighbour, same_rect, spiral,
-    split_for, MAX_RATIO, MIN_RATIO, RESIZE_PX,
+    anim_duration, apply_resize, ease, effective_step, fullscreen_action, lerp_rect, neighbour,
+    same_rect, spiral, spiral_fitted, split_for, FsAction, MAX_RATIO, MIN_RATIO, RESIZE_PX,
 };
 
 /// Where windows of inactive workspaces are parked (the same spot Windows uses for minimized ones).
 const PARK_X: i32 = -32000;
 const PARK_Y: i32 = -32000;
-
-/// In `run` mode, windows the user maximized / made fullscreen are left alone.
-static SKIP_ZOOMED: AtomicBool = AtomicBool::new(false);
-
-/// Window classes that are never tiled (shell UI, overlays).
-const SKIP_CLASSES: &[&str] = &[
-    "Progman",
-    "WorkerW",
-    "Shell_TrayWnd",
-    "Shell_SecondaryTrayWnd",
-    "Windows.UI.Core.CoreWindow",
-    "XamlExplorerHostIslandWindow",
-];
 
 // ---------------------------------------------------------------------------
 // logging (the release build has no console, so we log to a file)
@@ -116,6 +106,104 @@ fn log_reset() {
     let _ = std::fs::write(log_file(), "");
 }
 
+// ---------------------------------------------------------------------------
+// profiling (enabled with the TILE_RS_PROFILE environment variable)
+// ---------------------------------------------------------------------------
+
+/// Logs how long a block of code took, when profiling is on (on every exit path).
+struct Timer(&'static str, Option<Instant>);
+
+impl Timer {
+    fn new(name: &'static str) -> Self {
+        Timer(name, prof::on().then(Instant::now))
+    }
+}
+
+impl Drop for Timer {
+    fn drop(&mut self) {
+        if let Some(t) = self.1 {
+            log(format!(
+                "profile: {} {}us collect={}",
+                self.0,
+                t.elapsed().as_micros(),
+                prof::COLLECT_CALLS.load(Ordering::Relaxed)
+            ));
+        }
+    }
+}
+
+/// Per-frame stats, aggregated until the animation queue drains.
+#[derive(Default)]
+struct AnimProf {
+    start: Option<Instant>,
+    last_frame: Option<Instant>,
+    frames: u32,
+    intervals_ms: Vec<f32>,
+    setpos_us: Vec<f32>,
+}
+
+thread_local! {
+    static ANIM_PROF: RefCell<AnimProf> = RefCell::new(AnimProf::default());
+}
+
+fn anim_prof_reset() {
+    ANIM_PROF.with(|p| *p.borrow_mut() = AnimProf::default());
+}
+
+/// Records one animation frame (only called when profiling is on).
+fn anim_prof_frame(now: Instant, setpos_us: f32) {
+    ANIM_PROF.with(|p| {
+        let mut p = p.borrow_mut();
+        if p.start.is_none() {
+            p.start = Some(now);
+        }
+        if let Some(prev) = p.last_frame {
+            p.intervals_ms.push((now - prev).as_secs_f32() * 1000.0);
+        }
+        p.last_frame = Some(now);
+        p.frames += 1;
+        p.setpos_us.push(setpos_us);
+    });
+}
+
+/// Logs the summary of a finished animation and resets the stats.
+fn anim_prof_finish(now: Instant) {
+    ANIM_PROF.with(|p| {
+        let mut p = p.borrow_mut();
+        let dur = p
+            .start
+            .map(|s| (now - s).as_secs_f32() * 1000.0)
+            .unwrap_or(0.0);
+        let setpos_avg = if p.setpos_us.is_empty() {
+            0.0
+        } else {
+            p.setpos_us.iter().sum::<f32>() / p.setpos_us.len() as f32
+        };
+        let setpos_max = p.setpos_us.iter().cloned().fold(0.0_f32, f32::max);
+        log(format!(
+            "anim: frames={} dur={:.0}ms interval avg/p95/max={}ms setpos avg/max={:.2}/{:.2}ms",
+            p.frames,
+            dur,
+            stat_line(&p.intervals_ms),
+            setpos_avg / 1000.0,
+            setpos_max / 1000.0
+        ));
+        *p = AnimProf::default();
+    });
+}
+
+fn stat_line(v: &[f32]) -> String {
+    if v.is_empty() {
+        return "0/0/0".into();
+    }
+    let mut s = v.to_vec();
+    s.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let avg = s.iter().sum::<f32>() / s.len() as f32;
+    let p95 = s[((s.len() as f32 * 0.95) as usize).min(s.len() - 1)];
+    let max = *s.last().unwrap();
+    format!("{avg:.1}/{p95:.1}/{max:.1}")
+}
+
 /// Message box. Returns true if the user pressed Yes (only meaningful when `question`).
 pub fn msgbox(title: &str, text: &str, question: bool) -> bool {
     let (t, x) = (tray::wide(title), tray::wide(text));
@@ -146,21 +234,70 @@ pub fn notify(title: &str, text: &str) {
 // autostart (HKCU\...\Run)
 // ---------------------------------------------------------------------------
 
-const RUN_KEY: &str = r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run";
+/// The autostart entry lives here (the same place the old `reg.exe` version used).
+const RUN_SUBKEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Run";
+const RUN_VALUE: &str = "tile-rs";
 
-fn reg(args: &[&str]) -> bool {
-    Command::new("reg")
-        .args(args)
-        .creation_flags(0x0800_0000) // CREATE_NO_WINDOW
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false)
+/// Reads the value from `HKCU\<subkey>` without spawning a process.
+fn autostart_enabled_at(subkey: &str, name: &str) -> bool {
+    let sub = tray::wide(subkey);
+    let val = tray::wide(name);
+    let mut buf = [0u16; 2048];
+    let mut size = (buf.len() * size_of::<u16>()) as u32;
+    let err = unsafe {
+        RegGetValueW(
+            HKEY_CURRENT_USER,
+            PCWSTR(sub.as_ptr()),
+            PCWSTR(val.as_ptr()),
+            RRF_RT_REG_SZ,
+            None,
+            Some(buf.as_mut_ptr() as *mut _),
+            Some(&mut size),
+        )
+    };
+    err == ERROR_SUCCESS
+}
+
+/// Writes (`Some`) or removes (`None`) the value in `HKCU\<subkey>`.
+fn set_autostart_at(subkey: &str, name: &str, value: Option<&str>) -> bool {
+    let sub = tray::wide(subkey);
+    let val = tray::wide(name);
+    match value {
+        Some(v) => {
+            let data: Vec<u16> = v.encode_utf16().chain(std::iter::once(0)).collect();
+            let bytes = unsafe {
+                std::slice::from_raw_parts(
+                    data.as_ptr() as *const u8,
+                    data.len() * size_of::<u16>(),
+                )
+            };
+            let err = unsafe {
+                RegSetKeyValueW(
+                    HKEY_CURRENT_USER,
+                    PCWSTR(sub.as_ptr()),
+                    PCWSTR(val.as_ptr()),
+                    REG_SZ.0,
+                    Some(bytes.as_ptr() as *const _),
+                    bytes.len() as u32,
+                )
+            };
+            err == ERROR_SUCCESS
+        }
+        None => {
+            let err = unsafe {
+                RegDeleteKeyValueW(
+                    HKEY_CURRENT_USER,
+                    PCWSTR(sub.as_ptr()),
+                    PCWSTR(val.as_ptr()),
+                )
+            };
+            err == ERROR_SUCCESS || err == ERROR_FILE_NOT_FOUND
+        }
+    }
 }
 
 pub fn autostart_enabled() -> bool {
-    reg(&["query", RUN_KEY, "/v", "tile-rs"])
+    autostart_enabled_at(RUN_SUBKEY, RUN_VALUE)
 }
 
 pub fn set_autostart(on: bool) -> bool {
@@ -169,224 +306,64 @@ pub fn set_autostart(on: bool) -> bool {
             return false;
         };
         let value = format!("\"{}\" --autostart", exe.display());
-        reg(&[
-            "add", RUN_KEY, "/v", "tile-rs", "/t", "REG_SZ", "/d", &value, "/f",
-        ])
+        set_autostart_at(RUN_SUBKEY, RUN_VALUE, Some(&value))
     } else {
-        !autostart_enabled() || reg(&["delete", RUN_KEY, "/v", "tile-rs", "/f"])
+        !autostart_enabled() || set_autostart_at(RUN_SUBKEY, RUN_VALUE, None)
     }
 }
 
-// ---------------------------------------------------------------------------
-// window discovery
-// ---------------------------------------------------------------------------
-
-#[derive(Debug)]
-struct Win {
-    hwnd: HWND,
-    title: String,
-    class: String,
-    pid: u32,
-    /// from a config rule: open on this workspace (0-based)
-    rule_ws: Option<u8>,
-}
-
-fn text_of(f: impl Fn(&mut [u16]) -> i32) -> String {
-    let mut buf = [0u16; 256];
-    let n = f(&mut buf);
-    String::from_utf16_lossy(&buf[..n.max(0) as usize])
-}
-
-/// Executable name without ".exe", lower-case (empty if unknown).
-fn process_name(pid: u32) -> String {
-    unsafe {
-        let Ok(h) = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) else {
-            return String::new();
-        };
-        let mut buf = [0u16; 520];
-        let mut len = buf.len() as u32;
-        let ok =
-            QueryFullProcessImageNameW(h, PROCESS_NAME_WIN32, PWSTR(buf.as_mut_ptr()), &mut len)
-                .is_ok();
-        let _ = CloseHandle(h);
-        if !ok {
-            return String::new();
-        }
-        let path = String::from_utf16_lossy(&buf[..len as usize]);
-        let file = path
-            .rsplit(['\\', '/'])
-            .next()
-            .unwrap_or("")
-            .to_ascii_lowercase();
-        file.strip_suffix(".exe").unwrap_or(&file).to_string()
+/// How many tiles fit on one workspace for the current screen: the configured `max_tiles`, or a
+/// value derived from the screen area and the comfortable minimum tile.
+fn tile_budget() -> usize {
+    let configured = config::max_tiles();
+    if configured > 0 {
+        return configured as usize;
     }
+    let area = work_area();
+    let (mw, mh) = config::min_tile();
+    let area_px = (area.right - area.left).max(1) as f64 * (area.bottom - area.top).max(1) as f64;
+    let min_px = mw.max(1) as f64 * mh.max(1) as f64;
+    let ratio = area_px / min_px;
+    if ratio <= 1.0 {
+        return 2;
+    }
+    (1.0 + ratio.log2()).floor().clamp(2.0, 8.0) as usize
 }
 
-fn rule_matches(r: &Rule, w: &Win, proc_name: &str) -> bool {
-    if let Some(p) = &r.process {
-        let p = p.to_ascii_lowercase();
-        if p.strip_suffix(".exe").unwrap_or(&p) != proc_name {
-            return false;
+/// The workspace a new window should open on: the current one if it still has room, otherwise the
+/// next workspace (wrapping) with room.
+fn workspace_for_new_window(s: &State, cur: u8) -> u8 {
+    if !config::auto_overflow() {
+        return cur;
+    }
+    let budget = tile_budget();
+    let count = |ws: u8| s.ws.values().filter(|w| **w == ws).count();
+    if count(cur) < budget {
+        return cur;
+    }
+    for i in 1..WS_COUNT {
+        let ws = (cur + i) % WS_COUNT;
+        if count(ws) < budget {
+            return ws;
         }
     }
-    if let Some(c) = &r.class {
-        if !c.eq_ignore_ascii_case(&w.class) {
-            return false;
-        }
-    }
-    if let Some(t) = &r.title {
-        if !w.title.to_lowercase().contains(&t.to_lowercase()) {
-            return false;
-        }
-    }
-    true
+    cur
 }
 
-/// Returns None if the window is tileable, otherwise the reason it is skipped.
-fn skip_reason(hwnd: HWND, title: &str, class: &str) -> Option<&'static str> {
-    unsafe {
-        if !IsWindowVisible(hwnd).as_bool() {
-            return Some("invisible");
-        }
-        if IsIconic(hwnd).as_bool() {
-            return Some("minimized");
-        }
-        if SKIP_ZOOMED.load(Ordering::Relaxed) && IsZoomed(hwnd).as_bool() {
-            return Some("maximized/fullscreen by user");
-        }
-        if title.is_empty() {
-            return Some("no title");
-        }
-        if SKIP_CLASSES.contains(&class) {
-            return Some("shell/system class");
-        }
-        if GetWindow(hwnd, GW_OWNER).is_ok_and(|w| !w.is_invalid()) {
-            return Some("owned window (dialog)");
-        }
-        let ex = GetWindowLongW(hwnd, GWL_EXSTYLE) as u32;
-        if ex & (WS_EX_TOOLWINDOW.0 | WS_EX_NOACTIVATE.0) != 0 {
-            return Some("tool/no-activate window");
-        }
-        let style = GetWindowLongW(hwnd, GWL_STYLE) as u32;
-        if style & WS_THICKFRAME.0 == 0 {
-            return Some("not resizable");
-        }
-        let mut cloaked: u32 = 0;
-        if DwmGetWindowAttribute(
-            hwnd,
-            DWMWA_CLOAKED,
-            &mut cloaked as *mut _ as *mut _,
-            size_of::<u32>() as u32,
-        )
-        .is_ok()
-            && cloaked != 0
-        {
-            return Some("cloaked (other desktop / hidden UWP)");
-        }
-    }
-    None
+/// The layout of `windows` on `area`: the spiral with the master shrink and the observed
+/// per-window minimum sizes applied (see `geometry::spiral_fitted`).
+fn fitted(
+    area: RECT,
+    windows: &[isize],
+    ratios: &[f32],
+    mins: &HashMap<isize, (i32, i32)>,
+) -> (Vec<RECT>, Vec<RECT>) {
+    let (mw, mh) = config::min_tile();
+    spiral_fitted(area, windows, ratios, mins, mw, mh)
 }
 
-struct Collector {
-    tileable: Vec<Win>,
-    skipped: Vec<(Win, &'static str)>,
-    rules: Vec<Rule>,
-}
-
-thread_local! {
-    /// pid -> executable name (the lookup opens the process, so cache it)
-    static PROC_CACHE: RefCell<HashMap<u32, String>> = RefCell::new(HashMap::new());
-}
-
-fn process_name_cached(pid: u32) -> String {
-    PROC_CACHE.with(|c| {
-        let mut c = c.borrow_mut();
-        if let Some(n) = c.get(&pid) {
-            return n.clone();
-        }
-        let n = process_name(pid);
-        if c.len() > 256 {
-            c.clear();
-        }
-        c.insert(pid, n.clone());
-        n
-    })
-}
-
-fn win_info(hwnd: HWND) -> Win {
-    let title = text_of(|b| unsafe { GetWindowTextW(hwnd, b) });
-    let class = text_of(|b| unsafe { GetClassNameW(hwnd, b) });
-    let mut pid = 0u32;
-    unsafe {
-        GetWindowThreadProcessId(hwnd, Some(&mut pid));
-    }
-    Win {
-        hwnd,
-        title,
-        class,
-        pid,
-        rule_ws: None,
-    }
-}
-
-enum Verdict {
-    /// not a window we care about (invisible etc.) - not even listed
-    Ignore,
-    Tileable(Win),
-    Skipped(Win, &'static str),
-}
-
-/// Decides what to do with one window. Cheap checks first: invisible windows (the vast majority
-/// of top-level windows) are rejected before any string is fetched.
-fn classify(hwnd: HWND, rules: &[Rule]) -> Verdict {
-    if !unsafe { IsWindowVisible(hwnd) }.as_bool() {
-        return Verdict::Ignore;
-    }
-    let mut w = win_info(hwnd);
-    match skip_reason(hwnd, &w.title, &w.class) {
-        None => {
-            // config rules
-            if !rules.is_empty() {
-                let pn = process_name_cached(w.pid);
-                if let Some(r) = rules.iter().find(|r| rule_matches(r, &w, &pn)) {
-                    if r.action.as_deref() == Some("float") {
-                        return Verdict::Skipped(w, "rule: float");
-                    }
-                    w.rule_ws = r.workspace.map(|n| n - 1);
-                }
-            }
-            Verdict::Tileable(w)
-        }
-        // keep only titled ones in the skip list to keep `list` output readable
-        Some(r) if !w.title.is_empty() => Verdict::Skipped(w, r),
-        Some(_) => Verdict::Ignore,
-    }
-}
-
-unsafe extern "system" fn enum_proc(hwnd: HWND, lparam: LPARAM) -> BOOL {
-    let c = &mut *(lparam.0 as *mut Collector);
-    match classify(hwnd, &c.rules) {
-        Verdict::Ignore => {}
-        Verdict::Tileable(w) => c.tileable.push(w),
-        Verdict::Skipped(w, r) => c.skipped.push((w, r)),
-    }
-    BOOL(1)
-}
-
-fn collect() -> Collector {
-    let mut c = Collector {
-        tileable: vec![],
-        skipped: vec![],
-        rules: config::rules(),
-    };
-    unsafe {
-        let _ = EnumWindows(Some(enum_proc), LPARAM(&mut c as *mut _ as isize));
-    }
-    // EnumWindows walks top-to-bottom in Z order; keep that, it is a stable, sensible order.
-    c
-}
-
-fn work_area() -> RECT {
+/// The monitor's work area (taskbar excluded), as Windows reports it.
+fn raw_work_area() -> RECT {
     unsafe {
         let mon = MonitorFromPoint(POINT { x: 0, y: 0 }, MONITOR_DEFAULTTOPRIMARY);
         let mut mi = MONITORINFO {
@@ -398,22 +375,114 @@ fn work_area() -> RECT {
     }
 }
 
+/// The area the windows are tiled in: the work area minus the indicator bar at the top.
+fn work_area() -> RECT {
+    let mut r = raw_work_area();
+    if config::workspace_indicator() {
+        r.top += overlay::INDICATOR_H;
+    }
+    r
+}
+
 // ---------------------------------------------------------------------------
 // layout
 // ---------------------------------------------------------------------------
 
-fn visible_rect(hwnd: HWND) -> Option<RECT> {
-    let mut vis = RECT::default();
-    unsafe {
-        DwmGetWindowAttribute(
-            hwnd,
-            DWMWA_EXTENDED_FRAME_BOUNDS,
-            &mut vis as *mut _ as *mut _,
-            size_of::<RECT>() as u32,
-        )
-        .ok()?;
+/// Brings `fs_ws` / `fs_hidden` in sync with the windows that are really on screen now.
+/// A window that is minimized is kept (it may be one we hid ourselves, and its geometry can no
+/// longer be detected reliably); a visible window that is no longer fullscreen is dropped.
+fn reconcile_fullscreen(s: &mut State, wins: &[Win]) {
+    let detected: HashSet<isize> = wins.iter().map(|w| w.hwnd.0 as isize).collect();
+    s.fs_ws.retain(|h, _| {
+        let hw = HWND(*h as *mut _);
+        if !unsafe { IsWindow(Some(hw)) }.as_bool() {
+            return false;
+        }
+        detected.contains(h) || unsafe { IsIconic(hw) }.as_bool()
+    });
+    let mut follow: Option<(u8, isize)> = None;
+    for w in wins {
+        let h = w.hwnd.0 as isize;
+        if s.fs_ws.contains_key(&h) {
+            continue;
+        }
+        // a fullscreen game / video player gets a workspace of its own, and we switch to it
+        let ws = w.rule_ws.unwrap_or_else(|| next_free_workspace(s, s.cur));
+        s.fs_ws.insert(h, ws);
+        if ws != s.cur && follow.is_none() {
+            follow = Some((ws, h));
+        }
     }
-    Some(vis)
+    if follow.is_some() {
+        s.follow = follow;
+    }
+    let fs_ws = &s.fs_ws;
+    s.fs_hidden.retain(|h| fs_ws.contains_key(h));
+}
+
+/// The first workspace (starting after `cur`, wrapping) that has no windows at all - used for a
+/// fullscreen game, so it does not land on top of the current work.
+fn next_free_workspace(s: &State, cur: u8) -> u8 {
+    let used = |ws: u8| s.ws.values().any(|w| *w == ws) || s.fs_ws.values().any(|w| *w == ws);
+    for i in 1..=WS_COUNT {
+        let ws = (cur + i) % WS_COUNT;
+        if !used(ws) {
+            return ws;
+        }
+    }
+    (cur + 1) % WS_COUNT
+}
+
+/// Minimizes the fullscreen windows whose workspace is not shown, and restores the ones we hid
+/// when their workspace becomes the current one.
+fn apply_fullscreen(s: &mut State) {
+    if s.paused || config::fullscreen_windows() == FullscreenWindows::Ignore {
+        return;
+    }
+    let cur = s.cur;
+    let items: Vec<(isize, u8)> = s.fs_ws.iter().map(|(h, w)| (*h, *w)).collect();
+    let mut changed = false;
+    for (h, ws) in items {
+        let hw = HWND(h as *mut _);
+        if !unsafe { IsWindow(Some(hw)) }.as_bool() {
+            continue;
+        }
+        let hidden = s.fs_hidden.contains(&h);
+        let minimized = unsafe { IsIconic(hw) }.as_bool();
+        match fullscreen_action(ws, cur, hidden, minimized) {
+            FsAction::Show => {
+                unsafe {
+                    let _ = ShowWindow(hw, SW_RESTORE);
+                }
+                s.fs_hidden.remove(&h);
+                changed = true;
+            }
+            FsAction::Hide => {
+                unsafe {
+                    let _ = ShowWindow(hw, SW_MINIMIZE);
+                }
+                s.fs_hidden.insert(h);
+                changed = true;
+            }
+            FsAction::None => {}
+        }
+    }
+    if changed {
+        // our own minimize / restore must not look like the user moving windows
+        s.ignore_until = Some(Instant::now() + Duration::from_millis(300));
+    }
+}
+
+/// Restores every fullscreen window we minimized (pause, quit), so nothing stays hidden.
+fn restore_hidden_fullscreen(s: &mut State) {
+    for h in std::mem::take(&mut s.fs_hidden) {
+        let hw = HWND(h as *mut _);
+        if unsafe { IsWindow(Some(hw)) }.as_bool() && unsafe { IsIconic(hw) }.as_bool() {
+            unsafe {
+                let _ = ShowWindow(hw, SW_RESTORE);
+            }
+        }
+    }
 }
 
 fn place(hwnd: HWND, target: RECT) {
@@ -501,11 +570,21 @@ struct State {
     order: Vec<isize>,
     /// Workspace (0-based) of every known window.
     ws: HashMap<isize, u8>,
+    /// Observed minimum size of a window (an app that refuses to shrink below it): its tile is
+    /// grown to at least this size so it does not overlap its neighbours.
+    min_size: HashMap<isize, (i32, i32)>,
+    /// Workspace (0-based) of every known fullscreen window (they are never tiled).
+    fs_ws: HashMap<isize, u8>,
+    /// Fullscreen windows we minimized because their workspace is not shown (to restore later).
+    fs_hidden: HashSet<isize>,
     /// Current workspace (0-based).
     cur: u8,
     /// Windows of the current workspace in the layout that was applied last time;
     /// if nothing changed we do not touch windows.
     last: Vec<isize>,
+    /// The set of top-level windows may have changed (created / destroyed / shown / hidden /
+    /// cloaked / minimized): a full `EnumWindows` walk (`retile`) is due.
+    windows_changed: bool,
     paused: bool,
     timer: usize,
     /// A window of another workspace got focus (taskbar / Alt+Tab): follow it.
@@ -535,8 +614,8 @@ struct State {
     border_on: Option<isize>,
     /// Windows currently gliding to their new tiles.
     anims: Vec<Anim>,
-    /// Frame timer of the animations (0 = none running).
-    anim_timer: usize,
+    /// High-resolution waitable timer that drives the animation frames (null = none).
+    anim_timer: HANDLE,
     /// The next layout pass must place windows instantly (workspace switch, startup, ...).
     no_anim: bool,
     /// Registered hotkeys: (id, action)
@@ -560,6 +639,10 @@ struct Anim {
     /// invisible resize border: (left, top, right, bottom)
     border: (i32, i32, i32, i32),
     t0: Instant,
+    /// Duration of this animation (scaled by the distance, see `anim_duration`).
+    dur_ms: u32,
+    /// Last visible frame we actually applied (to skip frames that do not move the window).
+    last: Option<RECT>,
 }
 
 /// Put the *visible* frame of a window at `vis`, given its invisible border.
@@ -584,12 +667,21 @@ fn move_window(s: &mut State, hwnd: HWND, target: RECT, animate: bool) {
     s.anims.retain(|a| a.hwnd != h);
     let (on, ms) = config::animation();
     let busy = unsafe { IsZoomed(hwnd).as_bool() } || is_parked(hwnd);
-    if !animate || !on || ms == 0 || busy {
+    // if the frame timer could not be created, place windows instantly rather than freeze them
+    if !animate || !on || ms == 0 || busy || s.anim_timer.is_invalid() {
         place(hwnd, target);
+        observe_min_size(s, hwnd, &target);
+        if s.border_on == Some(h) {
+            place_border(&target, h);
+        }
         return;
     }
     let Some(from) = visible_rect(hwnd) else {
         place(hwnd, target);
+        observe_min_size(s, hwnd, &target);
+        if s.border_on == Some(h) {
+            place_border(&target, h);
+        }
         return;
     };
     if same_rect(&from, &target, 1) {
@@ -605,113 +697,238 @@ fn move_window(s: &mut State, hwnd: HWND, target: RECT, animate: bool) {
         win.right - from.right,
         win.bottom - from.bottom,
     );
+    let dist = (from.left - target.left)
+        .abs()
+        .max((from.top - target.top).abs())
+        .max((from.right - target.right).abs())
+        .max((from.bottom - target.bottom).abs());
+    let dur_ms = anim_duration(ms, dist);
+    let was_empty = s.anims.is_empty();
     s.anims.push(Anim {
         hwnd: h,
         from,
         to: target,
         border,
         t0: Instant::now(),
+        dur_ms,
+        last: None,
     });
-    if s.anim_timer == 0 {
-        unsafe {
-            timeBeginPeriod(1); // ask for a 1 ms timer so frames are not rounded to 15.6 ms
-            s.anim_timer = SetTimer(None, 0, ANIM_FRAME_MS, None);
+    if was_empty {
+        if prof::on() {
+            anim_prof_reset();
         }
+        arm_anim_timer(s);
+    }
+}
+
+/// After a window was placed instantly, remember its actual size if the app refused to shrink
+/// below it (an application minimum size). The layout then grows its tile instead of letting the
+/// window overlap its neighbour. Only ever grows the remembered size: once a tile has been grown
+/// to fit, the window also fits it, so forgetting the minimum would make the tile shrink again
+/// and start an endless grow/shrink loop.
+fn observe_min_size(s: &mut State, hwnd: HWND, target: &RECT) {
+    let h = hwnd.0 as isize;
+    let Some(vis) = visible_rect(hwnd) else {
+        return;
+    };
+    let (vw, vh) = (vis.right - vis.left, vis.bottom - vis.top);
+    let (tw, th) = (target.right - target.left, target.bottom - target.top);
+    if vw > tw + 2 || vh > th + 2 {
+        s.min_size.insert(h, (vw.max(tw), vh.max(th)));
+    }
+}
+
+/// Creates the timer that drives animation frames. Prefers the high-resolution variant
+/// (Windows 10 1803+); falls back to a normal waitable timer on older systems.
+fn create_anim_timer() -> HANDLE {
+    unsafe {
+        CreateWaitableTimerExW(
+            None,
+            PCWSTR::null(),
+            CREATE_WAITABLE_TIMER_HIGH_RESOLUTION,
+            TIMER_ALL_ACCESS.0,
+        )
+        .or_else(|_| CreateWaitableTimerExW(None, PCWSTR::null(), 0, TIMER_ALL_ACCESS.0))
+        .or_else(|_| CreateWaitableTimerW(None, false, PCWSTR::null()))
+        .unwrap_or_default()
+    }
+}
+
+/// (Re)arms the frame timer: the first frame fires in `ANIM_FRAME_MS`, then every `ANIM_FRAME_MS`.
+fn arm_anim_timer(s: &State) {
+    if s.anim_timer.is_invalid() {
+        return;
+    }
+    let due = -(ANIM_FRAME_MS as i64) * 10_000; // relative time, in 100 ns units
+    unsafe {
+        let _ = SetWaitableTimer(s.anim_timer, &due, ANIM_FRAME_MS as i32, None, None, false);
+    }
+}
+
+/// Stops the frame timer once nothing is animating.
+fn cancel_anim_timer(s: &State) {
+    if s.anim_timer.is_invalid() {
+        return;
+    }
+    unsafe {
+        let _ = CancelWaitableTimer(s.anim_timer);
     }
 }
 
 /// One animation frame (called from the frame timer).
 fn anim_tick() {
+    let profiling = prof::on();
+    let easing = config::easing();
     STATE.with(|s| {
         let mut s = s.borrow_mut();
-        let (_, ms) = config::animation();
-        let dur = (ms.max(1) as f32) / 1000.0;
+        if s.anims.is_empty() {
+            // The queue was emptied outside `anim_tick` (e.g. a drag started): stop the timer so
+            // it does not keep firing at 60 Hz doing nothing.
+            cancel_anim_timer(&s);
+            return;
+        }
         let now = Instant::now();
         let mut keep = Vec::with_capacity(s.anims.len());
-        for a in std::mem::take(&mut s.anims) {
+        let mut setpos = Duration::ZERO;
+        for mut a in std::mem::take(&mut s.anims) {
             if !unsafe { IsWindow(Some(HWND(a.hwnd as *mut _))) }.as_bool() {
                 continue; // closed while gliding
             }
+            let dur = (a.dur_ms.max(1) as f32) / 1000.0;
             let t = (now - a.t0).as_secs_f32() / dur;
-            if t >= 1.0 {
-                set_frame(a.hwnd, &a.to, a.border); // exact final position
+            let (rect, done) = if t >= 1.0 {
+                (a.to, true) // exact final position
             } else {
-                set_frame(
-                    a.hwnd,
-                    &lerp_rect(&a.from, &a.to, ease_out_cubic(t)),
-                    a.border,
-                );
+                (lerp_rect(&a.from, &a.to, ease(easing, t)), false)
+            };
+            // skip frames that would not move the window (the tail of an ease-out is almost flat)
+            if a.last.as_ref().is_none_or(|l| !same_rect(l, &rect, 0)) {
+                let ts = profiling.then(Instant::now);
+                set_frame(a.hwnd, &rect, a.border);
+                if let Some(ts) = ts {
+                    setpos += ts.elapsed();
+                }
+                a.last = Some(rect);
+            }
+            let ahwnd = a.hwnd;
+            if done {
+                // the window is at its tile now: note it if the app kept a bigger minimum size
+                observe_min_size(&mut s, HWND(ahwnd as *mut _), &a.to);
+            } else {
                 keep.push(a);
+            }
+            // the border overlay follows the window while it glides
+            if s.border_on == Some(ahwnd) {
+                place_border(&rect, ahwnd);
             }
         }
         s.anims = keep;
         // our own moves must not look like the user moving windows
         s.ignore_until = Some(now + Duration::from_millis(300));
-        if s.anims.is_empty() && s.anim_timer != 0 {
-            unsafe {
-                let _ = KillTimer(None, s.anim_timer);
-                timeEndPeriod(1);
+        if s.anims.is_empty() {
+            cancel_anim_timer(&s);
+        }
+        if profiling {
+            anim_prof_frame(now, setpos.as_secs_f32() * 1e6);
+            if s.anims.is_empty() {
+                anim_prof_finish(now);
             }
-            s.anim_timer = 0;
         }
     });
 }
 
 // ---------------------------------------------------------------------------
-// focus border
+// focus border (drawn by tile-rs itself, see `overlay.rs`)
 // ---------------------------------------------------------------------------
 
-/// DWM value meaning "use the system's default border colour".
-const DWM_COLOR_DEFAULT: u32 = 0xFFFF_FFFF;
-
-fn set_border(hwnd: isize, color: Option<u32>) {
-    let hw = HWND(hwnd as *mut _);
-    if !unsafe { IsWindow(Some(hw)) }.as_bool() {
+/// Draws the border around the *visible* frame `vis` of `target`. The border window is placed just
+/// below `target` in the z-order and clipped to a hollow frame, so it can never cover the window
+/// with a solid colour (for example while the window is being placed or maximized).
+fn place_border(vis: &RECT, target: isize) {
+    let w = config::border_width();
+    let hw = HWND(target as *mut _);
+    // a maximized / minimized window has no tiled frame: no border
+    if w <= 0 || unsafe { IsZoomed(hw).as_bool() || IsIconic(hw).as_bool() } {
+        overlay::hide_border();
         return;
     }
-    let c = color.unwrap_or(DWM_COLOR_DEFAULT);
-    unsafe {
-        // Windows 11 only; on older systems the call just fails and nothing happens
-        let _ = DwmSetWindowAttribute(
-            hw,
-            DWMWA_BORDER_COLOR,
-            &c as *const u32 as *const _,
-            size_of::<u32>() as u32,
-        );
+    // never draw a border that fills the whole monitor (a window in transition)
+    let mon = raw_work_area();
+    if (vis.right - vis.left) >= (mon.right - mon.left)
+        || (vis.bottom - vis.top) >= (mon.bottom - mon.top)
+    {
+        overlay::hide_border();
+        return;
     }
+    let rect = RECT {
+        left: vis.left - w,
+        top: vis.top - w,
+        right: vis.right + w,
+        bottom: vis.bottom + w,
+    };
+    // rounded corners: the window's own corner radius (~8 px) plus the border width
+    overlay::show_border(rect, hw, 8 + w, w);
 }
 
-/// Colour the border of `focus` (if it is a tiled window of the current workspace) and take it
-/// away from the window that had it before.
+/// Picks the window that should carry the border (the focused tiled window of the current
+/// workspace) and positions the overlay around it.
 fn update_border(s: &mut State, focus: isize) {
-    let color = config::border();
-    let target = (color.is_some() && !s.paused && s.last.contains(&focus)).then_some(focus);
-    if s.border_on == target {
-        return;
-    }
-    if let Some(prev) = s.border_on.take() {
-        set_border(prev, None);
-    }
-    if let (Some(h), Some(c)) = (target, color) {
-        set_border(h, Some(c));
-        s.border_on = Some(h);
-    }
+    // a tiled window of the current workspace: in the applied layout, or (should the layout list
+    // be momentarily stale) a known window that belongs to the current workspace
+    let tiled = s.last.contains(&focus) || s.ws.get(&focus) == Some(&s.cur);
+    s.border_on = (config::border().is_some() && !s.paused && tiled).then_some(focus);
 }
 
 /// Re-evaluate which window should have the border (after layout / pause / config changes).
 fn refresh_border() {
     let fg = unsafe { GetForegroundWindow() }.0 as isize;
     STATE.with(|s| update_border(&mut s.borrow_mut(), fg));
+    sync_border();
 }
 
-/// Remove our border colour from every window (pause, quit, colour change).
+/// Repositions the border overlay around the current border window (`State::border_on`).
+fn sync_border() {
+    let target = STATE.with(|s| s.borrow().border_on);
+    match target {
+        Some(h) => match visible_rect(HWND(h as *mut _)) {
+            Some(vis) => place_border(&vis, h),
+            None => overlay::hide_border(),
+        },
+        None => overlay::hide_border(),
+    }
+}
+
+/// Hide the border (pause, quit, colour change).
 fn clear_border() {
-    STATE.with(|s| {
-        let mut s = s.borrow_mut();
-        if let Some(prev) = s.border_on.take() {
-            set_border(prev, None);
+    STATE.with(|s| s.borrow_mut().border_on = None);
+    overlay::hide_border();
+}
+
+/// Updates the workspace indicator (a small bar of dots at the top of the work area; the tiling
+/// area leaves room for it, so it never overlaps a window).
+fn sync_indicator() {
+    if !config::workspace_indicator() {
+        overlay::hide_indicator();
+        return;
+    }
+    let (cur, mask) = STATE.with(|s| {
+        let s = s.borrow();
+        let mut mask = 0u32;
+        for w in s.ws.values().chain(s.fs_ws.values()) {
+            mask |= 1u32 << (*w as u32).min(31);
         }
+        (s.cur, mask)
     });
+    let wa = raw_work_area();
+    let (w, h) = overlay::indicator_size();
+    let x = wa.left + (wa.right - wa.left - w) / 2;
+    let rect = RECT {
+        left: x,
+        top: wa.top,
+        right: x + w,
+        bottom: wa.top + h,
+    };
+    overlay::show_indicator(rect, cur, mask, config::border_color_value());
 }
 
 /// (current workspace 0-based, paused) - for the tray.
@@ -720,6 +937,15 @@ pub fn ui_state() -> (u8, bool) {
         let s = s.borrow();
         (s.cur, s.paused)
     })
+}
+
+/// The screen work area changed (display mode, taskbar size / auto-hide): rebuild the layout.
+pub fn request_relayout() {
+    STATE.with(|s| {
+        let mut s = s.borrow_mut();
+        s.reflow = true;
+        s.timer = unsafe { SetTimer(None, s.timer, DEBOUNCE_MS, None) };
+    });
 }
 
 pub fn action_name(a: Action) -> String {
@@ -739,6 +965,7 @@ pub fn action_name(a: Action) -> String {
             if grow { "grow" } else { "shrink" },
             if width { "width" } else { "height" }
         ),
+        Action::Minimize => "minimize".into(),
         Action::Pause => "pause".into(),
         Action::Quit => "quit".into(),
         Action::Retile => "retile".into(),
@@ -834,12 +1061,22 @@ unsafe extern "system" fn on_event(
                 // let the user drag freely; we decide what to do while / when they let go
                 if !s.paused {
                     if let Some(k) = s.last.iter().position(|x| *x == h) {
-                        s.dragging = Some(h);
-                        s.anims.retain(|a| a.hwnd != h);
-                        s.resizing = false;
-                        s.live = false;
-                        let t = s.rects[k];
-                        s.drag_size = (t.right - t.left, t.bottom - t.top);
+                        if k < s.rects.len() {
+                            s.dragging = Some(h);
+                            s.anims.retain(|a| a.hwnd != h);
+                            s.resizing = false;
+                            s.live = false;
+                            // Remember the window's *actual* size, not the tile's: an app with a
+                            // minimum size (or one that resized itself) can be larger than its
+                            // tile, and comparing a plain move against the tile size would then be
+                            // mistaken for a resize, which corrupts the split ratios.
+                            s.drag_size = visible_rect(hwnd)
+                                .map(|v| (v.right - v.left, v.bottom - v.top))
+                                .unwrap_or_else(|| {
+                                    let t = s.rects[k];
+                                    (t.right - t.left, t.bottom - t.top)
+                                });
+                        }
                     }
                 }
                 return;
@@ -889,6 +1126,12 @@ unsafe extern "system" fn on_event(
                 if s.paused {
                     return;
                 }
+                // the border overlay follows the window it frames
+                if s.border_on == Some(h) {
+                    if let Some(vis) = visible_rect(hwnd) {
+                        place_border(&vis, h);
+                    }
+                }
                 if let Some(d) = s.dragging {
                     // during a drag only the dragged window matters: is it being resized?
                     if d == h {
@@ -911,14 +1154,21 @@ unsafe extern "system" fn on_event(
                     }
                     return;
                 }
-                // a tiled window moved/resized outside of a drag (and not because of us)
+                // a window moved/resized outside of a drag (and not because of us)
                 let quiet = s.ignore_until.is_none_or(|t| Instant::now() >= t);
-                if !quiet || !s.last.contains(&h) {
+                if !quiet {
                     return;
                 }
-                s.enforce = true;
+                if s.last.contains(&h) {
+                    s.enforce = true; // a tiled window moved on its own: pull it back
+                } else if h == GetForegroundWindow().0 as isize {
+                    // an untracked window changed size, e.g. a game just left fullscreen and must
+                    // be tiled again: reconcile the window set
+                    s.windows_changed = true;
+                }
             }
             EVENT_OBJECT_SHOW => {
+                s.windows_changed = true;
                 // a window just appeared: put it into its tile right away, without waiting
                 if !s.paused && s.dragging.is_none() && fast_add(&mut s, hwnd) {
                     // some apps move/resize themselves right after showing: check again shortly
@@ -932,12 +1182,24 @@ unsafe extern "system" fn on_event(
                 let recently = s
                     .last_switch
                     .is_some_and(|t| t.elapsed() < Duration::from_millis(500));
-                match s.ws.get(&h) {
-                    Some(&w) if w != s.cur && !s.paused && !recently => {
+                // a window of another workspace got focus (taskbar / Alt+Tab), tiled or fullscreen
+                let ws = s.ws.get(&h).copied().or_else(|| s.fs_ws.get(&h).copied());
+                match ws {
+                    Some(w) if w != s.cur && !s.paused && !recently => {
                         s.follow = Some((w, h));
+                        s.windows_changed = true;
                     }
                     _ => return, // focus change inside the current workspace: nothing to do
                 }
+            }
+            EVENT_OBJECT_CREATE
+            | EVENT_OBJECT_DESTROY
+            | EVENT_OBJECT_HIDE
+            | EVENT_OBJECT_CLOAKED
+            | EVENT_OBJECT_UNCLOAKED
+            | EVENT_SYSTEM_MINIMIZESTART
+            | EVENT_SYSTEM_MINIMIZEEND => {
+                s.windows_changed = true;
             }
             _ => {}
         }
@@ -1015,7 +1277,7 @@ fn resize_focused(width: bool, grow: bool) {
             }
             rs.clone()
         };
-        let (tiles, regions) = spiral(work_area(), n, &ratios);
+        let (tiles, regions) = fitted(work_area(), &s.last, &ratios, &s.min_size);
         let last = s.last.clone();
         for (i, h) in last.iter().enumerate() {
             // single taps glide; a held key resizes instantly so it stays responsive
@@ -1025,6 +1287,7 @@ fn resize_focused(width: bool, grow: bool) {
         s.regions = regions;
         s.ignore_until = Some(Instant::now() + Duration::from_millis(500));
     });
+    refresh_border();
 }
 
 /// While the user drags an edge of a tiled window: recompute the split ratios from the dragged
@@ -1047,7 +1310,7 @@ fn live_resize() {
         let mut rs = s.ratios.remove(&cur).unwrap_or_default();
         let changed = apply_resize(&mut rs, &tiles, &regions, k, vis);
         if changed {
-            let (new_tiles, new_regions) = spiral(work_area(), s.last.len(), &rs);
+            let (new_tiles, new_regions) = fitted(work_area(), &s.last, &rs, &s.min_size);
             let last = s.last.clone();
             for (i, hw) in last.iter().enumerate() {
                 if *hw != h {
@@ -1062,24 +1325,40 @@ fn live_resize() {
     });
 }
 
-/// Pull every tiled window of the current workspace back to its tile.
-fn enforce_layout() {
+/// Pulls every tiled window of the current workspace back to its tile. Returns true if a window
+/// that is now fullscreen was found: the caller must re-tile so the layout drops it.
+fn enforce_layout() -> bool {
+    let _t = Timer::new("enforce_layout");
     STATE.with(|s| {
         let mut s = s.borrow_mut();
         if s.paused || s.dragging.is_some() || s.rects.len() != s.last.len() {
-            return;
+            return false;
         }
         let mut moved = 0;
+        let mut fullscreen = false;
         let (last, rects) = (s.last.clone(), s.rects.clone());
         for (h, r) in last.iter().zip(rects.iter()) {
             let hw = HWND(*h as *mut _);
             if unsafe { IsZoomed(hw).as_bool() || IsIconic(hw).as_bool() } {
                 continue; // maximized / minimized by the user: leave it alone
             }
+            if is_fullscreen(hw) {
+                fullscreen = true; // a game went fullscreen: let it be, re-tile drops it
+                continue;
+            }
             if s.anims.iter().any(|a| a.hwnd == *h) {
                 continue; // already on its way
             }
             if off_target(hw, r) {
+                // an app with a minimum size cannot shrink to a small tile: retrying every time
+                // only makes it flicker, so leave it as it is (it overflows its tile instead)
+                if let Some(vis) = visible_rect(hw) {
+                    let bigger = (vis.right - vis.left) > (r.right - r.left) + 4
+                        || (vis.bottom - vis.top) > (r.bottom - r.top) + 4;
+                    if bigger {
+                        continue;
+                    }
+                }
                 move_window(&mut s, hw, *r, true);
                 moved += 1;
             }
@@ -1088,16 +1367,21 @@ fn enforce_layout() {
             log(format!("snapped {} window(s) back to their tiles", moved));
             s.ignore_until = Some(Instant::now() + Duration::from_millis(500));
         }
-    });
+        fullscreen
+    })
 }
 
 /// A window was just shown. If it is a new, tileable window of the current workspace, put it
 /// into its tile *right now* (the others glide aside) instead of waiting for the debounce timer.
 /// Returns false if the normal (slower, complete) path should handle it.
 fn fast_add(s: &mut State, hwnd: HWND) -> bool {
+    let _t = Timer::new("fast_add");
     let h = hwnd.0 as isize;
     if s.ws.contains_key(&h) {
         return false; // known window shown again: the normal path decides
+    }
+    if config::auto_overflow() && s.last.len() >= tile_budget() {
+        return false; // this workspace is full: the normal path moves it to the next one
     }
     let style = unsafe { GetWindowLongW(hwnd, GWL_STYLE) } as u32;
     if style & WS_CHILD.0 != 0 {
@@ -1126,7 +1410,14 @@ fn fast_add(s: &mut State, hwnd: HWND) -> bool {
         rs.resize(layout.len() - 1, 0.5);
         rs.clone()
     };
-    let (rects, regions) = spiral(work_area(), layout.len(), &ratios);
+    // Put the new window in its provisional tile first: an app with a minimum size refuses to
+    // shrink below it, and only after it has been placed do we know that minimum.
+    let (prov, _) = fitted(work_area(), &layout, &ratios, &s.min_size);
+    place(hwnd, prov[layout.len() - 1]);
+    observe_min_size(s, hwnd, &prov[layout.len() - 1]);
+    // Now that the minimum is known, lay the whole workspace out again (the new window's tile may
+    // have grown, and the neighbours move aside).
+    let (rects, regions) = fitted(work_area(), &layout, &ratios, &s.min_size);
     for (i, hh) in layout.iter().enumerate() {
         // the new window appears in its tile instantly; the others glide to make room
         move_window(s, HWND(*hh as *mut _), rects[i], *hh != h);
@@ -1144,12 +1435,23 @@ fn fast_add(s: &mut State, hwnd: HWND) -> bool {
 }
 
 fn retile() {
+    let _t = Timer::new("retile");
     let c = collect();
     STATE.with(|s| {
         let mut s = s.borrow_mut();
         if s.paused {
             return;
         }
+        // a drag whose end event we missed (e.g. the window was destroyed) must not stay stuck:
+        // while `dragging` is set, snapping windows back and live resizing are disabled
+        if let Some(d) = s.dragging {
+            if !unsafe { IsWindow(Some(HWND(d as *mut _))) }.as_bool() {
+                s.dragging = None;
+            }
+        }
+        s.windows_changed = false; // this pass reconciles the whole window set
+        reconcile_fullscreen(&mut s, &c.fullscreen);
+        apply_fullscreen(&mut s);
         let present: Vec<isize> = c.tileable.iter().map(|w| w.hwnd.0 as isize).collect();
         let cur = s.cur;
         // windows we have not seen before are placed instantly; known ones glide
@@ -1159,12 +1461,28 @@ fn retile() {
             .filter(|h| !s.ws.contains_key(h))
             .collect();
         let animate_all = !std::mem::take(&mut s.no_anim);
-        // forget windows that are gone; new windows join the current workspace
-        // (or the workspace a config rule asks for)
+        // forget windows that are gone (their observed minimum size goes with them)
+        s.min_size
+            .retain(|h, _| unsafe { IsWindow(Some(HWND(*h as *mut _))) }.as_bool());
+        // forget windows that are gone; new windows join the current workspace, the workspace a
+        // config rule asks for, or - if the current workspace is full - the next workspace
         s.ws.retain(|h, _| present.contains(h));
+        let mut overflow: Option<(u8, isize)> = None;
         for w in &c.tileable {
-            s.ws.entry(w.hwnd.0 as isize)
-                .or_insert(w.rule_ws.unwrap_or(cur));
+            let h = w.hwnd.0 as isize;
+            if s.ws.contains_key(&h) {
+                continue;
+            }
+            let ws = w
+                .rule_ws
+                .unwrap_or_else(|| workspace_for_new_window(&s, cur));
+            s.ws.insert(h, ws);
+            if ws != cur && overflow.is_none() {
+                overflow = Some((ws, h));
+            }
+        }
+        if overflow.is_some() {
+            s.follow = overflow; // switch to the new workspace, like the taskbar "follow"
         }
         // keep known windows in their old order, drop the gone ones, append the new ones
         let mut order: Vec<isize> = s
@@ -1186,18 +1504,24 @@ fn retile() {
             }
         }
         let layout: Vec<isize> = order.into_iter().filter(|h| s.ws[h] == cur).collect();
-        if layout == s.last {
-            return; // same windows, same order: leave them alone (respects manual tweaks)
-        }
         let ratios = {
             let rs = s.ratios.entry(cur).or_default();
             rs.resize(layout.len().saturating_sub(1), 0.5);
             rs.clone()
         };
-        let (rects, regions) = spiral(work_area(), layout.len(), &ratios);
+        let (rects, regions) = fitted(work_area(), &layout, &ratios, &s.min_size);
+        if layout == s.last && rects == s.rects {
+            // same windows and same tiles: leave them alone (respects manual tweaks). The tile
+            // comparison matters: a minimum size learned after the last layout (or after a new
+            // window appeared) changes the tiles even though the window set did not.
+            return;
+        }
         s.rects = rects.clone();
         s.regions = regions;
         for (h, r) in layout.iter().zip(rects) {
+            if s.dragging == Some(*h) {
+                continue; // the user is dragging it right now: leave it under the cursor
+            }
             let animate = animate_all && !fresh.contains(h);
             move_window(&mut s, HWND(*h as *mut _), r, animate);
         }
@@ -1209,22 +1533,27 @@ fn retile() {
         s.last = layout;
         s.ignore_until = Some(Instant::now() + Duration::from_millis(500));
     });
+    // the focused window may only now have joined the layout: make sure it has the border
+    refresh_border();
+    sync_indicator();
 }
 
 fn focus_hwnd(h: isize) {
     unsafe {
         let _ = SetForegroundWindow(HWND(h as *mut _));
     }
+    // our own SetForegroundWindow produces a foreground event that the hook skips
+    // (WINEVENT_SKIPOWNPROCESS), so update the border here as well
+    STATE.with(|s| update_border(&mut s.borrow_mut(), h));
+    sync_border();
 }
 
 fn focus_first_or_desktop() {
     let first = STATE.with(|s| s.borrow().last.first().copied());
     match first {
         Some(h) => focus_hwnd(h),
-        None => unsafe {
-            // empty workspace: take focus away from the (now hidden) old window
-            let _ = SetForegroundWindow(GetShellWindow());
-        },
+        // empty workspace: take focus away from the (now hidden) old window
+        None => focus_hwnd(unsafe { GetShellWindow() }.0 as isize),
     }
 }
 
@@ -1287,33 +1616,69 @@ fn switch_ws(n: u8, focus: Option<isize>) {
     retile();
     match focus {
         Some(h) => focus_hwnd(h),
-        None => focus_first_or_desktop(),
+        None => focus_workspace(n),
     }
     tray::update();
     log(format!("switched to workspace {}", n + 1));
 }
 
+/// Focuses the fullscreen window of workspace `n` if it has one, otherwise the first tiled one.
+fn focus_workspace(n: u8) {
+    let fs = STATE.with(|s| {
+        s.borrow()
+            .fs_ws
+            .iter()
+            .find(|(h, w)| **w == n && !unsafe { IsIconic(HWND(**h as *mut _)) }.as_bool())
+            .map(|(h, _)| *h)
+    });
+    match fs {
+        Some(h) => focus_hwnd(h),
+        None => focus_first_or_desktop(),
+    }
+}
+
 fn move_to_ws(n: u8) {
     let fg = unsafe { GetForegroundWindow() }.0 as isize;
-    let ok = STATE.with(|s| {
+    // which kind of window are we moving?
+    let fullscreen = STATE.with(|s| {
         let mut s = s.borrow_mut();
-        if s.paused || n >= WS_COUNT || !s.ws.contains_key(&fg) || s.ws[&fg] == n {
-            return false;
+        if s.paused || n >= WS_COUNT {
+            return None;
+        }
+        if let Some(&w) = s.fs_ws.get(&fg) {
+            if w == n {
+                return None;
+            }
+            s.fs_ws.insert(fg, n);
+            return Some(true);
+        }
+        if !s.ws.contains_key(&fg) || s.ws[&fg] == n {
+            return None;
         }
         s.ws.insert(fg, n);
         s.last.clear();
         s.last_switch = Some(Instant::now());
-        true
+        Some(false)
     });
-    if !ok {
+    let Some(fullscreen) = fullscreen else {
         return;
-    }
+    };
     let cur = STATE.with(|s| s.borrow().cur);
-    if n != cur {
-        park(HWND(fg as *mut _));
+    if fullscreen {
+        // retile syncs visibility: hidden if `n` is not the current workspace, shown if it is
+        retile();
+        if n == cur {
+            focus_hwnd(fg);
+        } else {
+            focus_first_or_desktop();
+        }
+    } else {
+        if n != cur {
+            park(HWND(fg as *mut _));
+        }
+        retile();
+        focus_first_or_desktop();
     }
-    retile();
-    focus_first_or_desktop();
     log(format!("moved a window to workspace {}", n + 1));
 }
 
@@ -1346,9 +1711,13 @@ fn bring_everything_back() {
         for v in s.ws.values_mut() {
             *v = cur;
         }
+        for v in s.fs_ws.values_mut() {
+            *v = cur; // so the fullscreen windows are not hidden again below
+        }
         s.last.clear();
         s.paused = false;
         s.no_anim = true; // the process is about to exit: no gliding
+        restore_hidden_fullscreen(&mut s);
     });
     retile();
 }
@@ -1364,6 +1733,7 @@ fn toggle_pause() {
     tray::update();
     if paused {
         clear_border();
+        STATE.with(|s| restore_hidden_fullscreen(&mut s.borrow_mut()));
     }
     if !paused {
         STATE.with(|s| s.borrow_mut().last.clear());
@@ -1372,16 +1742,30 @@ fn toggle_pause() {
     }
 }
 
-fn reload_config() {
+/// Opens the settings launcher (also used by the tray menu).
+pub fn show_launcher() {
+    launcher::show();
+}
+
+/// Quits tile-rs (used by the launcher's "Quit" button).
+pub fn dispatch_quit() {
+    unsafe {
+        PostQuitMessage(0);
+    }
+}
+
+pub fn reload_config() {
     match config::load() {
         Ok(c) => {
             config::set(c);
+            overlay::set_border_color(config::border_color_value());
             let failed = register_hotkeys();
             STATE.with(|s| s.borrow_mut().last.clear());
             retile();
             tray::update();
             clear_border(); // the colour (or the on/off switch) may have changed
             refresh_border();
+            sync_indicator();
             log("config reloaded");
             if !failed.is_empty() {
                 notify(
@@ -1397,6 +1781,25 @@ fn reload_config() {
     }
 }
 
+/// Hotkey: minimize the focused window (a fullscreen game, or a normal tiled window).
+fn minimize_focused() {
+    let fg = unsafe { GetForegroundWindow() };
+    if fg.is_invalid() {
+        return;
+    }
+    let h = fg.0 as isize;
+    STATE.with(|s| {
+        let mut s = s.borrow_mut();
+        // the user chose to minimize it: do not restore it on the next workspace switch
+        s.fs_hidden.remove(&h);
+        s.ignore_until = Some(Instant::now() + Duration::from_millis(300));
+    });
+    unsafe {
+        let _ = ShowWindow(fg, SW_MINIMIZE);
+    }
+    log("minimized the focused window");
+}
+
 pub fn dispatch(a: Action) {
     match a {
         Action::Focus(d) => focus_or_swap(d, false),
@@ -1404,6 +1807,7 @@ pub fn dispatch(a: Action) {
         Action::Workspace(n) => switch_ws(n, None),
         Action::MoveTo(n) => move_to_ws(n),
         Action::Resize { width, grow } => resize_focused(width, grow),
+        Action::Minimize => minimize_focused(),
         Action::Pause => toggle_pause(),
         Action::Quit => unsafe { PostQuitMessage(0) },
         Action::Retile => {
@@ -1424,6 +1828,44 @@ pub fn dispatch(a: Action) {
                 &format!("\"{}\"", config::config_path().display()),
             );
         }
+    }
+}
+
+/// Handles the debounce / live / verify timer (a classic `SetTimer` message).
+fn handle_debounce_timer(wparam: usize) {
+    let timer = STATE.with(|s| s.borrow().timer);
+    if wparam != timer {
+        return;
+    }
+    unsafe {
+        let _ = KillTimer(None, timer);
+    }
+    let (follow, reflow, enforce, live) = STATE.with(|s| {
+        let mut s = s.borrow_mut();
+        s.timer = 0;
+        let reflow = std::mem::take(&mut s.reflow);
+        let enforce = std::mem::take(&mut s.enforce);
+        let live = std::mem::take(&mut s.live);
+        if reflow {
+            s.last.clear(); // force a fresh layout (snap back / apply a swap)
+        }
+        (s.follow.take(), reflow, enforce, live)
+    });
+    match follow {
+        Some((w, h)) => switch_ws(w, Some(h)),
+        None if reflow => retile(),
+        None if live => live_resize(),
+        None if enforce => {
+            let fullscreen = enforce_layout();
+            // only walk all windows again if the set of windows really changed (or one of them
+            // just went fullscreen and must be dropped from the layout)
+            let changed =
+                fullscreen || STATE.with(|s| std::mem::take(&mut s.borrow_mut().windows_changed));
+            if changed {
+                retile();
+            }
+        }
+        None => retile(),
     }
 }
 
@@ -1463,28 +1905,26 @@ fn start(interactive: bool) {
             notify("tile-rs: config error (built-in defaults are used)", &e);
         }
     }
+    if config::layout() != config::Layout::Spiral {
+        log(format!(
+            "layout \"{}\" is not implemented yet; using the spiral",
+            config::layout().name()
+        ));
+    }
 
     if interactive && first_run {
         let yes = msgbox(
             "tile-rs - first start",
             "Start tile-rs automatically when you sign in to Windows?\n\n\
-             (You can change this later in the tray menu: \"Start with Windows\".)",
+             (You can change this later in the launcher or the tray menu.)",
             true,
         );
         if yes {
             set_autostart(true);
         }
-        msgbox(
-            "tile-rs",
-            "tile-rs is running.\n\n\
-             - Its icon is in the system tray (click ^ near the clock). Right-click it for the menu.\n\
-             - Hotkeys and window rules: tray menu -> \"Edit config\".\n\
-             - Pause / resume: Ctrl+Alt+P.  Quit: Ctrl+Alt+Q.",
-            false,
-        );
     }
 
-    SKIP_ZOOMED.store(true, Ordering::Relaxed);
+    window::SKIP_ZOOMED.store(true, Ordering::Relaxed);
     recover_parked();
     unsafe {
         let flags = WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS;
@@ -1500,6 +1940,14 @@ fn start(interactive: bool) {
     }
     let failed = register_hotkeys();
     tray::create();
+    launcher::create();
+    if !overlay::create_border() {
+        log("could not create the border overlay window");
+    }
+    overlay::set_border_color(config::border_color_value());
+    overlay::create_indicator();
+    let anim_timer = create_anim_timer();
+    STATE.with(|s| s.borrow_mut().anim_timer = anim_timer);
     log("tile-rs running");
     if !failed.is_empty() {
         notify(
@@ -1509,65 +1957,71 @@ fn start(interactive: bool) {
     }
     retile();
     refresh_border();
+    if interactive {
+        launcher::show();
+    }
 
+    // One thread, one message loop. The animation frames come from a high-resolution waitable
+    // timer (not WM_TIMER, which is the lowest priority and stutters while the mouse moves);
+    // the debounce / live / verify timers stay ordinary SetTimer messages.
     unsafe {
         let mut msg = MSG::default();
-        while GetMessageW(&mut msg, None, 0, 0).0 > 0 {
-            if msg.message == WM_TIMER {
-                let (timer, atimer) = STATE.with(|s| {
-                    let s = s.borrow();
-                    (s.timer, s.anim_timer)
-                });
-                if atimer != 0 && msg.wParam.0 == atimer {
-                    anim_tick();
+        let handles = [anim_timer];
+        loop {
+            let r = MsgWaitForMultipleObjectsEx(
+                Some(&handles),
+                INFINITE,
+                QS_ALLINPUT,
+                MWMO_INPUTAVAILABLE,
+            );
+            if r == WAIT_FAILED {
+                log("MsgWaitForMultipleObjectsEx failed; stopping the message loop");
+                break;
+            }
+            if r == WAIT_OBJECT_0 {
+                anim_tick();
+            }
+            let mut quit = false;
+            while PeekMessageW(&mut msg, None, 0, 0, PM_REMOVE).as_bool() {
+                if msg.message == WM_QUIT {
+                    quit = true;
+                    break;
+                }
+                if msg.message == WM_TIMER {
+                    handle_debounce_timer(msg.wParam.0);
                     continue;
                 }
-                if msg.wParam.0 == timer {
-                    let _ = KillTimer(None, timer);
-                    let (follow, reflow, enforce, live) = STATE.with(|s| {
-                        let mut s = s.borrow_mut();
-                        s.timer = 0;
-                        let reflow = std::mem::take(&mut s.reflow);
-                        let enforce = std::mem::take(&mut s.enforce);
-                        let live = std::mem::take(&mut s.live);
-                        if reflow {
-                            s.last.clear(); // force a fresh layout (snap back / apply a swap)
-                        }
-                        (s.follow.take(), reflow, enforce, live)
+                if msg.message == WM_HOTKEY {
+                    let id = msg.wParam.0 as i32;
+                    let action = STATE.with(|s| {
+                        s.borrow()
+                            .hotkeys
+                            .iter()
+                            .find(|(i, _)| *i == id)
+                            .map(|(_, a)| *a)
                     });
-                    match follow {
-                        Some((w, h)) => switch_ws(w, Some(h)),
-                        None if reflow => retile(),
-                        None if live => live_resize(),
-                        None if enforce => {
-                            enforce_layout();
-                            retile();
-                        }
-                        None => retile(),
+                    if let Some(a) = action {
+                        dispatch(a);
                     }
                     continue;
                 }
-            } else if msg.message == WM_HOTKEY {
-                let id = msg.wParam.0 as i32;
-                let action = STATE.with(|s| {
-                    s.borrow()
-                        .hotkeys
-                        .iter()
-                        .find(|(i, _)| *i == id)
-                        .map(|(_, a)| *a)
-                });
-                if let Some(a) = action {
-                    dispatch(a);
-                }
-                continue;
+                let _ = TranslateMessage(&msg);
+                DispatchMessageW(&msg);
             }
-            let _ = TranslateMessage(&msg);
-            DispatchMessageW(&msg);
+            if quit {
+                break;
+            }
         }
     }
     clear_border();
     bring_everything_back();
     tray::remove();
+    launcher::destroy();
+    overlay::destroy_indicator();
+    overlay::destroy_border();
+    unsafe {
+        let _ = CloseHandle(anim_timer);
+    }
     log("bye");
 }
 
@@ -1582,6 +2036,9 @@ fn console_out() -> Box<dyn Write> {
 }
 
 fn main() {
+    if std::env::var_os("TILE_RS_PROFILE").is_some() {
+        prof::PROFILE.store(true, Ordering::Relaxed);
+    }
     let cmd = std::env::args().nth(1);
     match cmd.as_deref() {
         None => start(true),
@@ -1624,6 +2081,19 @@ fn main() {
                 for w in &c.tileable {
                     let _ = writeln!(out, "  [{:>6}] {:<28} {}", w.pid, w.class, w.title);
                 }
+                if !c.fullscreen.is_empty() {
+                    let _ = writeln!(out, "\nFULLSCREEN ({}):", c.fullscreen.len());
+                    for w in &c.fullscreen {
+                        let _ = writeln!(
+                            out,
+                            "  [{:>6}] {:<28} {}  <- {}",
+                            w.pid,
+                            w.class,
+                            w.title,
+                            window::FULLSCREEN_REASON
+                        );
+                    }
+                }
                 let _ = writeln!(out, "\nSKIPPED ({}):", c.skipped.len());
                 for (w, r) in &c.skipped {
                     let _ = writeln!(
@@ -1664,5 +2134,27 @@ fn main() {
                 "usage: tile-rs [--autostart | list | tile | --version | --help]"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const TEST_SUBKEY: &str = r"Software\tile-rs-test";
+    const TEST_VALUE: &str = "tile-rs-test";
+
+    #[test]
+    fn autostart_registry_roundtrip() {
+        let _ = set_autostart_at(TEST_SUBKEY, TEST_VALUE, None); // start clean
+        assert!(!autostart_enabled_at(TEST_SUBKEY, TEST_VALUE));
+        assert!(set_autostart_at(
+            TEST_SUBKEY,
+            TEST_VALUE,
+            Some("\"C:\\tile-rs.exe\" --autostart")
+        ));
+        assert!(autostart_enabled_at(TEST_SUBKEY, TEST_VALUE));
+        assert!(set_autostart_at(TEST_SUBKEY, TEST_VALUE, None));
+        assert!(!autostart_enabled_at(TEST_SUBKEY, TEST_VALUE));
     }
 }

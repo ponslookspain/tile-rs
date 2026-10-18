@@ -9,6 +9,8 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
     HOT_KEY_MODIFIERS, MOD_ALT, MOD_CONTROL, MOD_SHIFT, MOD_WIN,
 };
 
+use crate::geometry::Easing;
+
 pub const WS_COUNT: u8 = 9;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -31,11 +33,48 @@ pub enum Action {
         width: bool,
         grow: bool,
     },
+    /// Minimize the focused window.
+    Minimize,
     Pause,
     Quit,
     Retile,
     ReloadConfig,
     EditConfig,
+}
+
+/// What to do with a window that runs fullscreen / borderless fullscreen (a game, a video
+/// player): minimize it while its workspace is not shown, or leave it completely alone.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum FullscreenWindows {
+    /// Minimize on another workspace, restore when its workspace is shown (the default).
+    #[default]
+    Minimize,
+    /// Never touch fullscreen windows.
+    Ignore,
+}
+
+/// The tiling layout. Only `Spiral` is implemented so far; the others are placeholders (they are
+/// shown in the launcher as "coming soon" and fall back to the spiral).
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum Layout {
+    /// Spiral / dwindle (the default).
+    #[default]
+    Spiral,
+    MasterStack,
+    Grid,
+    Columns,
+}
+
+impl Layout {
+    /// The name used in `config.toml`.
+    pub fn name(self) -> &'static str {
+        match self {
+            Layout::Spiral => "spiral",
+            Layout::MasterStack => "master_stack",
+            Layout::Grid => "grid",
+            Layout::Columns => "columns",
+        }
+    }
 }
 
 #[derive(Deserialize, Clone, Default, Debug)]
@@ -61,12 +100,21 @@ enum OneOrMany {
 
 #[derive(Deserialize, Default, Debug)]
 struct RawConfig {
+    layout: Option<String>,
     gap: Option<i32>,
     animations: Option<bool>,
     animation_ms: Option<u32>,
+    easing: Option<String>,
+    fullscreen_windows: Option<String>,
     resize_step: Option<u32>,
     border: Option<bool>,
     border_color: Option<String>,
+    border_width: Option<u32>,
+    min_tile_width: Option<i32>,
+    min_tile_height: Option<i32>,
+    max_tiles: Option<u32>,
+    auto_overflow: Option<bool>,
+    workspace_indicator: Option<bool>,
     #[serde(default)]
     hotkeys: BTreeMap<String, OneOrMany>,
     #[serde(default)]
@@ -75,15 +123,33 @@ struct RawConfig {
 
 #[derive(Clone, Default, Debug)]
 pub struct Config {
+    /// The tiling layout (`spiral` for now).
+    pub layout: Layout,
     pub gap: i32,
     pub animations: bool,
     pub animation_ms: u32,
+    /// Easing curve of the animations.
+    pub easing: Easing,
+    /// How to handle windows that run fullscreen / borderless fullscreen.
+    pub fullscreen_windows: FullscreenWindows,
     /// Pixels per keypress for the resize hotkeys.
     pub resize_step: u32,
-    /// Colour the border of the focused tiled window (Windows 11).
+    /// Draw a border around the focused tiled window.
     pub border: bool,
     /// Border colour as a Windows COLORREF (0x00BBGGRR).
     pub border_color: u32,
+    /// Border thickness in pixels (0 = no border).
+    pub border_width: u32,
+    /// Comfortable minimum tile size; the spiral shrinks the master tile to keep tiles at least
+    /// this big.
+    pub min_tile_width: i32,
+    pub min_tile_height: i32,
+    /// Maximum number of tiles per workspace; `0` = choose automatically from the screen size.
+    pub max_tiles: u32,
+    /// When a workspace is full, open new windows on the next workspace and switch to it.
+    pub auto_overflow: bool,
+    /// Show the small workspace indicator.
+    pub workspace_indicator: bool,
     /// (action, "alt+shift+h")
     pub bindings: Vec<(Action, String)>,
     pub rules: Vec<Rule>,
@@ -105,6 +171,10 @@ pub fn default_config() -> String {
         r##"# tile-rs configuration.
 # After editing: save the file, then tray icon -> "Reload config".
 
+# Tiling layout. "spiral" (dwindle) is the only one for now; master_stack, grid and columns
+# are planned.
+layout = "spiral"
+
 # Gap between windows and around the screen edges, in pixels.
 gap = 10
 
@@ -113,12 +183,32 @@ gap = 10
 animations = true
 animation_ms = 140
 
+# Easing of the window animations: linear, out_quad, out_cubic (default), out_quart, in_out_cubic.
+easing = "out_cubic"
+
 # How many pixels the "grow/shrink" hotkeys change a window's width/height per keypress.
 resize_step = 40
 
-# Coloured border around the focused tiled window (Windows 11 only).
+# Border around the focused tiled window (drawn by tile-rs itself).
 border = true
 border_color = "#8dbcff"
+border_width = 2
+
+# Comfortable minimum tile size: when windows would get smaller, tile-rs narrows the left (master)
+# tile to make room, and once a workspace is full new windows go to the next workspace.
+min_tile_width = 480
+min_tile_height = 320
+# Maximum tiles per workspace; 0 = pick automatically from the screen size.
+max_tiles = 0
+# When a workspace is full, open a new window on the next workspace and switch to it.
+auto_overflow = true
+# Small indicator at the top of the screen showing the workspaces (dots).
+workspace_indicator = true
+
+# Windows that run fullscreen or borderless fullscreen (games, video players): "minimize" hides
+# them while their workspace is not shown and restores them when you switch back; "ignore" leaves
+# them completely alone.
+fullscreen_windows = "minimize"
 
 [hotkeys]
 # Format: "modifiers+key". Modifiers: alt, ctrl, shift, win.
@@ -136,6 +226,7 @@ grow_width    = ["alt+plus", "alt+numpad_add"]
 shrink_width  = ["alt+minus", "alt+numpad_subtract"]
 # grow_height   = "alt+shift+plus"
 # shrink_height = "alt+shift+minus"
+minimize      = "alt+shift+m"
 pause         = ["ctrl+alt+p", "alt+shift+p"]
 quit          = "ctrl+alt+q"
 # Optional (also available from the tray menu):
@@ -206,6 +297,9 @@ pub fn migrate(text: &str) -> Option<String> {
     if !has("shrink_width") {
         hot.push(r#"shrink_width  = ["alt+minus", "alt+numpad_subtract"]"#.into());
     }
+    if !has("minimize") {
+        hot.push(r#"minimize      = "alt+shift+m""#.into());
+    }
     if !hot.is_empty() {
         if let Some(i) = lines.iter().position(|l| l.trim() == "[hotkeys]") {
             for (n, l) in hot.into_iter().enumerate() {
@@ -217,6 +311,10 @@ pub fn migrate(text: &str) -> Option<String> {
 
     // new top-level settings go before the first [table]
     let mut top: Vec<String> = Vec::new();
+    if !has("layout") {
+        top.push("# Tiling layout: spiral (the only one for now).".into());
+        top.push("layout = \"spiral\"".into());
+    }
     if !has("animations") {
         top.push(
             "# Smooth window movement (animation_ms: 0..1000; animations = false = instant)."
@@ -227,16 +325,51 @@ pub fn migrate(text: &str) -> Option<String> {
     if !has("animation_ms") {
         top.push("animation_ms = 140".into());
     }
+    if !has("easing") {
+        top.push(
+            "# Easing of the window animations: linear, out_quad, out_cubic (default), out_quart, in_out_cubic."
+                .into(),
+        );
+        top.push("easing = \"out_cubic\"".into());
+    }
     if !has("resize_step") {
         top.push("# Pixels per keypress for the grow/shrink hotkeys.".into());
         top.push("resize_step = 40".into());
     }
     if !has("border") {
-        top.push("# Coloured border around the focused tiled window (Windows 11 only).".into());
+        top.push("# Coloured border around the focused tiled window.".into());
         top.push("border = true".into());
     }
     if !has("border_color") {
         top.push("border_color = \"#8dbcff\"".into());
+    }
+    if !has("border_width") {
+        top.push("border_width = 2".into());
+    }
+    if !has("min_tile_width") {
+        top.push("# Comfortable minimum tile size (the master tile narrows to make room).".into());
+        top.push("min_tile_width = 480".into());
+    }
+    if !has("min_tile_height") {
+        top.push("min_tile_height = 320".into());
+    }
+    if !has("max_tiles") {
+        top.push("# Maximum tiles per workspace; 0 = automatic (from the screen size).".into());
+        top.push("max_tiles = 0".into());
+    }
+    if !has("auto_overflow") {
+        top.push("# Open a new window on the next workspace when this one is full.".into());
+        top.push("auto_overflow = true".into());
+    }
+    if !has("workspace_indicator") {
+        top.push("workspace_indicator = true".into());
+    }
+    if !has("fullscreen_windows") {
+        top.push(
+            "# Windows that run fullscreen / borderless fullscreen: \"minimize\" or \"ignore\"."
+                .into(),
+        );
+        top.push("fullscreen_windows = \"minimize\"".into());
     }
     if !top.is_empty() {
         let at = lines
@@ -256,6 +389,38 @@ pub fn migrate(text: &str) -> Option<String> {
     let mut out = lines.join(nl);
     out.push_str(nl);
     Some(out)
+}
+
+/// Edits top-level `key = value` lines in `text` in place (the value is already formatted, e.g.
+/// `"spiral"`, `10`, `true`). A missing key is inserted before the first `[section]`. Everything
+/// else in the file (comments, hotkeys, rules) is left untouched.
+pub fn edit_top(text: &str, pairs: &[(&str, String)]) -> String {
+    let nl = if text.contains("\r\n") { "\r\n" } else { "\n" };
+    let mut lines: Vec<String> = text.lines().map(|l| l.to_string()).collect();
+    let mut at = lines
+        .iter()
+        .position(|l| l.trim_start().starts_with('['))
+        .unwrap_or(lines.len());
+    let mut inserted = 0;
+    for (key, value) in pairs {
+        let line = format!("{key} = {value}");
+        let pos = lines.iter().position(|l| {
+            let t = l.trim_start().trim_start_matches('#').trim_start();
+            t.strip_prefix(*key)
+                .is_some_and(|rest| rest.trim_start().starts_with('='))
+        });
+        match pos {
+            Some(i) => lines[i] = line,
+            None => {
+                lines.insert(at + inserted, line);
+                inserted += 1;
+                at += 0; // keep `at` fixed; `inserted` tracks the offset
+            }
+        }
+    }
+    let mut out = lines.join(nl);
+    out.push_str(nl);
+    out
 }
 
 /// Runs `migrate` on the config file (keeping a copy as config.toml.bak). True if it changed.
@@ -319,6 +484,7 @@ fn parse_action(name: &str) -> Option<Action> {
             width: false,
             grow: false,
         }),
+        "minimize" => Some(Action::Minimize),
         "pause" => Some(Action::Pause),
         "quit" => Some(Action::Quit),
         "retile" => Some(Action::Retile),
@@ -397,6 +563,44 @@ fn parse_key(k: &str) -> Option<u32> {
     })
 }
 
+/// "linear", "out_quad", "out_cubic", "out_quart", "in_out_cubic" -> `Easing`.
+pub fn parse_easing(s: &str) -> Result<Easing, String> {
+    match s.trim().to_ascii_lowercase().as_str() {
+        "linear" => Ok(Easing::Linear),
+        "out_quad" => Ok(Easing::OutQuad),
+        "out_cubic" => Ok(Easing::OutCubic),
+        "out_quart" => Ok(Easing::OutQuart),
+        "in_out_cubic" => Ok(Easing::InOutCubic),
+        other => Err(format!(
+            "easing = \"{other}\": expected one of linear, out_quad, out_cubic, out_quart, in_out_cubic"
+        )),
+    }
+}
+
+/// "spiral", "master_stack", "grid", "columns" -> `Layout`.
+pub fn parse_layout(s: &str) -> Result<Layout, String> {
+    match s.trim().to_ascii_lowercase().as_str() {
+        "spiral" => Ok(Layout::Spiral),
+        "master_stack" => Ok(Layout::MasterStack),
+        "grid" => Ok(Layout::Grid),
+        "columns" => Ok(Layout::Columns),
+        other => Err(format!(
+            "layout = \"{other}\": expected one of spiral, master_stack, grid, columns"
+        )),
+    }
+}
+
+/// "minimize", "ignore" -> `FullscreenWindows`.
+pub fn parse_fullscreen_windows(s: &str) -> Result<FullscreenWindows, String> {
+    match s.trim().to_ascii_lowercase().as_str() {
+        "minimize" => Ok(FullscreenWindows::Minimize),
+        "ignore" => Ok(FullscreenWindows::Ignore),
+        other => Err(format!(
+            "fullscreen_windows = \"{other}\": expected \"minimize\" or \"ignore\""
+        )),
+    }
+}
+
 /// "#rrggbb" (or "rrggbb") -> Windows COLORREF (0x00BBGGRR)
 pub fn parse_color(s: &str) -> Result<u32, String> {
     let h = s.trim().trim_start_matches('#');
@@ -412,6 +616,7 @@ pub fn parse_color(s: &str) -> Result<u32, String> {
 
 pub fn parse(text: &str) -> Result<Config, String> {
     let raw: RawConfig = toml::from_str(text).map_err(|e| e.to_string())?;
+    let layout = parse_layout(raw.layout.as_deref().unwrap_or("spiral"))?;
     let gap = raw.gap.unwrap_or(10);
     if !(0..=200).contains(&gap) {
         return Err(format!("gap = {gap}: must be between 0 and 200"));
@@ -423,6 +628,9 @@ pub fn parse(text: &str) -> Result<Config, String> {
         ));
     }
     let animations = raw.animations.unwrap_or(true) && animation_ms > 0;
+    let easing = parse_easing(raw.easing.as_deref().unwrap_or("out_cubic"))?;
+    let fullscreen_windows =
+        parse_fullscreen_windows(raw.fullscreen_windows.as_deref().unwrap_or("minimize"))?;
     let resize_step = raw.resize_step.unwrap_or(40);
     if !(1..=500).contains(&resize_step) {
         return Err(format!(
@@ -431,6 +639,25 @@ pub fn parse(text: &str) -> Result<Config, String> {
     }
     let border = raw.border.unwrap_or(true);
     let border_color = parse_color(raw.border_color.as_deref().unwrap_or("#8dbcff"))?;
+    let border_width = raw.border_width.unwrap_or(2);
+    if border_width > 20 {
+        return Err(format!(
+            "border_width = {border_width}: must be between 0 and 20"
+        ));
+    }
+    let min_tile_width = raw.min_tile_width.unwrap_or(480);
+    let min_tile_height = raw.min_tile_height.unwrap_or(320);
+    if !(100..=4000).contains(&min_tile_width) || !(100..=4000).contains(&min_tile_height) {
+        return Err(format!(
+            "min_tile_width/height = {min_tile_width}/{min_tile_height}: must be between 100 and 4000"
+        ));
+    }
+    let max_tiles = raw.max_tiles.unwrap_or(0);
+    if max_tiles > 20 {
+        return Err(format!("max_tiles = {max_tiles}: must be between 0 and 20"));
+    }
+    let auto_overflow = raw.auto_overflow.unwrap_or(true);
+    let workspace_indicator = raw.workspace_indicator.unwrap_or(true);
     let mut bindings = Vec::new();
     for (name, v) in raw.hotkeys {
         let action =
@@ -470,12 +697,21 @@ pub fn parse(text: &str) -> Result<Config, String> {
         }
     }
     Ok(Config {
+        layout,
         gap,
         animations,
         animation_ms,
+        easing,
+        fullscreen_windows,
         resize_step,
         border,
         border_color,
+        border_width,
+        min_tile_width,
+        min_tile_height,
+        max_tiles,
+        auto_overflow,
+        workspace_indicator,
         bindings,
         rules: raw.rules,
     })
@@ -504,6 +740,11 @@ pub fn set(c: Config) {
     }
 }
 
+/// The configured tiling layout (only `Spiral` is implemented).
+pub fn layout() -> Layout {
+    cell().read().map(|c| c.layout).unwrap_or_default()
+}
+
 pub fn gap() -> i32 {
     cell().read().map(|c| c.gap).unwrap_or(10)
 }
@@ -516,6 +757,19 @@ pub fn animation() -> (bool, u32) {
         .unwrap_or((true, 140))
 }
 
+/// Easing curve of the animations.
+pub fn easing() -> Easing {
+    cell().read().map(|c| c.easing).unwrap_or_default()
+}
+
+/// How to handle windows that run fullscreen / borderless fullscreen.
+pub fn fullscreen_windows() -> FullscreenWindows {
+    cell()
+        .read()
+        .map(|c| c.fullscreen_windows)
+        .unwrap_or_default()
+}
+
 /// The border colour (COLORREF) if the border is enabled.
 pub fn border() -> Option<u32> {
     cell()
@@ -524,8 +778,38 @@ pub fn border() -> Option<u32> {
         .and_then(|c| c.border.then_some(c.border_color))
 }
 
+/// The configured border colour (COLORREF), whether or not the border is enabled.
+pub fn border_color_value() -> u32 {
+    cell().read().map(|c| c.border_color).unwrap_or(0xFFBC8D)
+}
+
 pub fn resize_step() -> i32 {
     cell().read().map(|c| c.resize_step as i32).unwrap_or(40)
+}
+
+pub fn border_width() -> i32 {
+    cell().read().map(|c| c.border_width as i32).unwrap_or(2)
+}
+
+/// (min tile width, min tile height)
+pub fn min_tile() -> (i32, i32) {
+    cell()
+        .read()
+        .map(|c| (c.min_tile_width, c.min_tile_height))
+        .unwrap_or((480, 320))
+}
+
+/// Configured maximum tiles per workspace (0 = automatic).
+pub fn max_tiles() -> u32 {
+    cell().read().map(|c| c.max_tiles).unwrap_or(0)
+}
+
+pub fn auto_overflow() -> bool {
+    cell().read().map(|c| c.auto_overflow).unwrap_or(true)
+}
+
+pub fn workspace_indicator() -> bool {
+    cell().read().map(|c| c.workspace_indicator).unwrap_or(true)
 }
 
 /// Just the rules (cheaper than cloning the whole config on hot paths).
@@ -540,12 +824,24 @@ mod tests {
     #[test]
     fn default_config_parses() {
         let c = parse(&default_config()).expect("default config must parse");
+        assert_eq!(c.layout, Layout::Spiral);
         assert_eq!(c.gap, 10);
         assert!(c.animations);
         assert_eq!(c.animation_ms, 140);
+        assert_eq!(c.easing, Easing::OutCubic);
+        assert_eq!(c.fullscreen_windows, FullscreenWindows::Minimize);
         assert_eq!(c.resize_step, 40);
         assert!(c.border);
         assert_eq!(c.border_color, 0xFFBC8D); // #8dbcff as COLORREF (BGR)
+        assert_eq!(c.border_width, 2);
+        assert_eq!((c.min_tile_width, c.min_tile_height), (480, 320));
+        assert_eq!(c.max_tiles, 0);
+        assert!(c.auto_overflow);
+        assert!(c.workspace_indicator);
+        assert!(c
+            .bindings
+            .iter()
+            .any(|(a, s)| *a == Action::Minimize && s == "alt+shift+m"));
         assert!(c.bindings.iter().any(|(a, s)| {
             *a == Action::Resize {
                 width: true,
@@ -580,7 +876,13 @@ mod tests {
         let c = parse(&new).expect("migrated config must still parse");
         assert!(c.animations);
         assert_eq!(c.animation_ms, 140);
+        assert_eq!(c.easing, Easing::OutCubic);
+        assert_eq!(c.fullscreen_windows, FullscreenWindows::Minimize);
         assert_eq!(c.resize_step, 40);
+        assert!(c
+            .bindings
+            .iter()
+            .any(|(a, s)| *a == Action::Minimize && s == "alt+shift+m"));
         assert!(c.bindings.iter().any(|(a, s)| {
             *a == Action::Resize {
                 width: true,
@@ -604,7 +906,7 @@ mod tests {
         let once = migrate(OLD_CONFIG).unwrap();
         assert!(migrate(&once).is_none(), "second run must change nothing");
         // a key the user commented out or turned off is not re-added
-        let custom = "gap = 5\nanimations = false\n# animation_ms = 99\nresize_step = 10\nborder = false\n# border_color = \"#112233\"\n\n[hotkeys]\n# grow_width = \"alt+plus\"\n# shrink_width = \"alt+minus\"\nquit = \"ctrl+alt+q\"\n";
+        let custom = "layout = \"spiral\"\ngap = 5\nanimations = false\n# animation_ms = 99\neasing = \"linear\"\nfullscreen_windows = \"ignore\"\nresize_step = 10\nborder = false\n# border_color = \"#112233\"\nborder_width = 3\nmin_tile_width = 400\nmin_tile_height = 300\nmax_tiles = 6\nauto_overflow = false\nworkspace_indicator = false\n\n[hotkeys]\n# grow_width = \"alt+plus\"\n# shrink_width = \"alt+minus\"\nminimize = \"alt+shift+m\"\nquit = \"ctrl+alt+q\"\n";
         assert!(migrate(custom).is_none());
         // the freshly generated default never needs migrating
         assert!(migrate(&default_config()).is_none());
@@ -630,6 +932,54 @@ mod tests {
         assert!(parse_color("#gg0000").is_err());
         assert!(parse("border_color = \"nope\"").is_err());
         assert!(!parse("border = false").unwrap().border);
+    }
+
+    #[test]
+    fn easing_parses_and_rejects_unknown() {
+        assert_eq!(parse_easing("linear").unwrap(), Easing::Linear);
+        assert_eq!(parse_easing("OUT_QUAD").unwrap(), Easing::OutQuad);
+        assert_eq!(parse_easing(" out_cubic ").unwrap(), Easing::OutCubic);
+        assert_eq!(parse_easing("out_quart").unwrap(), Easing::OutQuart);
+        assert_eq!(parse_easing("in_out_cubic").unwrap(), Easing::InOutCubic);
+        let err = parse_easing("wobble").unwrap_err();
+        assert!(err.contains("out_cubic"), "{err}");
+        assert!(parse("easing = \"wobble\"").is_err());
+        assert_eq!(parse("easing = \"linear\"").unwrap().easing, Easing::Linear);
+    }
+
+    #[test]
+    fn layout_parses_and_rejects_unknown() {
+        assert_eq!(parse_layout("spiral").unwrap(), Layout::Spiral);
+        assert_eq!(parse_layout(" GRID ").unwrap(), Layout::Grid);
+        assert_eq!(parse_layout("master_stack").unwrap(), Layout::MasterStack);
+        assert_eq!(parse_layout("columns").unwrap(), Layout::Columns);
+        assert!(parse_layout("stacked").is_err());
+        assert!(parse("layout = \"stacked\"").is_err());
+        assert_eq!(parse("layout = \"grid\"").unwrap().layout, Layout::Grid);
+    }
+
+    #[test]
+    fn fullscreen_windows_parses_and_rejects_unknown() {
+        assert_eq!(
+            parse_fullscreen_windows("minimize").unwrap(),
+            FullscreenWindows::Minimize
+        );
+        assert_eq!(
+            parse_fullscreen_windows("IGNORE").unwrap(),
+            FullscreenWindows::Ignore
+        );
+        assert_eq!(
+            parse_fullscreen_windows(" ignore ").unwrap(),
+            FullscreenWindows::Ignore
+        );
+        assert!(parse_fullscreen_windows("hide").is_err());
+        assert!(parse("fullscreen_windows = \"hide\"").is_err());
+        assert_eq!(
+            parse("fullscreen_windows = \"ignore\"")
+                .unwrap()
+                .fullscreen_windows,
+            FullscreenWindows::Ignore
+        );
     }
 
     #[test]
