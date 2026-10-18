@@ -1,5 +1,6 @@
 //! Configuration: %APPDATA%\tile-rs\config.toml (hotkeys, gap, window rules).
 
+use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::{OnceLock, RwLock};
@@ -35,6 +36,8 @@ pub enum Action {
     },
     /// Minimize the focused window.
     Minimize,
+    /// Close the focused window (like Alt+F4).
+    Close,
     Pause,
     Quit,
     Retile,
@@ -245,6 +248,7 @@ shrink_width  = ["alt+minus", "alt+numpad_subtract"]
 # grow_height   = "alt+shift+plus"
 # shrink_height = "alt+shift+minus"
 minimize      = "alt+shift+m"
+close         = "alt+shift+q"
 pause         = ["ctrl+alt+p", "alt+shift+p"]
 quit          = "ctrl+alt+q"
 # Optional (also available from the tray menu):
@@ -317,6 +321,12 @@ pub fn migrate(text: &str) -> Option<String> {
     }
     if !has("minimize") {
         hot.push(r#"minimize      = "alt+shift+m""#.into());
+    }
+    if !has("close") {
+        hot.push(r#"close         = "alt+shift+q""#.into());
+    }
+    if !has("quit") {
+        hot.push(r#"quit          = "ctrl+alt+q""#.into());
     }
     if !hot.is_empty() {
         if let Some(i) = lines.iter().position(|l| l.trim() == "[hotkeys]") {
@@ -510,6 +520,7 @@ fn parse_action(name: &str) -> Option<Action> {
             grow: false,
         }),
         "minimize" => Some(Action::Minimize),
+        "close" => Some(Action::Close),
         "pause" => Some(Action::Pause),
         "quit" => Some(Action::Quit),
         "retile" => Some(Action::Retile),
@@ -768,96 +779,103 @@ fn cell() -> &'static RwLock<Config> {
     CURRENT.get_or_init(|| RwLock::new(parse(&default_config()).unwrap_or_default()))
 }
 
+thread_local! {
+    /// A snapshot of `CURRENT` so the hot paths (animation frames, layout) do not take the lock
+    /// once per setting they read. `set` invalidates it; every read happens on the main thread.
+    static SNAPSHOT: RefCell<Option<Config>> = const { RefCell::new(None) };
+}
+
+/// Runs `f` with the current config, taking the lock only when the snapshot is stale. Must not be
+/// called re-entrantly (the accessors below only read plain fields).
+fn with_cfg<R>(f: impl FnOnce(&Config) -> R) -> R {
+    SNAPSHOT.with(|s| {
+        let mut snap = s.borrow_mut();
+        if snap.is_none() {
+            *snap = Some(cell().read().map(|c| c.clone()).unwrap_or_default());
+        }
+        f(snap.as_ref().unwrap())
+    })
+}
+
 pub fn current() -> Config {
-    cell().read().map(|c| c.clone()).unwrap_or_default()
+    with_cfg(|c| c.clone())
 }
 
 pub fn set(c: Config) {
     if let Ok(mut w) = cell().write() {
         *w = c;
     }
+    SNAPSHOT.with(|s| *s.borrow_mut() = None);
 }
 
 /// The configured tiling layout (only `Spiral` is implemented).
 pub fn layout() -> Layout {
-    cell().read().map(|c| c.layout).unwrap_or_default()
+    with_cfg(|c| c.layout)
 }
 
 pub fn gap() -> i32 {
-    cell().read().map(|c| c.gap).unwrap_or(10)
+    with_cfg(|c| c.gap)
 }
 
 /// (animations enabled, duration in ms)
 pub fn animation() -> (bool, u32) {
-    cell()
-        .read()
-        .map(|c| (c.animations, c.animation_ms))
-        .unwrap_or((true, 140))
+    with_cfg(|c| (c.animations, c.animation_ms))
 }
 
 /// Easing curve of the animations.
 pub fn easing() -> Easing {
-    cell().read().map(|c| c.easing).unwrap_or_default()
+    with_cfg(|c| c.easing)
 }
 
 /// How to handle windows that run fullscreen / borderless fullscreen.
 pub fn fullscreen_windows() -> FullscreenWindows {
-    cell()
-        .read()
-        .map(|c| c.fullscreen_windows)
-        .unwrap_or_default()
+    with_cfg(|c| c.fullscreen_windows)
 }
 
 /// How to treat a window with a photo / video open.
 pub fn media_windows() -> MediaWindows {
-    cell().read().map(|c| c.media_windows).unwrap_or_default()
+    with_cfg(|c| c.media_windows)
 }
 
 /// The border colour (COLORREF) if the border is enabled.
 pub fn border() -> Option<u32> {
-    cell()
-        .read()
-        .ok()
-        .and_then(|c| c.border.then_some(c.border_color))
+    with_cfg(|c| c.border.then_some(c.border_color))
 }
 
 /// The configured border colour (COLORREF), whether or not the border is enabled.
 pub fn border_color_value() -> u32 {
-    cell().read().map(|c| c.border_color).unwrap_or(0xFFBC8D)
+    with_cfg(|c| c.border_color)
 }
 
 pub fn resize_step() -> i32 {
-    cell().read().map(|c| c.resize_step as i32).unwrap_or(40)
+    with_cfg(|c| c.resize_step as i32)
 }
 
 pub fn border_width() -> i32 {
-    cell().read().map(|c| c.border_width as i32).unwrap_or(2)
+    with_cfg(|c| c.border_width as i32)
 }
 
 /// (min tile width, min tile height)
 pub fn min_tile() -> (i32, i32) {
-    cell()
-        .read()
-        .map(|c| (c.min_tile_width, c.min_tile_height))
-        .unwrap_or((480, 320))
+    with_cfg(|c| (c.min_tile_width, c.min_tile_height))
 }
 
 /// Configured maximum tiles per workspace (0 = automatic).
 pub fn max_tiles() -> u32 {
-    cell().read().map(|c| c.max_tiles).unwrap_or(0)
+    with_cfg(|c| c.max_tiles)
 }
 
 pub fn auto_overflow() -> bool {
-    cell().read().map(|c| c.auto_overflow).unwrap_or(true)
+    with_cfg(|c| c.auto_overflow)
 }
 
 pub fn workspace_indicator() -> bool {
-    cell().read().map(|c| c.workspace_indicator).unwrap_or(true)
+    with_cfg(|c| c.workspace_indicator)
 }
 
 /// Just the rules (cheaper than cloning the whole config on hot paths).
 pub fn rules() -> Vec<Rule> {
-    cell().read().map(|c| c.rules.clone()).unwrap_or_default()
+    with_cfg(|c| c.rules.clone())
 }
 
 #[cfg(test)]
@@ -886,6 +904,10 @@ mod tests {
             .bindings
             .iter()
             .any(|(a, s)| *a == Action::Minimize && s == "alt+shift+m"));
+        assert!(c
+            .bindings
+            .iter()
+            .any(|(a, s)| *a == Action::Close && s == "alt+shift+q"));
         assert!(c.bindings.iter().any(|(a, s)| {
             *a == Action::Resize {
                 width: true,
@@ -898,8 +920,8 @@ mod tests {
                 grow: false,
             } && s == "alt+minus"
         }));
-        // 16 direction bindings + 18 workspace bindings + 4 resize + pause x2 + quit
-        assert!(c.bindings.len() >= 16 + 18 + 4 + 3);
+        // 16 direction bindings + 18 workspace bindings + 4 resize + pause x2 + close + quit
+        assert!(c.bindings.len() >= 16 + 18 + 4 + 4);
         assert_eq!(c.rules.len(), 1);
         assert!(c
             .bindings
@@ -928,6 +950,10 @@ mod tests {
             .bindings
             .iter()
             .any(|(a, s)| *a == Action::Minimize && s == "alt+shift+m"));
+        assert!(c
+            .bindings
+            .iter()
+            .any(|(a, s)| *a == Action::Close && s == "alt+shift+q"));
         assert!(c.bindings.iter().any(|(a, s)| {
             *a == Action::Resize {
                 width: true,
@@ -947,11 +973,22 @@ mod tests {
     }
 
     #[test]
+    fn migrate_adds_the_quit_hotkey_to_a_config_that_lacks_it() {
+        let old = "[hotkeys]\nfocus_left = \"alt+h\"\n";
+        let new = migrate(old).expect("quit must be added");
+        let c = parse(&new).unwrap();
+        assert!(c
+            .bindings
+            .iter()
+            .any(|(a, s)| *a == Action::Quit && s == "ctrl+alt+q"));
+    }
+
+    #[test]
     fn migrate_is_idempotent_and_respects_choices() {
         let once = migrate(OLD_CONFIG).unwrap();
         assert!(migrate(&once).is_none(), "second run must change nothing");
         // a key the user commented out or turned off is not re-added
-        let custom = "layout = \"spiral\"\ngap = 5\nanimations = false\n# animation_ms = 99\neasing = \"linear\"\nfullscreen_windows = \"ignore\"\nmedia_windows = \"tile\"\nresize_step = 10\nborder = false\n# border_color = \"#112233\"\nborder_width = 3\nmin_tile_width = 400\nmin_tile_height = 300\nmax_tiles = 6\nauto_overflow = false\nworkspace_indicator = false\n\n[hotkeys]\n# grow_width = \"alt+plus\"\n# shrink_width = \"alt+minus\"\nminimize = \"alt+shift+m\"\nquit = \"ctrl+alt+q\"\n";
+        let custom = "layout = \"spiral\"\ngap = 5\nanimations = false\n# animation_ms = 99\neasing = \"linear\"\nfullscreen_windows = \"ignore\"\nmedia_windows = \"tile\"\nresize_step = 10\nborder = false\n# border_color = \"#112233\"\nborder_width = 3\nmin_tile_width = 400\nmin_tile_height = 300\nmax_tiles = 6\nauto_overflow = false\nworkspace_indicator = false\n\n[hotkeys]\n# grow_width = \"alt+plus\"\n# shrink_width = \"alt+minus\"\nminimize = \"alt+shift+m\"\nclose = \"alt+shift+q\"\nquit = \"ctrl+alt+q\"\n";
         assert!(migrate(custom).is_none());
         // the freshly generated default never needs migrating
         assert!(migrate(&default_config()).is_none());

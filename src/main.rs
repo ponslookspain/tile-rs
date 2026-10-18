@@ -32,7 +32,7 @@ use std::time::{Duration, Instant};
 use windows::core::{w, PCWSTR};
 use windows::Win32::Foundation::{
     CloseHandle, GetLastError, ERROR_ALREADY_EXISTS, ERROR_FILE_NOT_FOUND, ERROR_SUCCESS, HANDLE,
-    HWND, POINT, RECT, WAIT_FAILED, WAIT_OBJECT_0,
+    HWND, LPARAM, POINT, RECT, WAIT_FAILED, WAIT_OBJECT_0, WPARAM,
 };
 use windows::Win32::Graphics::Dwm::{DwmGetWindowAttribute, DWMWA_EXTENDED_FRAME_BOUNDS};
 use windows::Win32::Graphics::Gdi::{
@@ -55,15 +55,16 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{RegisterHotKey, UnregisterHotK
 use windows::Win32::UI::WindowsAndMessaging::{
     DispatchMessageW, GetCursorPos, GetForegroundWindow, GetShellWindow, GetWindowLongW,
     GetWindowRect, IsIconic, IsWindow, IsZoomed, KillTimer, MessageBoxW,
-    MsgWaitForMultipleObjectsEx, PeekMessageW, PostQuitMessage, SetForegroundWindow, SetTimer,
-    SetWindowPos, ShowWindow, TranslateMessage, EVENT_OBJECT_CLOAKED, EVENT_OBJECT_CREATE,
-    EVENT_OBJECT_DESTROY, EVENT_OBJECT_HIDE, EVENT_OBJECT_LOCATIONCHANGE, EVENT_OBJECT_SHOW,
-    EVENT_OBJECT_UNCLOAKED, EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_MENUPOPUPEND,
+    MsgWaitForMultipleObjectsEx, PeekMessageW, PostMessageW, PostQuitMessage, SetForegroundWindow,
+    SetTimer, SetWindowPos, ShowWindow, TranslateMessage, EVENT_OBJECT_CLOAKED,
+    EVENT_OBJECT_CREATE, EVENT_OBJECT_DESTROY, EVENT_OBJECT_HIDE, EVENT_OBJECT_LOCATIONCHANGE,
+    EVENT_OBJECT_SHOW, EVENT_OBJECT_UNCLOAKED, EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_MENUPOPUPEND,
     EVENT_SYSTEM_MENUPOPUPSTART, EVENT_SYSTEM_MINIMIZEEND, EVENT_SYSTEM_MINIMIZESTART,
     EVENT_SYSTEM_MOVESIZEEND, EVENT_SYSTEM_MOVESIZESTART, GWL_STYLE, IDYES, MB_ICONINFORMATION,
     MB_ICONQUESTION, MB_OK, MB_TOPMOST, MB_YESNO, MSG, MWMO_INPUTAVAILABLE, PM_REMOVE, QS_ALLINPUT,
     SWP_NOACTIVATE, SWP_NOOWNERZORDER, SWP_NOSIZE, SWP_NOZORDER, SW_MINIMIZE, SW_RESTORE,
-    WINEVENT_OUTOFCONTEXT, WINEVENT_SKIPOWNPROCESS, WM_HOTKEY, WM_QUIT, WM_TIMER, WS_CHILD,
+    WINEVENT_OUTOFCONTEXT, WINEVENT_SKIPOWNPROCESS, WM_CLOSE, WM_HOTKEY, WM_QUIT, WM_TIMER,
+    WS_CHILD,
 };
 
 use config::{Action, Dir, FullscreenWindows, WS_COUNT};
@@ -93,18 +94,60 @@ pub fn log_file() -> &'static PathBuf {
     })
 }
 
+/// Cap on the log file size: once it is exceeded it is truncated and restarted, so a long session
+/// cannot grow it without bound.
+const LOG_MAX_BYTES: u64 = 1 << 20;
+
+/// Keeps the log file open instead of reopening it for every line (a syscall per `log` call adds up
+/// on the re-tile path). One sink per thread; the app logs from the main thread only.
+struct LogSink {
+    file: Option<std::fs::File>,
+    written: u64,
+}
+
+thread_local! {
+    static LOG: RefCell<LogSink> = const { RefCell::new(LogSink { file: None, written: 0 }) };
+}
+
 pub fn log(msg: impl AsRef<str>) {
-    if let Ok(mut f) = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(log_file())
-    {
-        let _ = writeln!(f, "{}", msg.as_ref());
-    }
+    let msg = msg.as_ref();
+    LOG.with(|l| {
+        let mut sink = l.borrow_mut();
+        if sink.file.is_none() {
+            if let Ok(f) = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(log_file())
+            {
+                sink.written = f.metadata().map(|m| m.len()).unwrap_or(0);
+                sink.file = Some(f);
+            }
+        }
+        if sink.file.is_none() {
+            return; // could not open the log: stay silent, like before
+        }
+        if sink.written > LOG_MAX_BYTES {
+            if let Some(f) = sink.file.as_mut() {
+                if f.set_len(0).is_ok() {
+                    sink.written = 0;
+                }
+            }
+        }
+        if let Some(f) = sink.file.as_mut() {
+            if writeln!(f, "{msg}").is_ok() {
+                sink.written += msg.len() as u64 + 1;
+            }
+        }
+    });
 }
 
 fn log_reset() {
     let _ = std::fs::write(log_file(), "");
+    LOG.with(|l| {
+        let mut sink = l.borrow_mut();
+        sink.written = 0;
+        sink.file = None; // reopen lazily so the freshly truncated file is picked up
+    });
 }
 
 // ---------------------------------------------------------------------------
@@ -1011,6 +1054,7 @@ pub fn action_name(a: Action) -> String {
             if width { "width" } else { "height" }
         ),
         Action::Minimize => "minimize".into(),
+        Action::Close => "close".into(),
         Action::Pause => "pause".into(),
         Action::Quit => "quit".into(),
         Action::Retile => "retile".into(),
@@ -1103,6 +1147,13 @@ unsafe extern "system" fn on_event(
     }
     let h = hwnd.0 as isize;
     let mut resync = false;
+    // Focus moved within the current workspace: the border target was just set to the event's
+    // window, so it only has to be repositioned (no re-derivation from `GetForegroundWindow`,
+    // which can still race with the click).
+    let mut reposition = false;
+    // Did this event ask for any actual work? Only then is the debounce timer armed: an event we
+    // ignore (e.g. an unrelated window moving) must not cause a whole re-collect 40 ms later.
+    let mut dirty = false;
     STATE.with(|s| {
         let mut s = s.borrow_mut();
         match event {
@@ -1192,6 +1243,7 @@ unsafe extern "system" fn on_event(
                         }
                     }
                     s.reflow = true;
+                    dirty = true;
                 } else {
                     return;
                 }
@@ -1244,14 +1296,17 @@ unsafe extern "system" fn on_event(
                 }
                 if s.last.contains(&h) {
                     s.enforce = true; // a tiled window moved on its own: pull it back
-                } else if h == GetForegroundWindow().0 as isize {
-                    // an untracked window changed size, e.g. a game just left fullscreen and must
-                    // be tiled again: reconcile the window set
+                    dirty = true;
+                } else if s.fs_ws.contains_key(&h) || h == GetForegroundWindow().0 as isize {
+                    // a tracked fullscreen window changed size (a game left fullscreen), or the
+                    // foreground window did: reconcile the window set
                     s.windows_changed = true;
+                    dirty = true;
                 }
             }
             EVENT_OBJECT_SHOW => {
                 s.windows_changed = true;
+                dirty = true;
                 // a window just appeared: put it into its tile right away, without waiting
                 if !s.paused && s.dragging.is_none() && fast_add(&mut s, hwnd) {
                     // some apps move/resize themselves right after showing: check again shortly
@@ -1271,8 +1326,14 @@ unsafe extern "system" fn on_event(
                     Some(w) if w != s.cur && !s.paused && !recently => {
                         s.follow = Some((w, h));
                         s.windows_changed = true;
+                        dirty = true;
                     }
-                    _ => return, // focus change inside the current workspace: nothing to do
+                    _ => {
+                        // focus change inside the current workspace (a click on a tile): no re-tile
+                        // is needed, but the border overlay must move to the newly focused window
+                        reposition = true;
+                        return;
+                    }
                 }
             }
             EVENT_OBJECT_CREATE
@@ -1283,14 +1344,23 @@ unsafe extern "system" fn on_event(
             | EVENT_SYSTEM_MINIMIZESTART
             | EVENT_SYSTEM_MINIMIZEEND => {
                 s.windows_changed = true;
+                dirty = true;
             }
             _ => {}
         }
-        // (Re)arm the debounce timer: bursts of events cause a single re-tile.
-        s.timer = SetTimer(None, s.timer, DEBOUNCE_MS, None);
+        // (Re)arm the debounce timer only when this event actually changed something. Bursts still
+        // collapse into a single re-tile (SetTimer resets the countdown), but events we ignore no
+        // longer schedule a full re-collect of every window.
+        if dirty {
+            s.timer = SetTimer(None, s.timer, DEBOUNCE_MS, None);
+        }
     });
+    if reposition {
+        // the borrow above is released: move the border onto the window that just got focus
+        sync_border();
+    }
     if resync {
-        // the borrow above is released: safe to re-evaluate the border (menu just closed)
+        // the menu just closed: re-evaluate the border from the real foreground window
         refresh_border();
     }
 }
@@ -1585,7 +1655,7 @@ fn fast_add(s: &mut State, hwnd: HWND) -> bool {
 
 fn retile() {
     let _t = Timer::new("retile");
-    let c = collect();
+    let c = collect(false);
     STATE.with(|s| {
         let mut s = s.borrow_mut();
         if s.paused {
@@ -1788,52 +1858,45 @@ fn focus_workspace(n: u8) {
 
 fn move_to_ws(n: u8) {
     let fg = unsafe { GetForegroundWindow() }.0 as isize;
-    // which kind of window are we moving?
-    let fullscreen = STATE.with(|s| {
+    let cur = STATE.with(|s| s.borrow().cur);
+    // Reassign the window to workspace `n`: a tiled window moves its `ws` entry, a fullscreen one
+    // its `fs_ws` entry. Either way `retile` below makes the new workspace show the right set.
+    let moved = STATE.with(|s| {
         let mut s = s.borrow_mut();
         if s.paused || n >= WS_COUNT {
-            return None;
+            return false;
         }
-        if let Some(&w) = s.fs_ws.get(&fg) {
+        if let Some(w) = s.fs_ws.get(&fg).copied() {
             if w == n {
-                return None;
+                return false;
             }
             s.fs_ws.insert(fg, n);
-            return Some(true);
+            return true;
         }
         if !s.ws.contains_key(&fg) || s.ws[&fg] == n {
-            return None;
+            return false;
         }
         s.ws.insert(fg, n);
         s.last.clear();
         s.last_switch = Some(Instant::now());
-        Some(false)
+        true
     });
-    let Some(fullscreen) = fullscreen else {
+    if !moved {
         return;
-    };
-    let cur = STATE.with(|s| s.borrow().cur);
-    if fullscreen {
-        // retile syncs visibility: hidden if `n` is not the current workspace, shown if it is
-        retile();
-        if n == cur {
-            focus_hwnd(fg);
-        } else {
-            focus_first_or_desktop();
-        }
+    }
+    if n != cur {
+        // follow the window: open the target workspace with the moved window focused
+        switch_ws(n, Some(fg));
     } else {
-        if n != cur {
-            park(HWND(fg as *mut _));
-        }
         retile();
-        focus_first_or_desktop();
+        focus_hwnd(fg);
     }
     log(format!("moved a window to workspace {}", n + 1));
 }
 
 /// Windows left parked off-screen (e.g. after a crash) are brought back into view.
 fn recover_parked() {
-    let c = collect();
+    let c = collect(false);
     for w in &c.tileable {
         if is_parked(w.hwnd) {
             unsafe {
@@ -1949,6 +2012,18 @@ fn minimize_focused() {
     log("minimized the focused window");
 }
 
+/// Hotkey: close the focused window (like Alt+F4).
+fn close_focused() {
+    let fg = unsafe { GetForegroundWindow() };
+    if fg.is_invalid() {
+        return;
+    }
+    unsafe {
+        let _ = PostMessageW(Some(fg), WM_CLOSE, WPARAM(0), LPARAM(0));
+    }
+    log("closed the focused window");
+}
+
 pub fn dispatch(a: Action) {
     match a {
         Action::Focus(d) => focus_or_swap(d, false),
@@ -1957,6 +2032,7 @@ pub fn dispatch(a: Action) {
         Action::MoveTo(n) => move_to_ws(n),
         Action::Resize { width, grow } => resize_focused(width, grow),
         Action::Minimize => minimize_focused(),
+        Action::Close => close_focused(),
         Action::Pause => toggle_pause(),
         Action::Quit => unsafe { PostQuitMessage(0) },
         Action::Retile => {
@@ -2138,7 +2214,11 @@ fn start(interactive: bool) {
                     quit = true;
                     break;
                 }
-                if msg.message == WM_TIMER {
+                // Only *thread* timers (created with a NULL hwnd, i.e. the debounce / live / verify
+                // timer) are ours to handle here. A WM_TIMER that belongs to a window (the
+                // indicator's hover animation) must go through DispatchMessage to its own window
+                // procedure - swallowing it would leave that timer running forever.
+                if msg.message == WM_TIMER && msg.hwnd.0.is_null() {
                     handle_debounce_timer(msg.wParam.0);
                     continue;
                 }
@@ -2226,7 +2306,7 @@ fn main() {
                 config::set(c);
             }
             let mut out = console_out();
-            let c = collect();
+            let c = collect(true);
             if cmd.as_deref() == Some("list") {
                 let _ = writeln!(out, "TILEABLE ({}):", c.tileable.len());
                 for w in &c.tileable {
