@@ -151,37 +151,82 @@ fn text_of(f: impl Fn(&mut [u16]) -> i32) -> String {
     String::from_utf16_lossy(&buf[..n.max(0) as usize])
 }
 
+thread_local! {
+    /// Reused by `process_name` so the common case does not allocate a fresh (large) buffer for
+    /// every process we look at. Grown only if a path turns out to be unusually long.
+    static PATH_BUF: RefCell<Vec<u16>> = const { RefCell::new(Vec::new()) };
+}
+
+/// File name of a UTF-16 executable path, without ".exe", lower-case.
+fn basename_no_ext(path: &[u16]) -> String {
+    let start = path
+        .iter()
+        .rposition(|&c| c == b'\\' as u16 || c == b'/' as u16)
+        .map_or(0, |i| i + 1);
+    let mut file = String::from_utf16_lossy(&path[start..]).to_ascii_lowercase();
+    if file.ends_with(".exe") {
+        file.truncate(file.len() - 4);
+    }
+    file
+}
+
 /// Executable name without ".exe", lower-case (empty if unknown).
 fn process_name(pid: u32) -> String {
     unsafe {
         let Ok(h) = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) else {
             return String::new();
         };
-        // a full executable path can be very long (up to ~32767 chars with a \\?\ prefix), so use
-        // a buffer big enough that `process` rules match even for unusually deep installations
-        let mut buf = vec![0u16; 32768];
-        let mut len = buf.len() as u32;
-        let ok =
-            QueryFullProcessImageNameW(h, PROCESS_NAME_WIN32, PWSTR(buf.as_mut_ptr()), &mut len)
-                .is_ok();
+        let name = PATH_BUF.with(|b| {
+            let mut buf = b.borrow_mut();
+            if buf.is_empty() {
+                buf.resize(1024, 0);
+            }
+            let mut len = buf.len() as u32;
+            let ok = QueryFullProcessImageNameW(
+                h,
+                PROCESS_NAME_WIN32,
+                PWSTR(buf.as_mut_ptr()),
+                &mut len,
+            )
+            .is_ok();
+            if !ok {
+                // the path did not fit: grow to the size the call asked for and retry once (a very
+                // deep installation or a \\?\ long path)
+                let need = (len as usize).max(32768);
+                buf.resize(need, 0);
+                let mut len = buf.len() as u32;
+                if QueryFullProcessImageNameW(
+                    h,
+                    PROCESS_NAME_WIN32,
+                    PWSTR(buf.as_mut_ptr()),
+                    &mut len,
+                )
+                .is_err()
+                {
+                    return String::new();
+                }
+                return basename_no_ext(&buf[..len as usize]);
+            }
+            basename_no_ext(&buf[..len as usize])
+        });
         let _ = CloseHandle(h);
-        if !ok {
-            return String::new();
-        }
-        let path = String::from_utf16_lossy(&buf[..len as usize]);
-        let file = path
-            .rsplit(['\\', '/'])
-            .next()
-            .unwrap_or("")
-            .to_ascii_lowercase();
-        file.strip_suffix(".exe").unwrap_or(&file).to_string()
+        name
     }
 }
 
-fn rule_matches(r: &Rule, w: &Win, proc_name: &str) -> bool {
+/// `s` without a trailing ".exe", case-insensitively (no allocation).
+fn strip_exe_ci(s: &str) -> &str {
+    match s.len().checked_sub(4) {
+        Some(i) if s.is_char_boundary(i) && s[i..].eq_ignore_ascii_case(".exe") => &s[..i],
+        _ => s,
+    }
+}
+
+/// `proc_name` is the window's executable name, already lower-case and without ".exe"; `title_lc`
+/// is the window title already lower-cased once for the whole rule list.
+fn rule_matches(r: &Rule, w: &Win, proc_name: &str, title_lc: &str) -> bool {
     if let Some(p) = &r.process {
-        let p = p.to_ascii_lowercase();
-        if p.strip_suffix(".exe").unwrap_or(&p) != proc_name {
+        if !strip_exe_ci(p).eq_ignore_ascii_case(proc_name) {
             return false;
         }
     }
@@ -191,7 +236,7 @@ fn rule_matches(r: &Rule, w: &Win, proc_name: &str) -> bool {
         }
     }
     if let Some(t) = &r.title {
-        if !w.title.to_lowercase().contains(&t.to_lowercase()) {
+        if !title_lc.contains(&t.to_lowercase()) {
             return false;
         }
     }
@@ -304,6 +349,9 @@ pub struct Collector {
     /// Windows that run fullscreen / borderless fullscreen (tracked per workspace).
     pub fullscreen: Vec<Win>,
     pub skipped: Vec<(Win, &'static str)>,
+    /// Whether `skipped` is filled. The hot paths (re-tile) only need `tileable` + `fullscreen`;
+    /// keeping the skip reasons is only worth it for the `list` command.
+    keep_skipped: bool,
     rules: Vec<Rule>,
 }
 
@@ -367,7 +415,16 @@ fn apply_rules(w: &mut Win, rules: &[Rule], process: &str) -> RuleAction {
     if rules.is_empty() {
         return RuleAction::None;
     }
-    if let Some(r) = rules.iter().find(|r| rule_matches(r, w, process)) {
+    // lower-case the title at most once for the whole rule list (not once per title rule)
+    let title_lc = if rules.iter().any(|r| r.title.is_some()) {
+        w.title.to_lowercase()
+    } else {
+        String::new()
+    };
+    if let Some(r) = rules
+        .iter()
+        .find(|r| rule_matches(r, w, process, &title_lc))
+    {
         w.rule_ws = r.workspace.map(|n| n - 1);
         return match r.action.as_deref() {
             Some("float") => RuleAction::Float,
@@ -425,12 +482,18 @@ unsafe extern "system" fn enum_proc(hwnd: HWND, lparam: LPARAM) -> BOOL {
         Verdict::Ignore => {}
         Verdict::Tileable(w) => c.tileable.push(w),
         Verdict::Fullscreen(w) => c.fullscreen.push(w),
-        Verdict::Skipped(w, r) => c.skipped.push((w, r)),
+        Verdict::Skipped(w, r) => {
+            if c.keep_skipped {
+                c.skipped.push((w, r));
+            }
+        }
     }
     BOOL(1)
 }
 
-pub fn collect() -> Collector {
+/// Walks every top-level window and classifies it. `keep_skipped` only matters for the `list`
+/// command; the tiling hot path passes `false` so the skip entries (and their strings) are dropped.
+pub fn collect(keep_skipped: bool) -> Collector {
     if prof::on() {
         prof::COLLECT_CALLS.fetch_add(1, Ordering::Relaxed);
     }
@@ -438,6 +501,7 @@ pub fn collect() -> Collector {
         tileable: vec![],
         fullscreen: vec![],
         skipped: vec![],
+        keep_skipped,
         rules: config::rules(),
     };
     unsafe {

@@ -6,6 +6,21 @@ follows [Semantic Versioning](https://semver.org) (see [docs/RELEASING.md](docs/
 
 ## [Unreleased]
 
+### Fixed
+- The focus border now appears at once when you click a tile. A workspace-indicator hover timer
+  that was never stopped kept firing every 15 ms (and collided with the re-tile debounce timer),
+  which made focus updates lag more and more the longer tile-rs ran.
+- The above also fixes the indicator's hover animation, which could not run while the timer message
+  was being swallowed by the message loop.
+
+### Changed
+- Less work while idle and while arranging windows: unrelated window events no longer schedule a
+  full re-scan of every window, and the re-scan no longer builds the skip list it does not use.
+- Process-name lookups reuse a small buffer instead of allocating 64 KB per process, the log file
+  is kept open (and capped in size) instead of being reopened for every line, and configuration is
+  read from a snapshot instead of taking a lock for each setting.
+- The workspace indicator is not repositioned or repainted when nothing about it changed.
+
 ## [0.4.0] - 2026-10-18
 
 ### Added

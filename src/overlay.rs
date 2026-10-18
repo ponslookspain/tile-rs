@@ -20,11 +20,11 @@ use windows::Win32::Graphics::Gdi::{
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::Input::KeyboardAndMouse::{TrackMouseEvent, TME_LEAVE, TRACKMOUSEEVENT};
 use windows::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, DestroyWindow, GetClientRect, KillTimer, LoadCursorW,
-    RegisterClassW, SetLayeredWindowAttributes, SetTimer, SetWindowPos, ShowWindow, IDC_HAND,
-    LWA_COLORKEY, SWP_NOACTIVATE, SWP_NOZORDER, SW_HIDE, SW_SHOWNA, WM_ERASEBKGND, WM_LBUTTONUP,
-    WM_MOUSEMOVE, WM_PAINT, WM_TIMER, WNDCLASSW, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
-    WS_EX_TRANSPARENT, WS_POPUP,
+    CreateWindowExW, DefWindowProcW, DestroyWindow, GetClientRect, IsWindowVisible, KillTimer,
+    LoadCursorW, RegisterClassW, SetLayeredWindowAttributes, SetTimer, SetWindowPos, ShowWindow,
+    IDC_HAND, LWA_COLORKEY, SWP_NOACTIVATE, SWP_NOZORDER, SW_HIDE, SW_SHOWNA, WM_ERASEBKGND,
+    WM_LBUTTONUP, WM_MOUSEMOVE, WM_PAINT, WM_TIMER, WNDCLASSW, WS_EX_LAYERED, WS_EX_NOACTIVATE,
+    WS_EX_TOOLWINDOW, WS_EX_TRANSPARENT, WS_POPUP,
 };
 
 /// `WM_MOUSELEAVE` (0x02A3), not re-exported by the windows crate.
@@ -233,6 +233,13 @@ static IND_HOVER: AtomicI32 = AtomicI32::new(-1);
 static IND_ANIM: [AtomicU32; DOTS as usize] = [const { AtomicU32::new(0) }; DOTS as usize];
 /// Callback run when the user clicks a workspace dot (0-based workspace index).
 static IND_CLICK: OnceLock<fn(u8)> = OnceLock::new();
+/// State the indicator was last shown with: an unchanged `show_indicator` (the common case on a
+/// re-tile) then does nothing instead of repositioning and repainting. Visibility is not cached -
+/// it is read from the window itself (the system may hide it behind our back).
+static IND_RECT: [AtomicI32; 4] = [const { AtomicI32::new(0) }; 4];
+static IND_S_CUR: AtomicU32 = AtomicU32::new(u32::MAX);
+static IND_S_POP: AtomicU32 = AtomicU32::new(u32::MAX);
+static IND_S_ACTIVE: AtomicU32 = AtomicU32::new(u32::MAX);
 
 /// Registers the callback run when the user clicks a workspace dot.
 pub fn set_indicator_click(f: fn(u8)) {
@@ -307,17 +314,9 @@ unsafe extern "system" fn indicator_wndproc(
     lparam: LPARAM,
 ) -> LRESULT {
     match msg {
-        WM_ERASEBKGND => {
-            let hdc = HDC(wparam.0 as *mut _);
-            let mut rc = RECT::default();
-            let _ = unsafe { GetClientRect(hwnd, &mut rc) };
-            let brush = unsafe { CreateSolidBrush(COLORREF(IND_KEY)) };
-            unsafe {
-                FillRect(hdc, &rc, brush);
-                let _ = DeleteObject(HGDIOBJ(brush.0));
-            }
-            LRESULT(1)
-        }
+        // the paint handler fills the whole client rect with the colour key, so there is nothing
+        // to erase here (this also avoids a redundant fill on every show)
+        WM_ERASEBKGND => LRESULT(1),
         WM_PAINT => {
             unsafe {
                 let mut ps = PAINTSTRUCT::default();
@@ -479,8 +478,20 @@ pub fn show_indicator(rect: RECT, cur: u8, populated: u32, active: u32) {
     if raw == 0 {
         return;
     }
+    let hwnd = HWND(raw as *mut _);
+    let r = [rect.left, rect.top, rect.right, rect.bottom];
+    let unchanged = unsafe { IsWindowVisible(hwnd).as_bool() }
+        && IND_S_CUR.load(Ordering::Relaxed) == cur as u32
+        && IND_S_POP.load(Ordering::Relaxed) == populated
+        && IND_S_ACTIVE.load(Ordering::Relaxed) == active
+        && IND_RECT
+            .iter()
+            .zip(r)
+            .all(|(a, v)| a.load(Ordering::Relaxed) == v);
+    if unchanged {
+        return;
+    }
     unsafe {
-        let hwnd = HWND(raw as *mut _);
         let _ = SetWindowPos(
             hwnd,
             None,
@@ -492,6 +503,12 @@ pub fn show_indicator(rect: RECT, cur: u8, populated: u32, active: u32) {
         );
         let _ = InvalidateRect(Some(hwnd), None, true);
         let _ = ShowWindow(hwnd, SW_SHOWNA);
+    }
+    IND_S_CUR.store(cur as u32, Ordering::Relaxed);
+    IND_S_POP.store(populated, Ordering::Relaxed);
+    IND_S_ACTIVE.store(active, Ordering::Relaxed);
+    for (a, v) in IND_RECT.iter().zip(r) {
+        a.store(v, Ordering::Relaxed);
     }
 }
 

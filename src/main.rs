@@ -93,18 +93,60 @@ pub fn log_file() -> &'static PathBuf {
     })
 }
 
+/// Cap on the log file size: once it is exceeded it is truncated and restarted, so a long session
+/// cannot grow it without bound.
+const LOG_MAX_BYTES: u64 = 1 << 20;
+
+/// Keeps the log file open instead of reopening it for every line (a syscall per `log` call adds up
+/// on the re-tile path). One sink per thread; the app logs from the main thread only.
+struct LogSink {
+    file: Option<std::fs::File>,
+    written: u64,
+}
+
+thread_local! {
+    static LOG: RefCell<LogSink> = const { RefCell::new(LogSink { file: None, written: 0 }) };
+}
+
 pub fn log(msg: impl AsRef<str>) {
-    if let Ok(mut f) = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(log_file())
-    {
-        let _ = writeln!(f, "{}", msg.as_ref());
-    }
+    let msg = msg.as_ref();
+    LOG.with(|l| {
+        let mut sink = l.borrow_mut();
+        if sink.file.is_none() {
+            if let Ok(f) = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(log_file())
+            {
+                sink.written = f.metadata().map(|m| m.len()).unwrap_or(0);
+                sink.file = Some(f);
+            }
+        }
+        if sink.file.is_none() {
+            return; // could not open the log: stay silent, like before
+        }
+        if sink.written > LOG_MAX_BYTES {
+            if let Some(f) = sink.file.as_mut() {
+                if f.set_len(0).is_ok() {
+                    sink.written = 0;
+                }
+            }
+        }
+        if let Some(f) = sink.file.as_mut() {
+            if writeln!(f, "{msg}").is_ok() {
+                sink.written += msg.len() as u64 + 1;
+            }
+        }
+    });
 }
 
 fn log_reset() {
     let _ = std::fs::write(log_file(), "");
+    LOG.with(|l| {
+        let mut sink = l.borrow_mut();
+        sink.written = 0;
+        sink.file = None; // reopen lazily so the freshly truncated file is picked up
+    });
 }
 
 // ---------------------------------------------------------------------------
@@ -1107,6 +1149,9 @@ unsafe extern "system" fn on_event(
     // window, so it only has to be repositioned (no re-derivation from `GetForegroundWindow`,
     // which can still race with the click).
     let mut reposition = false;
+    // Did this event ask for any actual work? Only then is the debounce timer armed: an event we
+    // ignore (e.g. an unrelated window moving) must not cause a whole re-collect 40 ms later.
+    let mut dirty = false;
     STATE.with(|s| {
         let mut s = s.borrow_mut();
         match event {
@@ -1196,6 +1241,7 @@ unsafe extern "system" fn on_event(
                         }
                     }
                     s.reflow = true;
+                    dirty = true;
                 } else {
                     return;
                 }
@@ -1248,14 +1294,17 @@ unsafe extern "system" fn on_event(
                 }
                 if s.last.contains(&h) {
                     s.enforce = true; // a tiled window moved on its own: pull it back
-                } else if h == GetForegroundWindow().0 as isize {
-                    // an untracked window changed size, e.g. a game just left fullscreen and must
-                    // be tiled again: reconcile the window set
+                    dirty = true;
+                } else if s.fs_ws.contains_key(&h) || h == GetForegroundWindow().0 as isize {
+                    // a tracked fullscreen window changed size (a game left fullscreen), or the
+                    // foreground window did: reconcile the window set
                     s.windows_changed = true;
+                    dirty = true;
                 }
             }
             EVENT_OBJECT_SHOW => {
                 s.windows_changed = true;
+                dirty = true;
                 // a window just appeared: put it into its tile right away, without waiting
                 if !s.paused && s.dragging.is_none() && fast_add(&mut s, hwnd) {
                     // some apps move/resize themselves right after showing: check again shortly
@@ -1275,6 +1324,7 @@ unsafe extern "system" fn on_event(
                     Some(w) if w != s.cur && !s.paused && !recently => {
                         s.follow = Some((w, h));
                         s.windows_changed = true;
+                        dirty = true;
                     }
                     _ => {
                         // focus change inside the current workspace (a click on a tile): no re-tile
@@ -1292,11 +1342,16 @@ unsafe extern "system" fn on_event(
             | EVENT_SYSTEM_MINIMIZESTART
             | EVENT_SYSTEM_MINIMIZEEND => {
                 s.windows_changed = true;
+                dirty = true;
             }
             _ => {}
         }
-        // (Re)arm the debounce timer: bursts of events cause a single re-tile.
-        s.timer = SetTimer(None, s.timer, DEBOUNCE_MS, None);
+        // (Re)arm the debounce timer only when this event actually changed something. Bursts still
+        // collapse into a single re-tile (SetTimer resets the countdown), but events we ignore no
+        // longer schedule a full re-collect of every window.
+        if dirty {
+            s.timer = SetTimer(None, s.timer, DEBOUNCE_MS, None);
+        }
     });
     if reposition {
         // the borrow above is released: move the border onto the window that just got focus
@@ -1598,7 +1653,7 @@ fn fast_add(s: &mut State, hwnd: HWND) -> bool {
 
 fn retile() {
     let _t = Timer::new("retile");
-    let c = collect();
+    let c = collect(false);
     STATE.with(|s| {
         let mut s = s.borrow_mut();
         if s.paused {
@@ -1846,7 +1901,7 @@ fn move_to_ws(n: u8) {
 
 /// Windows left parked off-screen (e.g. after a crash) are brought back into view.
 fn recover_parked() {
-    let c = collect();
+    let c = collect(false);
     for w in &c.tileable {
         if is_parked(w.hwnd) {
             unsafe {
@@ -2243,7 +2298,7 @@ fn main() {
                 config::set(c);
             }
             let mut out = console_out();
-            let c = collect();
+            let c = collect(true);
             if cmd.as_deref() == Some("list") {
                 let _ = writeln!(out, "TILEABLE ({}):", c.tileable.len());
                 for w in &c.tileable {
