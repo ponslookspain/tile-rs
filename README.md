@@ -30,7 +30,7 @@ everything lives in one small `.exe` with a tray icon and a plain-text config.
   window (including consoles like Windows PowerShell).
 - **Adapts to your screen**: tiles never get narrower than `min_tile_width`/`min_tile_height` (the
   master tile narrows to make room), and once a workspace is full a new window opens on the next
-  workspace. A small row of dots at the top shows the workspaces.
+  workspace. A small row of dots at the top shows the workspaces (and can be clicked to switch).
 - Everything configurable in `config.toml`: hotkeys, gap, animation, rules.
 
 ## Requirements
@@ -117,6 +117,8 @@ Optional actions without a default key: `grow_height`, `shrink_height`, `retile`
 
 - Drag an **edge or corner** of a tiled window to resize it; the other windows adapt live.
 - Drag a window **onto another tile** to swap the two. Dropped anywhere else, it returns to its tile.
+- **Click a workspace dot** at the top of the screen to switch to that workspace (hovering a dot
+  highlights it and shows a hand cursor).
 - Maximized windows and dialogs are left alone.
 
 ### Tray menu (right-click the icon)
@@ -150,6 +152,7 @@ animations = true
 animation_ms = 140
 easing = "out_cubic"     # animation curve: linear, out_quad, out_cubic, out_quart, in_out_cubic
 fullscreen_windows = "minimize"  # or "ignore": never touch fullscreen games
+media_windows = "float"  # or "tile": leave a photo/video window as its app opened it
 resize_step = 40         # pixels per Alt+ / Alt- press
 border = true            # coloured border on the focused window
 border_color = "#8dbcff"
@@ -158,7 +161,7 @@ min_tile_width = 480     # tiles never get narrower; the master tile narrows to 
 min_tile_height = 320
 max_tiles = 0            # tiles per workspace; 0 = automatic from the screen size
 auto_overflow = true     # a new window goes to the next workspace when this one is full
-workspace_indicator = true  # dots at the top showing the workspaces
+workspace_indicator = true  # clickable dots at the top; click one to switch workspaces
 
 [hotkeys]
 focus_left = ["alt+h", "alt+left"]

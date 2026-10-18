@@ -36,7 +36,8 @@ use windows::Win32::Foundation::{
 };
 use windows::Win32::Graphics::Dwm::{DwmGetWindowAttribute, DWMWA_EXTENDED_FRAME_BOUNDS};
 use windows::Win32::Graphics::Gdi::{
-    GetMonitorInfoW, MonitorFromPoint, MONITORINFO, MONITOR_DEFAULTTOPRIMARY,
+    GetDC, GetDeviceCaps, GetMonitorInfoW, MonitorFromPoint, ReleaseDC, MONITORINFO,
+    MONITOR_DEFAULTTOPRIMARY, VREFRESH,
 };
 use windows::Win32::System::Console::{AttachConsole, ATTACH_PARENT_PROCESS};
 use windows::Win32::System::Registry::{
@@ -57,12 +58,12 @@ use windows::Win32::UI::WindowsAndMessaging::{
     MsgWaitForMultipleObjectsEx, PeekMessageW, PostQuitMessage, SetForegroundWindow, SetTimer,
     SetWindowPos, ShowWindow, TranslateMessage, EVENT_OBJECT_CLOAKED, EVENT_OBJECT_CREATE,
     EVENT_OBJECT_DESTROY, EVENT_OBJECT_HIDE, EVENT_OBJECT_LOCATIONCHANGE, EVENT_OBJECT_SHOW,
-    EVENT_OBJECT_UNCLOAKED, EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_MINIMIZEEND,
-    EVENT_SYSTEM_MINIMIZESTART, EVENT_SYSTEM_MOVESIZEEND, EVENT_SYSTEM_MOVESIZESTART, GWL_STYLE,
-    IDYES, MB_ICONINFORMATION, MB_ICONQUESTION, MB_OK, MB_TOPMOST, MB_YESNO, MSG,
-    MWMO_INPUTAVAILABLE, PM_REMOVE, QS_ALLINPUT, SWP_NOACTIVATE, SWP_NOOWNERZORDER, SWP_NOSIZE,
-    SWP_NOZORDER, SW_MINIMIZE, SW_RESTORE, WINEVENT_OUTOFCONTEXT, WINEVENT_SKIPOWNPROCESS,
-    WM_HOTKEY, WM_QUIT, WM_TIMER, WS_CHILD,
+    EVENT_OBJECT_UNCLOAKED, EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_MENUPOPUPEND,
+    EVENT_SYSTEM_MENUPOPUPSTART, EVENT_SYSTEM_MINIMIZEEND, EVENT_SYSTEM_MINIMIZESTART,
+    EVENT_SYSTEM_MOVESIZEEND, EVENT_SYSTEM_MOVESIZESTART, GWL_STYLE, IDYES, MB_ICONINFORMATION,
+    MB_ICONQUESTION, MB_OK, MB_TOPMOST, MB_YESNO, MSG, MWMO_INPUTAVAILABLE, PM_REMOVE, QS_ALLINPUT,
+    SWP_NOACTIVATE, SWP_NOOWNERZORDER, SWP_NOSIZE, SWP_NOZORDER, SW_MINIMIZE, SW_RESTORE,
+    WINEVENT_OUTOFCONTEXT, WINEVENT_SKIPOWNPROCESS, WM_HOTKEY, WM_QUIT, WM_TIMER, WS_CHILD,
 };
 
 use config::{Action, Dir, FullscreenWindows, WS_COUNT};
@@ -359,7 +360,7 @@ fn fitted(
     mins: &HashMap<isize, (i32, i32)>,
 ) -> (Vec<RECT>, Vec<RECT>) {
     let (mw, mh) = config::min_tile();
-    spiral_fitted(area, windows, ratios, mins, mw, mh)
+    spiral_fitted(area, windows, ratios, mins, mw, mh, config::gap())
 }
 
 /// The monitor's work area (taskbar excluded), as Windows reports it.
@@ -555,7 +556,8 @@ fn park(hwnd: HWND) {
 // ---------------------------------------------------------------------------
 
 const DEBOUNCE_MS: u32 = 40;
-/// Frame interval of window animations (~60 fps).
+/// Fallback frame interval of the window animations, used when the monitor refresh rate cannot be
+/// read. The real interval follows the display (`anim_frame_ms`).
 const ANIM_FRAME_MS: u32 = 16;
 /// Interval of live re-layout while the user drags a window edge.
 const LIVE_MS: u32 = 30;
@@ -598,6 +600,9 @@ struct State {
     resizing: bool,
     /// While resizing: re-layout the other windows now (throttled by a short timer).
     live: bool,
+    /// Live drag & drop preview: the tile index whose window is currently slid into the dragged
+    /// window's slot, with that window's handle (see `update_drag_preview`).
+    drag_preview: Option<(usize, isize)>,
     /// Split ratios per workspace (see `spiral`).
     ratios: HashMap<u8, Vec<f32>>,
     /// Free region each window of the last layout was cut out of (same indices as `last`).
@@ -754,14 +759,40 @@ fn create_anim_timer() -> HANDLE {
     }
 }
 
-/// (Re)arms the frame timer: the first frame fires in `ANIM_FRAME_MS`, then every `ANIM_FRAME_MS`.
+/// Frame interval of the window animations, in milliseconds, derived from the primary monitor's
+/// refresh rate so frames line up with the display instead of beating against it (a fixed 16 ms
+/// timer judders on a 60 Hz screen and wastes headroom on 120/144 Hz). The result is cached; an
+/// unknown or implausible refresh rate falls back to `ANIM_FRAME_MS`.
+fn anim_frame_ms() -> u32 {
+    static FRAME_MS: OnceLock<u32> = OnceLock::new();
+    *FRAME_MS.get_or_init(|| {
+        let hz = unsafe {
+            let dc = GetDC(None);
+            if dc.is_invalid() {
+                0
+            } else {
+                let hz = GetDeviceCaps(Some(dc), VREFRESH);
+                let _ = ReleaseDC(None, dc);
+                hz
+            }
+        };
+        // VREFRESH is 0/1 when the hardware reports a default rate: fall back then
+        if !(30..=1000).contains(&hz) {
+            return ANIM_FRAME_MS;
+        }
+        ((2000 + hz) / (2 * hz)).clamp(8, 33) as u32
+    })
+}
+
+/// (Re)arms the frame timer: the first frame fires in one frame interval, then every interval.
 fn arm_anim_timer(s: &State) {
     if s.anim_timer.is_invalid() {
         return;
     }
-    let due = -(ANIM_FRAME_MS as i64) * 10_000; // relative time, in 100 ns units
+    let frame = anim_frame_ms().max(1);
+    let due = -(frame as i64) * 10_000; // relative time, in 100 ns units
     unsafe {
-        let _ = SetWaitableTimer(s.anim_timer, &due, ANIM_FRAME_MS as i32, None, None, false);
+        let _ = SetWaitableTimer(s.anim_timer, &due, frame as i32, None, None, false);
     }
 }
 
@@ -779,6 +810,7 @@ fn cancel_anim_timer(s: &State) {
 fn anim_tick() {
     let profiling = prof::on();
     let easing = config::easing();
+    let border_w = config::border_width();
     STATE.with(|s| {
         let mut s = s.borrow_mut();
         if s.anims.is_empty() {
@@ -819,7 +851,7 @@ fn anim_tick() {
             }
             // the border overlay follows the window while it glides
             if s.border_on == Some(ahwnd) {
-                place_border(&rect, ahwnd);
+                place_border_frame(&rect, ahwnd, border_w);
             }
         }
         s.anims = keep;
@@ -860,6 +892,18 @@ fn place_border(vis: &RECT, target: isize) {
         overlay::hide_border();
         return;
     }
+    place_border_frame(vis, target, w);
+}
+
+/// Positions the border overlay around `vis` without the validity checks `place_border` makes.
+/// Used on every animation frame, where the window is known to be a tiled, non-maximized window
+/// that is gliding to its tile, so the (comparatively costly) `IsZoomed`/`IsIconic`/work-area
+/// probes are not needed.
+fn place_border_frame(vis: &RECT, target: isize, w: i32) {
+    if w <= 0 {
+        overlay::hide_border();
+        return;
+    }
     let rect = RECT {
         left: vis.left - w,
         top: vis.top - w,
@@ -867,7 +911,7 @@ fn place_border(vis: &RECT, target: isize) {
         bottom: vis.bottom + w,
     };
     // rounded corners: the window's own corner radius (~8 px) plus the border width
-    overlay::show_border(rect, hw, 8 + w, w);
+    overlay::show_border(rect, HWND(target as *mut _), 8 + w, w);
 }
 
 /// Picks the window that should carry the border (the focused tiled window of the current
@@ -876,7 +920,8 @@ fn update_border(s: &mut State, focus: isize) {
     // a tiled window of the current workspace: in the applied layout, or (should the layout list
     // be momentarily stale) a known window that belongs to the current workspace
     let tiled = s.last.contains(&focus) || s.ws.get(&focus) == Some(&s.cur);
-    s.border_on = (config::border().is_some() && !s.paused && tiled).then_some(focus);
+    s.border_on =
+        (config::border().is_some() && !s.paused && s.dragging.is_none() && tiled).then_some(focus);
 }
 
 /// Re-evaluate which window should have the border (after layout / pause / config changes).
@@ -1049,14 +1094,30 @@ unsafe extern "system" fn on_event(
     _thread: u32,
     _time: u32,
 ) {
-    // Only whole-window events (OBJID_WINDOW == 0, no child element).
-    if id_object != 0 || id_child != 0 || hwnd.is_invalid() {
+    // Only whole-window events (OBJID_WINDOW == 0, no child element). Popup menus report
+    // OBJID_CLIENT and would be filtered out here, but they matter: our border would otherwise be
+    // left sitting above the menu.
+    let menu = event == EVENT_SYSTEM_MENUPOPUPSTART || event == EVENT_SYSTEM_MENUPOPUPEND;
+    if !menu && (id_object != 0 || id_child != 0 || hwnd.is_invalid()) {
         return;
     }
     let h = hwnd.0 as isize;
+    let mut resync = false;
     STATE.with(|s| {
         let mut s = s.borrow_mut();
         match event {
+            EVENT_SYSTEM_MENUPOPUPSTART => {
+                // a popup menu (e.g. a right-click menu) is drawn above the windows but below our
+                // border overlay, so hide the border while the menu is up
+                s.border_on = None;
+                overlay::hide_border();
+                return;
+            }
+            EVENT_SYSTEM_MENUPOPUPEND => {
+                // the menu is gone: let the caller re-evaluate and re-show the border
+                resync = true;
+                return;
+            }
             EVENT_SYSTEM_MOVESIZESTART => {
                 // let the user drag freely; we decide what to do while / when they let go
                 if !s.paused {
@@ -1066,6 +1127,12 @@ unsafe extern "system" fn on_event(
                             s.anims.retain(|a| a.hwnd != h);
                             s.resizing = false;
                             s.live = false;
+                            s.drag_preview = None;
+                            // the overlay would otherwise chase the window (and its "whole monitor"
+                            // guard makes it blink while the frame is in transition), so hide it
+                            // for the duration of the drag and let the re-tile restore it
+                            s.border_on = None;
+                            overlay::hide_border();
                             // Remember the window's *actual* size, not the tile's: an app with a
                             // minimum size (or one that resized itself) can be larger than its
                             // tile, and comparing a plain move against the tile size would then be
@@ -1092,7 +1159,7 @@ unsafe extern "system" fn on_event(
                             let cur = s.cur;
                             let (tiles, regions) = (s.rects.clone(), s.regions.clone());
                             let mut rs = s.ratios.remove(&cur).unwrap_or_default();
-                            apply_resize(&mut rs, &tiles, &regions, k, vis);
+                            apply_resize(&mut rs, &tiles, &regions, k, vis, config::gap());
                             s.ratios.insert(cur, rs);
                         }
                         s.resizing = false;
@@ -1104,16 +1171,23 @@ unsafe extern "system" fn on_event(
                         let hit = s.rects.iter().position(|r| {
                             p.x >= r.left && p.x < r.right && p.y >= r.top && p.y < r.bottom
                         });
-                        if let Some(i) = hit {
-                            if i < s.last.len() && s.last[i] != h {
-                                let other = s.last[i];
-                                let (ia, ib) = (
-                                    s.order.iter().position(|x| *x == h),
-                                    s.order.iter().position(|x| *x == other),
-                                );
-                                if let (Some(ia), Some(ib)) = (ia, ib) {
-                                    s.order.swap(ia, ib);
-                                }
+                        let swap_at = hit.filter(|i| *i < s.last.len() && s.last[*i] != h);
+                        // the live preview already slid the hovered window into our slot: it stays
+                        // there if it is the one we swap with, otherwise it goes back
+                        if let Some((pi, ph)) = s.drag_preview.take() {
+                            if swap_at != Some(pi) && pi < s.rects.len() {
+                                let back = s.rects[pi];
+                                move_window(&mut s, HWND(ph as *mut _), back, true);
+                            }
+                        }
+                        if let Some(i) = swap_at {
+                            let other = s.last[i];
+                            let (ia, ib) = (
+                                s.order.iter().position(|x| *x == h),
+                                s.order.iter().position(|x| *x == other),
+                            );
+                            if let (Some(ia), Some(ib)) = (ia, ib) {
+                                s.order.swap(ia, ib);
                             }
                         }
                     }
@@ -1145,11 +1219,20 @@ unsafe extern "system" fn on_event(
                             }
                         }
                         if s.resizing {
+                            // a resize is not a drop: undo any live swap preview
+                            if let Some((pi, ph)) = s.drag_preview.take() {
+                                if pi < s.rects.len() {
+                                    let back = s.rects[pi];
+                                    move_window(&mut s, HWND(ph as *mut _), back, true);
+                                }
+                            }
                             s.live = true;
                             // throttle (not debounce): one live update every ~30 ms
                             if s.timer == 0 {
                                 s.timer = SetTimer(None, 0, LIVE_MS, None);
                             }
+                        } else {
+                            update_drag_preview(&mut s, h);
                         }
                     }
                     return;
@@ -1206,6 +1289,10 @@ unsafe extern "system" fn on_event(
         // (Re)arm the debounce timer: bursts of events cause a single re-tile.
         s.timer = SetTimer(None, s.timer, DEBOUNCE_MS, None);
     });
+    if resync {
+        // the borrow above is released: safe to re-evaluate the border (menu just closed)
+        refresh_border();
+    }
 }
 
 /// Does the visible frame of `hwnd` differ from `target` by more than a few pixels?
@@ -1290,6 +1377,64 @@ fn resize_focused(width: bool, grow: bool) {
     refresh_border();
 }
 
+/// Live drag & drop preview: while the user drags a tiled window over the tile of another one,
+/// slide that window into the dragged window's (now empty) slot so it is obvious that releasing
+/// here swaps the two. Moving away - or hovering the dragged window's own slot - undoes it.
+/// `State::drag_preview` remembers which window was slid where.
+fn update_drag_preview(s: &mut State, h: isize) {
+    if s.rects.len() != s.last.len() {
+        return;
+    }
+    let Some(k) = s.last.iter().position(|x| *x == h) else {
+        return;
+    };
+    let mut p = POINT::default();
+    if unsafe { GetCursorPos(&mut p) }.is_err() {
+        return;
+    }
+    let hit = s
+        .rects
+        .iter()
+        .position(|r| p.x >= r.left && p.x < r.right && p.y >= r.top && p.y < r.bottom);
+    let slot = s.rects[k];
+    // cursor over the dragged window's own slot (or over nothing): undo any preview
+    if hit.is_none() || hit == Some(k) {
+        if let Some((pi, ph)) = s.drag_preview.take() {
+            if pi < s.rects.len() {
+                let back = s.rects[pi];
+                move_window(s, HWND(ph as *mut _), back, true);
+            }
+        }
+        return;
+    }
+    let i = hit.unwrap();
+    if i >= s.last.len() {
+        return;
+    }
+    let partner = s.last[i];
+    if partner == h {
+        return;
+    }
+    if let Some((pi, ph)) = s.drag_preview {
+        if pi == i {
+            // already previewing this slot: only re-slide if something (a re-tile) moved it away
+            if let Some(vis) = visible_rect(HWND(ph as *mut _)) {
+                if same_rect(&vis, &slot, 2) {
+                    return;
+                }
+            }
+        } else {
+            // hovering a different tile: send the previous window back first
+            if pi < s.rects.len() {
+                let back = s.rects[pi];
+                move_window(s, HWND(ph as *mut _), back, true);
+            }
+        }
+    }
+    move_window(s, HWND(partner as *mut _), slot, true);
+    s.drag_preview = Some((i, partner));
+}
+
 /// While the user drags an edge of a tiled window: recompute the split ratios from the dragged
 /// window's current frame and move all the *other* windows right away.
 fn live_resize() {
@@ -1308,9 +1453,13 @@ fn live_resize() {
         let cur = s.cur;
         let (tiles, regions) = (s.rects.clone(), s.regions.clone());
         let mut rs = s.ratios.remove(&cur).unwrap_or_default();
-        let changed = apply_resize(&mut rs, &tiles, &regions, k, vis);
+        let changed = apply_resize(&mut rs, &tiles, &regions, k, vis, config::gap());
         if changed {
-            let (new_tiles, new_regions) = fitted(work_area(), &s.last, &rs, &s.min_size);
+            // While the user is dragging, lay out the *plain* spiral straight from the ratios:
+            // the adaptive fitting (`fitted`) reshuffles every tile the moment a minimum size or
+            // the narrowed master crosses a threshold, which makes the neighbours jump around
+            // mid-drag. The full fitted layout is applied once on release (see `retile`).
+            let (new_tiles, new_regions) = spiral(work_area(), s.last.len(), &rs, config::gap());
             let last = s.last.clone();
             for (i, hw) in last.iter().enumerate() {
                 if *hw != h {
@@ -1937,6 +2086,7 @@ fn start(interactive: bool) {
         hook(EVENT_SYSTEM_MOVESIZESTART, EVENT_SYSTEM_MOVESIZEEND); // drag / resize
         hook(EVENT_OBJECT_LOCATIONCHANGE, EVENT_OBJECT_LOCATIONCHANGE);
         hook(EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_FOREGROUND);
+        hook(EVENT_SYSTEM_MENUPOPUPSTART, EVENT_SYSTEM_MENUPOPUPEND); // right-click menus
     }
     let failed = register_hotkeys();
     tray::create();
@@ -1945,6 +2095,7 @@ fn start(interactive: bool) {
         log("could not create the border overlay window");
     }
     overlay::set_border_color(config::border_color_value());
+    overlay::set_indicator_click(|n| switch_ws(n, None));
     overlay::create_indicator();
     let anim_timer = create_anim_timer();
     STATE.with(|s| s.borrow_mut().anim_timer = anim_timer);
@@ -2112,7 +2263,7 @@ fn main() {
                     a.top
                 );
             } else {
-                let (rects, _) = spiral(work_area(), c.tileable.len(), &[]);
+                let (rects, _) = spiral(work_area(), c.tileable.len(), &[], config::gap());
                 for (w, r) in c.tileable.iter().zip(rects) {
                     let _ = writeln!(
                         out,

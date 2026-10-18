@@ -28,6 +28,7 @@ These keys go at the top of the file, before any `[section]`.
 | `easing` | `"out_cubic"` | Animation curve: `linear`, `out_quad`, `out_cubic`, `out_quart`, `in_out_cubic`. |
 | `resize_step` | `40` | Pixels per key press of the grow/shrink hotkeys, `1`–`500`. A held key uses smaller, instant steps. |
 | `fullscreen_windows` | `"minimize"` | What to do with a window that runs fullscreen or borderless fullscreen (a game, a video player): `"minimize"` hides it while its workspace is not shown and restores it when you switch back; `"ignore"` leaves it completely alone. |
+| `media_windows` | `"float"` | What to do with a window that has a photo or video open (a viewer / player showing a media file, e.g. `holiday.jpg - Photos` or `clip.mp4 - VLC media player`): `"float"` leaves it as the app opened it (a movable window you can put anywhere), `"tile"` tiles it like any other window. Fullscreen playback is still handled by `fullscreen_windows`. |
 | `border` | `true` | Draw a border around the focused tiled window (drawn by tile-rs itself, so it works for every window). |
 | `border_color` | `"#8dbcff"` | Border colour, `"#rrggbb"`. |
 | `border_width` | `2` | Border thickness in pixels, `0`–`20`. |
@@ -35,7 +36,7 @@ These keys go at the top of the file, before any `[section]`.
 | `min_tile_height` | `320` | Comfortable minimum tile height. |
 | `max_tiles` | `0` | Maximum tiles per workspace; `0` = chosen automatically from the screen size. |
 | `auto_overflow` | `true` | When a workspace is full, open a new window on the next workspace and switch to it. |
-| `workspace_indicator` | `true` | Small row of workspace dots at the top of the screen. |
+| `workspace_indicator` | `true` | Small row of workspace dots at the top of the screen. Hover a dot to highlight it and click it to switch to that workspace. |
 
 ## Hotkeys
 
@@ -113,7 +114,7 @@ Each `[[rules]]` block describes one rule. The **first** matching rule wins.
 | `process` | Executable name, with or without `.exe` (`"Telegram"`, `"chrome.exe"`). Exact, case-insensitive. |
 | `class` | Window class name. Exact, case-insensitive. (`tile-rs.exe list` prints classes.) |
 | `title` | A part of the window title. Case-insensitive. |
-| `action` | `"float"`: never tile this window. |
+| `action` | `"float"`: never tile this window. `"tile"`: tile it even if `media_windows = "float"` would leave it floating. |
 | `workspace` | `1`–`9`: new windows of this app open on that workspace. |
 
 A rule needs at least one of `process`, `class`, `title`, and all given fields must match.
