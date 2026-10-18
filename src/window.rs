@@ -2,20 +2,22 @@
 //! why, and which ones run fullscreen.
 
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::mem::size_of;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use windows::core::{BOOL, PWSTR};
-use windows::Win32::Foundation::{CloseHandle, HWND, LPARAM, RECT};
+use windows::Win32::Foundation::{CloseHandle, HANDLE, HWND, LPARAM, RECT};
 use windows::Win32::Graphics::Dwm::{
     DwmGetWindowAttribute, DWMWA_CLOAKED, DWMWA_EXTENDED_FRAME_BOUNDS,
 };
 use windows::Win32::Graphics::Gdi::{
     GetMonitorInfoW, MonitorFromWindow, MONITORINFO, MONITOR_DEFAULTTONEAREST,
 };
+use windows::Win32::Security::{GetTokenInformation, TokenElevation, TOKEN_ELEVATION, TOKEN_QUERY};
 use windows::Win32::System::Threading::{
-    OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION,
+    OpenProcess, OpenProcessToken, QueryFullProcessImageNameW, PROCESS_NAME_WIN32,
+    PROCESS_QUERY_LIMITED_INFORMATION,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     EnumWindows, GetClassNameW, GetWindow, GetWindowLongW, GetWindowRect, GetWindowTextW,
@@ -34,6 +36,12 @@ pub const FULLSCREEN_REASON: &str = "fullscreen (game / borderless)";
 
 /// Skip reason for a photo / video window left floating by the `media_windows` setting.
 pub const MEDIA_REASON: &str = "media (photo/video): floating";
+
+/// Skip reason for a window the user chose to float manually (`toggle_float`).
+pub const MANUAL_REASON: &str = "floating (by toggle_float)";
+
+/// Skip reason for a window of an elevated process while tile-rs is not elevated itself.
+pub const ELEVATED_REASON: &str = "elevated (start tile-rs as administrator)";
 
 /// Window classes that are never tiled (shell UI, overlays, our own overlays).
 const SKIP_CLASSES: &[&str] = &[
@@ -214,6 +222,68 @@ fn process_name(pid: u32) -> String {
     }
 }
 
+/// Whether the process `pid` runs with an elevated (administrator) token.
+fn process_elevated(pid: u32) -> bool {
+    unsafe {
+        let Ok(h) = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) else {
+            return false;
+        };
+        let mut token = HANDLE::default();
+        if OpenProcessToken(h, TOKEN_QUERY, &mut token).is_err() {
+            let _ = CloseHandle(h);
+            return false;
+        }
+        let mut elev = TOKEN_ELEVATION::default();
+        let mut len = 0u32;
+        let ok = GetTokenInformation(
+            token,
+            TokenElevation,
+            Some(&mut elev as *mut _ as *mut std::ffi::c_void),
+            size_of::<TOKEN_ELEVATION>() as u32,
+            &mut len,
+        )
+        .is_ok();
+        let _ = CloseHandle(token);
+        let _ = CloseHandle(h);
+        ok && elev.TokenIsElevated != 0
+    }
+}
+
+thread_local! {
+    /// pid -> elevated (the lookup opens the process, so cache it)
+    static ELEV_CACHE: RefCell<HashMap<u32, bool>> = RefCell::new(HashMap::new());
+    /// Whether tile-rs itself runs elevated (never changes)
+    static SELF_ELEVATED: std::cell::Cell<Option<bool>> = const { std::cell::Cell::new(None) };
+}
+
+fn process_elevated_cached(pid: u32) -> bool {
+    ELEV_CACHE.with(|c| {
+        let mut c = c.borrow_mut();
+        if let Some(v) = c.get(&pid) {
+            return *v;
+        }
+        let v = process_elevated(pid);
+        if c.len() > 256 {
+            c.clear();
+        }
+        c.insert(pid, v);
+        v
+    })
+}
+
+/// Whether tile-rs itself runs with an elevated token (a non-elevated tile-rs cannot manage the
+/// windows of elevated processes).
+fn self_elevated() -> bool {
+    SELF_ELEVATED.with(|c| match c.get() {
+        Some(v) => v,
+        None => {
+            let v = process_elevated(std::process::id());
+            c.set(Some(v));
+            v
+        }
+    })
+}
+
 /// `s` without a trailing ".exe", case-insensitively (no allocation).
 fn strip_exe_ci(s: &str) -> &str {
     match s.len().checked_sub(4) {
@@ -353,6 +423,8 @@ pub struct Collector {
     /// keeping the skip reasons is only worth it for the `list` command.
     keep_skipped: bool,
     rules: Vec<Rule>,
+    /// Windows the user floated with `toggle_float`: never tiled this session.
+    manual_float: HashSet<isize>,
 }
 
 thread_local! {
@@ -442,8 +514,18 @@ pub fn classify(hwnd: HWND, rules: &[Rule]) -> Verdict {
         return Verdict::Ignore;
     }
     let mut w = win_info(hwnd);
+    // The Slint settings window runs in a child tile-rs process. Keep it out of the managed
+    // window set so opening settings never resizes or moves the UI itself.
+    if w.title == "tile-rs Settings" && process_name_cached(w.pid).eq_ignore_ascii_case("tile-rs") {
+        return Verdict::Skipped(w, "tile-rs settings launcher");
+    }
     match skip_reason(hwnd, &w.title, &w.class) {
         None => {
+            // a non-elevated tile-rs cannot move the windows of elevated processes, so they would
+            // stay frozen in their tiles: skip them instead
+            if !self_elevated() && process_elevated_cached(w.pid) {
+                return Verdict::Skipped(w, ELEVATED_REASON);
+            }
             let media_float = config::media_windows() == MediaWindows::Float;
             let pn = if !rules.is_empty() || media_float {
                 process_name_cached(w.pid)
@@ -480,7 +562,15 @@ unsafe extern "system" fn enum_proc(hwnd: HWND, lparam: LPARAM) -> BOOL {
     let c = &mut *(lparam.0 as *mut Collector);
     match classify(hwnd, &c.rules) {
         Verdict::Ignore => {}
-        Verdict::Tileable(w) => c.tileable.push(w),
+        Verdict::Tileable(w) => {
+            if c.manual_float.contains(&(w.hwnd.0 as isize)) {
+                if c.keep_skipped {
+                    c.skipped.push((w, MANUAL_REASON));
+                }
+            } else {
+                c.tileable.push(w);
+            }
+        }
         Verdict::Fullscreen(w) => c.fullscreen.push(w),
         Verdict::Skipped(w, r) => {
             if c.keep_skipped {
@@ -493,7 +583,8 @@ unsafe extern "system" fn enum_proc(hwnd: HWND, lparam: LPARAM) -> BOOL {
 
 /// Walks every top-level window and classifies it. `keep_skipped` only matters for the `list`
 /// command; the tiling hot path passes `false` so the skip entries (and their strings) are dropped.
-pub fn collect(keep_skipped: bool) -> Collector {
+/// `manual_float` holds the windows the user floated with `toggle_float` (never tiled).
+pub fn collect(keep_skipped: bool, manual_float: &HashSet<isize>) -> Collector {
     if prof::on() {
         prof::COLLECT_CALLS.fetch_add(1, Ordering::Relaxed);
     }
@@ -503,6 +594,7 @@ pub fn collect(keep_skipped: bool) -> Collector {
         skipped: vec![],
         keep_skipped,
         rules: config::rules(),
+        manual_float: manual_float.clone(),
     };
     unsafe {
         let _ = EnumWindows(Some(enum_proc), LPARAM(&mut c as *mut _ as isize));

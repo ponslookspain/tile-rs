@@ -6,7 +6,47 @@ follows [Semantic Versioning](https://semver.org) (see [docs/RELEASING.md](docs/
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-10-18
+
 ### Added
+- Draggable tile gaps in Spiral and Master/stack: frozen previews follow the pointer while actual
+  windows keep their sizes until release. Escape cancels; known minimum sizes constrain the drag.
+- Frozen-image resize and layout transitions, using hardware Direct2D with GDI fallback, plus a
+  directional fade when switching workspaces. The launcher exposes `snapshot_animations`.
+- The settings launcher is now a Slint UI in a separate process, so its GUI event loop cannot block
+  window tracking or tiling. Existing launcher actions remain available, and saved settings are
+  validated before the running manager is asked to reload them.
+- Windows x64 releases statically include the MSVC runtime, so users do not need to install the
+  Visual C++ Redistributable separately.
+- The settings launcher now uses a clearer two-column layout, dark contrast, direct GitHub access,
+  and exposes the existing `focus_follows_mouse` option. The workspace switcher uses compact,
+  unnumbered dots with blue active/occupied states, plus small, medium, and large size options.
+- Multi-monitor tiling: every screen keeps its own layout and current workspace, and a window is
+  tiled on the screen it is on (move it to another screen and it re-homes there). Workspace hotkeys
+  and the workspace actions apply to the screen under the pointer (or the screen of the focused
+  window). Fullscreen windows are tracked per screen, so switching one screen's workspace does not
+  hide a game running on another. Each monitor also has its own clickable workspace indicator and
+  reserves the indicator bar from its tiling area. The `list` command groups windows by monitor,
+  and the one-shot `tile` command lays out windows on each monitor.
+- A "Check for updates" item in the tray menu and in the settings launcher. It asks the GitHub
+  releases API for the latest tag and reports whether a newer version is available. It runs only
+  when you ask for it; there is no background network access.
+- `workspace_next` / `workspace_prev` and `move_to_next_workspace` / `move_to_prev_workspace`
+  actions that step through workspaces and wrap around at the ends (default keys `Alt+Shift+.`/`,`
+  and `Ctrl+Alt+.`/`,`).
+- Separate `inner_gap` (between windows) and `outer_gap` (around the screen edges) settings. The
+  old single `gap` still works and sets both, so existing configs are unchanged.
+- A `focus_follows_mouse` setting (default `false`) that moves focus to the tiled window under the
+  mouse pointer when the pointer moves onto it. It runs on a timer only while enabled.
+- A `toggle_float` action (default `Alt+Shift+F`) that floats the focused window in place, or tiles
+  it again if it is already floating. The choice lasts for the session (a config reload keeps it).
+- A `cycle_layout` action (`Ctrl+Alt+L`) that switches to the next layout and saves it, so the
+  layout can be changed without opening the settings launcher.
+- Three layouts beside the spiral: `master_stack` (a master column on the left, the rest stacked on
+  the right), `grid` and `columns`. The `layout` setting and the settings-launcher picker now work
+  (before they fell back to the spiral with a "not implemented" warning). Spiral and master-stack
+  resize by dragging an edge; grid and columns use equal, fixed tiles.
+- Grid layouts now adapt their row and column count to the monitor shape and avoid sparse rows.
 - Moving the focused window to another workspace with `Alt+Shift+1`…`9` now follows it: the target
   workspace opens with the window focused (previously the window was parked and you stayed put).
 - A `close` action (default `Alt+Shift+Q`) that closes the focused window, like Alt+F4. It is added
@@ -15,6 +55,25 @@ follows [Semantic Versioning](https://semver.org) (see [docs/RELEASING.md](docs/
   `Ctrl+Alt+Q` quits tile-rs even on an old config (a commented-out or removed one is left alone).
 
 ### Fixed
+- Workspace transitions cover outgoing windows before switching, avoiding a new/old/new flash.
+- Minimum-size detection treats width and height independently and rejects stale DWM frames,
+  preventing a height constraint from blocking horizontal resizing in the opposite direction.
+- Resize hotkeys and swaps avoid synchronous monitor capture; held resize keys commit neighbours
+  together immediately instead of accumulating snapshot animations.
+- Cancel stale motion on workspace switches and pause, preserve an unchanged animation target,
+  recognize geometry events per window, and queue reentrant WinEvents until the layout releases
+  its state. Final window placements use a batch with bounded individual fallback.
+- Window tracking now drops destroyed HWND state immediately, migrates windows deliberately when
+  dragged between monitors, preserves workspace state when monitor enumeration changes, verifies
+  settled placements, bounds retries for rejected target geometry, recovers a lost move-size end
+  event, and records Win32 placement/hook failures for diagnosis.
+- Packaging now preserves other files in `release/`, and the release workflow uploads only assets
+  matching the tag version.
+- Fullscreen windows moved between monitors update their monitor assignment, and workspace
+  selection safely ignores a stale monitor callback during display hot-plug.
+- Windows of elevated (administrator) processes are no longer tiled while tile-rs itself runs
+  without rights: a non-elevated tile-rs cannot move them, so they used to sit frozen in a tile.
+  They are shown as skipped in `tile-rs.exe list` with the reason "elevated".
 - The focus border now appears at once when you click a tile. A workspace-indicator hover timer
   that was never stopped kept firing every 15 ms (and collided with the re-tile debounce timer),
   which made focus updates lag more and more the longer tile-rs ran.
@@ -28,6 +87,8 @@ follows [Semantic Versioning](https://semver.org) (see [docs/RELEASING.md](docs/
   is kept open (and capped in size) instead of being reopened for every line, and configuration is
   read from a snapshot instead of taking a lock for each setting.
 - The workspace indicator is not repositioned or repainted when nothing about it changed.
+- Reconciliation uses indexed membership sets for present, new, and currently animating windows,
+  avoiding repeated nested scans when a large number of windows are open.
 
 ## [0.4.0] - 2026-10-18
 
@@ -153,7 +214,8 @@ First working prototype.
 - Tray icon with menu, autostart, single-instance guard, first-run dialog.
 - `config.toml`: gap, animations, hotkeys, per-application rules (float / workspace).
 
-[Unreleased]: https://github.com/ponslookspain/tile-rs/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/ponslookspain/tile-rs/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/ponslookspain/tile-rs/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/ponslookspain/tile-rs/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/ponslookspain/tile-rs/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/ponslookspain/tile-rs/compare/v0.1.0...v0.2.0

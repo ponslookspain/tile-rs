@@ -8,20 +8,25 @@
 //! Settings (hotkeys, gap, window rules): %APPDATA%\tile-rs\config.toml
 //! Workspaces are emulated: windows of inactive workspaces are parked off-screen.
 //! Run only with other window managers (GlazeWM, Astur, ...) stopped.
-#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+#![windows_subsystem = "windows"]
 
 mod config;
+mod divider;
 mod geometry;
+mod gpu_snapshot;
 mod launcher;
+mod monitor;
 mod overlay;
 mod prof;
+mod snapshot;
 mod tray;
+mod update;
 mod window;
 
 use window::{classify, collect, is_fullscreen, visible_rect, Verdict, Win};
 
 use std::cell::RefCell;
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::Write;
 use std::mem::size_of;
 use std::path::PathBuf;
@@ -35,42 +40,41 @@ use windows::Win32::Foundation::{
     HWND, LPARAM, POINT, RECT, WAIT_FAILED, WAIT_OBJECT_0, WPARAM,
 };
 use windows::Win32::Graphics::Dwm::{DwmGetWindowAttribute, DWMWA_EXTENDED_FRAME_BOUNDS};
-use windows::Win32::Graphics::Gdi::{
-    GetDC, GetDeviceCaps, GetMonitorInfoW, MonitorFromPoint, ReleaseDC, MONITORINFO,
-    MONITOR_DEFAULTTOPRIMARY, VREFRESH,
-};
 use windows::Win32::System::Console::{AttachConsole, ATTACH_PARENT_PROCESS};
 use windows::Win32::System::Registry::{
     RegDeleteKeyValueW, RegGetValueW, RegSetKeyValueW, HKEY_CURRENT_USER, REG_SZ, RRF_RT_REG_SZ,
 };
 use windows::Win32::System::Threading::{
-    CancelWaitableTimer, CreateMutexW, CreateWaitableTimerExW, CreateWaitableTimerW,
-    SetWaitableTimer, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, INFINITE, TIMER_ALL_ACCESS,
+    AttachThreadInput, CancelWaitableTimer, CreateMutexW, CreateWaitableTimerExW,
+    CreateWaitableTimerW, SetWaitableTimer, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, INFINITE,
+    TIMER_ALL_ACCESS,
 };
-use windows::Win32::UI::Accessibility::{SetWinEventHook, HWINEVENTHOOK};
+use windows::Win32::UI::Accessibility::{SetWinEventHook, UnhookWinEvent, HWINEVENTHOOK};
 use windows::Win32::UI::HiDpi::{
     SetProcessDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
 };
 use windows::Win32::UI::Input::KeyboardAndMouse::{RegisterHotKey, UnregisterHotKey, MOD_NOREPEAT};
 use windows::Win32::UI::WindowsAndMessaging::{
-    DispatchMessageW, GetCursorPos, GetForegroundWindow, GetShellWindow, GetWindowLongW,
-    GetWindowRect, IsIconic, IsWindow, IsZoomed, KillTimer, MessageBoxW,
-    MsgWaitForMultipleObjectsEx, PeekMessageW, PostMessageW, PostQuitMessage, SetForegroundWindow,
-    SetTimer, SetWindowPos, ShowWindow, TranslateMessage, EVENT_OBJECT_CLOAKED,
-    EVENT_OBJECT_CREATE, EVENT_OBJECT_DESTROY, EVENT_OBJECT_HIDE, EVENT_OBJECT_LOCATIONCHANGE,
-    EVENT_OBJECT_SHOW, EVENT_OBJECT_UNCLOAKED, EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_MENUPOPUPEND,
-    EVENT_SYSTEM_MENUPOPUPSTART, EVENT_SYSTEM_MINIMIZEEND, EVENT_SYSTEM_MINIMIZESTART,
-    EVENT_SYSTEM_MOVESIZEEND, EVENT_SYSTEM_MOVESIZESTART, GWL_STYLE, IDYES, MB_ICONINFORMATION,
-    MB_ICONQUESTION, MB_OK, MB_TOPMOST, MB_YESNO, MSG, MWMO_INPUTAVAILABLE, PM_REMOVE, QS_ALLINPUT,
-    SWP_NOACTIVATE, SWP_NOOWNERZORDER, SWP_NOSIZE, SWP_NOZORDER, SW_MINIMIZE, SW_RESTORE,
-    WINEVENT_OUTOFCONTEXT, WINEVENT_SKIPOWNPROCESS, WM_CLOSE, WM_HOTKEY, WM_QUIT, WM_TIMER,
-    WS_CHILD,
+    DispatchMessageW, GetAncestor, GetCursorPos, GetForegroundWindow, GetGUIThreadInfo,
+    GetShellWindow, GetWindowLongW, GetWindowRect, GetWindowThreadProcessId, IsIconic, IsWindow,
+    IsZoomed, KillTimer, MessageBoxW, MsgWaitForMultipleObjectsEx, PeekMessageW, PostMessageW,
+    PostQuitMessage, SetForegroundWindow, SetTimer, SetWindowPos, ShowWindow, TranslateMessage,
+    WindowFromPoint, EVENT_OBJECT_CLOAKED, EVENT_OBJECT_CREATE, EVENT_OBJECT_DESTROY,
+    EVENT_OBJECT_HIDE, EVENT_OBJECT_LOCATIONCHANGE, EVENT_OBJECT_SHOW, EVENT_OBJECT_UNCLOAKED,
+    EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_MENUPOPUPEND, EVENT_SYSTEM_MENUPOPUPSTART,
+    EVENT_SYSTEM_MINIMIZEEND, EVENT_SYSTEM_MINIMIZESTART, EVENT_SYSTEM_MOVESIZEEND,
+    EVENT_SYSTEM_MOVESIZESTART, GA_ROOT, GUITHREADINFO, GUI_INMOVESIZE, GWL_STYLE, IDYES,
+    MB_ICONINFORMATION, MB_ICONQUESTION, MB_OK, MB_TOPMOST, MB_YESNO, MSG, MWMO_INPUTAVAILABLE,
+    PM_REMOVE, QS_ALLINPUT, SWP_NOACTIVATE, SWP_NOOWNERZORDER, SWP_NOSIZE, SWP_NOZORDER,
+    SW_MINIMIZE, SW_RESTORE, WINEVENT_OUTOFCONTEXT, WINEVENT_SKIPOWNPROCESS, WM_CLOSE, WM_HOTKEY,
+    WM_QUIT, WM_TIMER, WS_CHILD,
 };
 
-use config::{Action, Dir, FullscreenWindows, WS_COUNT};
+use config::{Action, Dir, FullscreenWindows, Layout, WS_COUNT};
 use geometry::{
-    anim_duration, apply_resize, ease, effective_step, fullscreen_action, lerp_rect, neighbour,
-    same_rect, spiral, spiral_fitted, split_for, FsAction, MAX_RATIO, MIN_RATIO, RESIZE_PX,
+    anim_duration, apply_resize_for, ease, effective_step, fullscreen_action, lerp_rect, neighbour,
+    place as layout_tiles, place_fitted, same_rect, split_for_layout, FsAction, Gaps, MAX_RATIO,
+    MIN_RATIO, RESIZE_PX,
 };
 
 /// Where windows of inactive workspaces are parked (the same spot Windows uses for minimized ones).
@@ -167,10 +171,11 @@ impl Drop for Timer {
     fn drop(&mut self) {
         if let Some(t) = self.1 {
             log(format!(
-                "profile: {} {}us collect={}",
+                "profile: {} {}us collect={} placements={}",
                 self.0,
                 t.elapsed().as_micros(),
-                prof::COLLECT_CALLS.load(Ordering::Relaxed)
+                prof::COLLECT_CALLS.load(Ordering::Relaxed),
+                prof::PLACEMENTS.load(Ordering::Relaxed)
             ));
         }
     }
@@ -358,12 +363,12 @@ pub fn set_autostart(on: bool) -> bool {
 
 /// How many tiles fit on one workspace for the current screen: the configured `max_tiles`, or a
 /// value derived from the screen area and the comfortable minimum tile.
-fn tile_budget() -> usize {
+fn tile_budget(mi: usize) -> usize {
     let configured = config::max_tiles();
     if configured > 0 {
         return configured as usize;
     }
-    let area = work_area();
+    let area = monitor_work(mi);
     let (mw, mh) = config::min_tile();
     let area_px = (area.right - area.left).max(1) as f64 * (area.bottom - area.top).max(1) as f64;
     let min_px = mw.max(1) as f64 * mh.max(1) as f64;
@@ -376,12 +381,16 @@ fn tile_budget() -> usize {
 
 /// The workspace a new window should open on: the current one if it still has room, otherwise the
 /// next workspace (wrapping) with room.
-fn workspace_for_new_window(s: &State, cur: u8) -> u8 {
+fn workspace_for_new_window(s: &State, mi: usize, cur: u8) -> u8 {
     if !config::auto_overflow() {
         return cur;
     }
-    let budget = tile_budget();
-    let count = |ws: u8| s.ws.values().filter(|w| **w == ws).count();
+    let budget = tile_budget(mi);
+    let count = |ws: u8| {
+        s.ws.iter()
+            .filter(|(h, w)| **w == ws && s.mi(**h) == mi)
+            .count()
+    };
     if count(cur) < budget {
         return cur;
     }
@@ -394,8 +403,16 @@ fn workspace_for_new_window(s: &State, cur: u8) -> u8 {
     cur
 }
 
-/// The layout of `windows` on `area`: the spiral with the master shrink and the observed
-/// per-window minimum sizes applied (see `geometry::spiral_fitted`).
+/// The configured inner (between windows) and outer (screen edge) gaps.
+fn gaps() -> Gaps {
+    Gaps {
+        inner: config::inner_gap(),
+        outer: config::outer_gap(),
+    }
+}
+
+/// The layout of `windows` on `area`: the configured layout with the adaptive fitting
+/// (master shrink / observed per-window minimum sizes) applied (see `geometry::place_fitted`).
 fn fitted(
     area: RECT,
     windows: &[isize],
@@ -403,27 +420,31 @@ fn fitted(
     mins: &HashMap<isize, (i32, i32)>,
 ) -> (Vec<RECT>, Vec<RECT>) {
     let (mw, mh) = config::min_tile();
-    spiral_fitted(area, windows, ratios, mins, mw, mh, config::gap())
+    place_fitted(
+        config::layout(),
+        area,
+        windows,
+        ratios,
+        mins,
+        (mw, mh),
+        gaps(),
+    )
 }
 
-/// The monitor's work area (taskbar excluded), as Windows reports it.
+/// The work area (taskbar excluded) of the primary monitor, as Windows reports it.
 fn raw_work_area() -> RECT {
-    unsafe {
-        let mon = MonitorFromPoint(POINT { x: 0, y: 0 }, MONITOR_DEFAULTTOPRIMARY);
-        let mut mi = MONITORINFO {
-            cbSize: size_of::<MONITORINFO>() as u32,
-            ..Default::default()
-        };
-        let _ = GetMonitorInfoW(mon, &mut mi);
-        mi.rcWork
-    }
+    monitor::primary_work()
 }
 
-/// The area the windows are tiled in: the work area minus the indicator bar at the top.
-fn work_area() -> RECT {
-    let mut r = raw_work_area();
+/// The work area (taskbar excluded) of monitor `mi`, minus the indicator bar.
+fn monitor_work(mi: usize) -> RECT {
+    let list = monitor::list();
+    // a stale monitor index (e.g. a monitor was unplugged) falls back to the last real monitor
+    let i = mi.min(list.len().saturating_sub(1));
+    let mut r = list.get(i).map(|m| m.work).unwrap_or_default();
+    // Each managed monitor has its own workspace indicator bar.
     if config::workspace_indicator() {
-        r.top += overlay::INDICATOR_H;
+        r.top += overlay::indicator_height();
     }
     r
 }
@@ -444,30 +465,50 @@ fn reconcile_fullscreen(s: &mut State, wins: &[Win]) {
         }
         detected.contains(h) || unsafe { IsIconic(hw) }.as_bool()
     });
-    let mut follow: Option<(u8, isize)> = None;
+    let mut follow: Option<(usize, u8, isize)> = None;
     for w in wins {
         let h = w.hwnd.0 as isize;
         if s.fs_ws.contains_key(&h) {
+            // A fullscreen window can be moved to another monitor while it remains fullscreen.
+            // Refresh its owner while visible; when minimized, keep the last known monitor.
+            if !unsafe { IsIconic(w.hwnd) }.as_bool() {
+                s.fs_mon.insert(h, monitor::of_window(w.hwnd).min(MON - 1));
+            }
             continue;
         }
+        let mi = monitor::of_window(w.hwnd).min(MON - 1);
         // a fullscreen game / video player gets a workspace of its own, and we switch to it
-        let ws = w.rule_ws.unwrap_or_else(|| next_free_workspace(s, s.cur));
+        let ws = w
+            .rule_ws
+            .unwrap_or_else(|| next_free_workspace(s, mi, s.cur[mi]));
         s.fs_ws.insert(h, ws);
-        if ws != s.cur && follow.is_none() {
-            follow = Some((ws, h));
+        s.fs_mon.insert(h, mi);
+        if ws != s.cur[mi] && follow.is_none() {
+            follow = Some((mi, ws, h));
         }
     }
     if follow.is_some() {
         s.follow = follow;
     }
     let fs_ws = &s.fs_ws;
+    s.fs_mon.retain(|h, _| fs_ws.contains_key(h));
     s.fs_hidden.retain(|h| fs_ws.contains_key(h));
 }
 
 /// The first workspace (starting after `cur`, wrapping) that has no windows at all - used for a
 /// fullscreen game, so it does not land on top of the current work.
-fn next_free_workspace(s: &State, cur: u8) -> u8 {
-    let used = |ws: u8| s.ws.values().any(|w| *w == ws) || s.fs_ws.values().any(|w| *w == ws);
+fn next_free_workspace(s: &State, mi: usize, cur: u8) -> u8 {
+    let used = |ws: u8| {
+        s.ws.iter().any(|(h, w)| *w == ws && s.mi(*h) == mi)
+            || s.fs_ws.iter().any(|(h, w)| {
+                *w == ws
+                    && s.fs_mon
+                        .get(h)
+                        .copied()
+                        .unwrap_or_else(|| monitor::of_window(HWND(*h as *mut _)).min(MON - 1))
+                        == mi
+            })
+    };
     for i in 1..=WS_COUNT {
         let ws = (cur + i) % WS_COUNT;
         if !used(ws) {
@@ -483,7 +524,6 @@ fn apply_fullscreen(s: &mut State) {
     if s.paused || config::fullscreen_windows() == FullscreenWindows::Ignore {
         return;
     }
-    let cur = s.cur;
     let items: Vec<(isize, u8)> = s.fs_ws.iter().map(|(h, w)| (*h, *w)).collect();
     let mut changed = false;
     for (h, ws) in items {
@@ -491,6 +531,12 @@ fn apply_fullscreen(s: &mut State) {
         if !unsafe { IsWindow(Some(hw)) }.as_bool() {
             continue;
         }
+        let mi = s
+            .fs_mon
+            .get(&h)
+            .copied()
+            .unwrap_or_else(|| monitor::of_window(hw).min(MON - 1));
+        let cur = s.cur[mi];
         let hidden = s.fs_hidden.contains(&h);
         let minimized = unsafe { IsIconic(hw) }.as_bool();
         match fullscreen_action(ws, cur, hidden, minimized) {
@@ -511,10 +557,7 @@ fn apply_fullscreen(s: &mut State) {
             FsAction::None => {}
         }
     }
-    if changed {
-        // our own minimize / restore must not look like the user moving windows
-        s.ignore_until = Some(Instant::now() + Duration::from_millis(300));
-    }
+    s.enforce |= changed;
 }
 
 /// Restores every fullscreen window we minimized (pause, quit), so nothing stays hidden.
@@ -529,16 +572,59 @@ fn restore_hidden_fullscreen(s: &mut State) {
     }
 }
 
-fn place(hwnd: HWND, target: RECT) {
-    unsafe {
-        if IsZoomed(hwnd).as_bool() {
-            let _ = ShowWindow(hwnd, SW_RESTORE);
+fn apply_window_pos(
+    hwnd: HWND,
+    x: i32,
+    y: i32,
+    width: i32,
+    height: i32,
+    flags: windows::Win32::UI::WindowsAndMessaging::SET_WINDOW_POS_FLAGS,
+    operation: &'static str,
+) -> bool {
+    if prof::on() {
+        prof::PLACEMENTS.fetch_add(1, Ordering::Relaxed);
+    }
+    match unsafe { SetWindowPos(hwnd, None, x, y, width, height, flags) } {
+        Ok(()) => true,
+        Err(error) => {
+            log(format!(
+                "SetWindowPos failed: operation={operation} hwnd={:#x} error={error}",
+                hwnd.0 as usize
+            ));
+            false
         }
+    }
+}
+
+/// Remember failed geometry requests so a persistently rejecting client cannot trigger an
+/// endless verify -> animate -> fail loop. A new target or a manual drag permits fresh attempts.
+fn note_placement_result(s: &mut State, hwnd: HWND, target: RECT, succeeded: bool) {
+    let h = hwnd.0 as isize;
+    if succeeded {
+        s.placement_failures.remove(&h);
+        s.expected.insert(h, (target, Instant::now()));
+        return;
+    }
+    let entry = s.placement_failures.entry(h).or_insert((target, 0));
+    if !same_rect(&entry.0, &target, 0) {
+        *entry = (target, 0);
+    }
+    entry.1 = entry.1.saturating_add(1);
+}
+
+fn placement_blocked(s: &State, hwnd: HWND, target: &RECT) -> bool {
+    s.placement_failures
+        .get(&(hwnd.0 as isize))
+        .is_some_and(|(previous, attempts)| same_rect(previous, target, 0) && *attempts >= 2)
+}
+
+fn native_target(hwnd: HWND, target: RECT) -> Option<RECT> {
+    unsafe {
         // Windows 10/11 windows have an invisible resize border; compensate so the
         // *visible* frame lands exactly on `target`.
         let mut win = RECT::default();
         let mut vis = RECT::default();
-        let _ = GetWindowRect(hwnd, &mut win);
+        GetWindowRect(hwnd, &mut win).ok()?;
         let ok = DwmGetWindowAttribute(
             hwnd,
             DWMWA_EXTENDED_FRAME_BOUNDS,
@@ -556,16 +642,131 @@ fn place(hwnd: HWND, target: RECT) {
         } else {
             (0, 0, 0, 0)
         };
-        let _ = SetWindowPos(
-            hwnd,
-            None,
-            target.left - dl,
-            target.top - dt,
-            (target.right - target.left) + dl + dr,
-            (target.bottom - target.top) + dt + db,
-            SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOOWNERZORDER,
-        );
+        // DWM frame bounds can lag a park/restore or DPI transition. Never interpret a stale
+        // screen position as a multi-thousand-pixel invisible border.
+        let (dl, dt, dr, db) = if [dl, dt, dr, db].iter().all(|v| (0..=64).contains(v)) {
+            (dl, dt, dr, db)
+        } else {
+            (0, 0, 0, 0)
+        };
+        Some(RECT {
+            left: target.left - dl,
+            top: target.top - dt,
+            right: target.right + dr,
+            bottom: target.bottom + db,
+        })
     }
+}
+
+fn place(hwnd: HWND, target: RECT) -> bool {
+    unsafe {
+        if IsZoomed(hwnd).as_bool() {
+            let _ = ShowWindow(hwnd, SW_RESTORE);
+        }
+    }
+    native_target(hwnd, target).is_some_and(|r| {
+        apply_window_pos(
+            hwnd,
+            r.left,
+            r.top,
+            r.right - r.left,
+            r.bottom - r.top,
+            SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOOWNERZORDER,
+            "place",
+        )
+    })
+}
+
+/// Commit one layout as a batch. A failed batch falls back to bounded individual placements;
+/// accepting the request never substitutes for checking the actual client geometry afterwards.
+fn place_batch(s: &mut State, targets: &[(isize, RECT)]) {
+    use windows::Win32::UI::WindowsAndMessaging::{
+        BeginDeferWindowPos, DeferWindowPos, EndDeferWindowPos,
+    };
+    let _profile = Timer::new("place_batch");
+    let requested: HashSet<_> = targets.iter().map(|(h, _)| *h).collect();
+    s.anims.retain(|a| !requested.contains(&a.hwnd));
+    let operations: Vec<_> = targets
+        .iter()
+        .filter_map(|(h, target)| {
+            let hwnd = HWND(*h as *mut _);
+            if placement_blocked(s, hwnd, target) {
+                return None;
+            }
+            if visible_rect(hwnd).is_some_and(|actual| same_rect(&actual, target, 0)) {
+                return None;
+            }
+            native_target(hwnd, *target).map(|r| (*h, *target, r))
+        })
+        .collect();
+    if operations.is_empty() {
+        return;
+    }
+    let result = unsafe {
+        BeginDeferWindowPos(operations.len() as i32).and_then(|mut batch| {
+            for (h, _, r) in &operations {
+                batch = DeferWindowPos(
+                    batch,
+                    HWND(*h as *mut _),
+                    None,
+                    r.left,
+                    r.top,
+                    r.right - r.left,
+                    r.bottom - r.top,
+                    SWP_NOACTIVATE | SWP_NOZORDER | SWP_NOOWNERZORDER,
+                )?;
+            }
+            EndDeferWindowPos(batch)
+        })
+    };
+    if let Err(error) = &result {
+        log(format!("batch placement fallback: {error}"));
+    }
+    if result.is_ok() && prof::on() {
+        prof::PLACEMENTS.fetch_add(operations.len() as u32, Ordering::Relaxed);
+    }
+    for (h, target, _) in operations {
+        s.anims.retain(|a| a.hwnd != h);
+        let hwnd = HWND(h as *mut _);
+        let ok = result.is_ok() || place(hwnd, target);
+        note_placement_result(s, hwnd, target, ok);
+        if ok {
+            s.min_size_reflow |= observe_min_size(s, hwnd, &target);
+        }
+    }
+}
+
+fn visual_commit(
+    s: &mut State,
+    mi: usize,
+    targets: &[(isize, RECT)],
+    ms: u32,
+    entering: &[isize],
+) -> bool {
+    if !config::snapshot_animations() || !config::animation().0 || s.anim_timer.is_invalid() {
+        return false;
+    }
+    if !snapshot::supports(mi, targets) {
+        let sources: Vec<_> = targets
+            .iter()
+            .filter_map(|(h, _)| visible_rect(HWND(*h as *mut _)).map(|r| (*h, r)))
+            .collect();
+        if sources.len() != targets.len() || !snapshot::prepare(mi, monitor_work(mi), &sources) {
+            return false;
+        }
+    }
+    snapshot::entering(mi, entering);
+    if !snapshot::reveal(mi) {
+        snapshot::cancel(mi);
+        return false;
+    }
+    place_batch(s, targets);
+    if snapshot::animate(mi, targets, ms) {
+        arm_anim_timer(s);
+    } else {
+        snapshot::cancel(mi);
+    }
+    true
 }
 
 fn is_parked(hwnd: HWND) -> bool {
@@ -581,17 +782,15 @@ fn park(hwnd: HWND) {
     if is_parked(hwnd) {
         return;
     }
-    unsafe {
-        let _ = SetWindowPos(
-            hwnd,
-            None,
-            PARK_X,
-            PARK_Y,
-            0,
-            0,
-            SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOOWNERZORDER,
-        );
-    }
+    let _ = apply_window_pos(
+        hwnd,
+        PARK_X,
+        PARK_Y,
+        0,
+        0,
+        SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOOWNERZORDER,
+        "park",
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -602,17 +801,24 @@ const DEBOUNCE_MS: u32 = 40;
 /// Fallback frame interval of the window animations, used when the monitor refresh rate cannot be
 /// read. The real interval follows the display (`anim_frame_ms`).
 const ANIM_FRAME_MS: u32 = 16;
-/// Interval of live re-layout while the user drags a window edge.
-const LIVE_MS: u32 = 30;
 /// Delay of the check after a window was placed instantly (apps that move themselves).
 const VERIFY_MS: u32 = 90;
+/// Poll interval of the focus-follows-mouse feature (only runs while it is enabled).
+const FFM_MS: u32 = 100;
+/// Move-size loop watchdog interval (only runs while a tiled window is being dragged).
+const DRAG_WATCHDOG_MS: u32 = 250;
+
+/// Per-monitor slots in `State`. Windows can only tile on the monitors they are on; this caps how
+/// many monitors are tracked at once.
+const MON: usize = 9;
 
 #[derive(Default)]
 struct State {
-    /// Rects of the layout last applied, same indices as `last`.
-    rects: Vec<RECT>,
-    /// Stable window order (so the spiral does not reshuffle when focus changes).
-    order: Vec<isize>,
+    divider: Option<divider::Resize>,
+    /// Rects of the layout last applied, same indices as `last`, per monitor.
+    rects: [Vec<RECT>; MON],
+    /// Stable window order (so the spiral does not reshuffle when focus changes), per monitor.
+    order: [Vec<isize>; MON],
     /// Workspace (0-based) of every known window.
     ws: HashMap<isize, u8>,
     /// Observed minimum size of a window (an app that refuses to shrink below it): its tile is
@@ -620,23 +826,44 @@ struct State {
     min_size: HashMap<isize, (i32, i32)>,
     /// Workspace (0-based) of every known fullscreen window (they are never tiled).
     fs_ws: HashMap<isize, u8>,
+    /// Monitor of every known fullscreen window. Recorded while the window is visible (a minimized
+    /// window's `MonitorFromWindow` is not reliable), so show/hide decisions use the right screen.
+    fs_mon: HashMap<isize, usize>,
     /// Fullscreen windows we minimized because their workspace is not shown (to restore later).
     fs_hidden: HashSet<isize>,
-    /// Current workspace (0-based).
-    cur: u8,
-    /// Windows of the current workspace in the layout that was applied last time;
+    /// Windows the user floated with `toggle_float` (never tiled this session).
+    manual_float: HashSet<isize>,
+    /// Timer polling the pointer for `focus_follows_mouse` (0 = disabled).
+    ffm_timer: usize,
+    /// Watchdog for a lost EVENT_SYSTEM_MOVESIZEEND notification.
+    drag_timer: usize,
+    /// Last window the pointer selected for focus-follows-mouse (avoids re-focusing it).
+    ffm_last: Option<isize>,
+    /// Current workspace (0-based) of each monitor.
+    cur: [u8; MON],
+    /// Windows of the current workspace in the layout that was applied last time, per monitor;
     /// if nothing changed we do not touch windows.
-    last: Vec<isize>,
+    last: [Vec<isize>; MON],
+    /// Monitor of every known window (an index into `monitor::list`).
+    mon: HashMap<isize, usize>,
+    /// Failed placement count by HWND and target rectangle (bounded retries per target).
+    placement_failures: HashMap<isize, (RECT, u8)>,
+    /// Most recently requested frame, used to recognize our events per window.
+    expected: HashMap<isize, (RECT, Instant)>,
+    /// Display-device names for the monitor slots in the per-monitor arrays.
+    monitor_ids: [Option<String>; MON],
     /// The set of top-level windows may have changed (created / destroyed / shown / hidden /
     /// cloaked / minimized): a full `EnumWindows` walk (`retile`) is due.
     windows_changed: bool,
     paused: bool,
     timer: usize,
     /// A window of another workspace got focus (taskbar / Alt+Tab): follow it.
-    follow: Option<(u8, isize)>,
+    follow: Option<(usize, u8, isize)>,
     last_switch: Option<Instant>,
     /// Tiled window the user is dragging / resizing right now.
     dragging: Option<isize>,
+    /// Start time for the move-size watchdog's conservative API-failure fallback.
+    drag_started: Option<Instant>,
     /// Size of its tile when the drag started (to tell a move from a resize).
     drag_size: (i32, i32),
     /// The current drag is a resize (edges moved), not a move.
@@ -646,16 +873,15 @@ struct State {
     /// Live drag & drop preview: the tile index whose window is currently slid into the dragged
     /// window's slot, with that window's handle (see `update_drag_preview`).
     drag_preview: Option<(usize, isize)>,
-    /// Split ratios per workspace (see `spiral`).
-    ratios: HashMap<u8, Vec<f32>>,
-    /// Free region each window of the last layout was cut out of (same indices as `last`).
-    regions: Vec<RECT>,
+    /// Split ratios per workspace (see `spiral`), per monitor.
+    ratios: [HashMap<u8, Vec<f32>>; MON],
+    /// Free region each window of the last layout was cut out of (same indices as `last`), per
+    /// monitor.
+    regions: [Vec<RECT>; MON],
     /// Drag finished: rebuild the layout (snap back, or after a swap).
     reflow: bool,
     /// A tiled window changed place/size on its own: pull it back.
     enforce: bool,
-    /// Ignore location events until then (they are caused by our own placement).
-    ignore_until: Option<Instant>,
     /// When the last resize hotkey fired (to recognise a held key).
     last_resize: Option<Instant>,
     /// Window that currently has our coloured border.
@@ -664,14 +890,223 @@ struct State {
     anims: Vec<Anim>,
     /// High-resolution waitable timer that drives the animation frames (null = none).
     anim_timer: HANDLE,
+    frame_armed: bool,
+    frame_fallback: usize,
     /// The next layout pass must place windows instantly (workspace switch, startup, ...).
     no_anim: bool,
+    /// An animated client refused its target size; reflow once after all current animations settle.
+    min_size_reflow: bool,
     /// Registered hotkeys: (id, action)
     hotkeys: Vec<(i32, Action)>,
 }
 
+type PendingEvent = (u32, HWND, i32, i32, u32, u32);
+
 thread_local! {
     static STATE: RefCell<State> = RefCell::new(State::default());
+    static PENDING_EVENTS: RefCell<VecDeque<PendingEvent>> = const { RefCell::new(VecDeque::new()) };
+}
+
+const WM_PENDING_EVENTS: u32 = 0x8000 + 42;
+
+fn replay_events() {
+    let events = PENDING_EVENTS.with(|pending| std::mem::take(&mut *pending.borrow_mut()));
+    for (event, hwnd, object, child, thread, time) in events {
+        unsafe {
+            on_event(
+                HWINEVENTHOOK(std::ptr::null_mut()),
+                event,
+                hwnd,
+                object,
+                child,
+                thread,
+                time,
+            );
+        }
+    }
+}
+
+impl State {
+    fn animation_current(&self, h: isize) -> bool {
+        !self.paused
+            && self.dragging != Some(h)
+            && self
+                .ws
+                .get(&h)
+                .is_some_and(|ws| *ws == self.cur[self.mi(h)])
+    }
+
+    fn expected_frame(&self, h: isize, actual: &RECT, now: Instant) -> bool {
+        self.expected.get(&h).is_some_and(|(target, requested)| {
+            now.saturating_duration_since(*requested) < Duration::from_secs(1)
+                && same_rect(actual, target, 4)
+        })
+    }
+    /// The monitor slot a window belongs to.
+    fn mi(&self, h: isize) -> usize {
+        self.mon.get(&h).copied().unwrap_or(0).min(MON - 1)
+    }
+
+    /// Clears every monitor's remembered layout (forces a fresh pass).
+    fn clear_layouts(&mut self) {
+        for i in 0..MON {
+            self.last[i].clear();
+        }
+    }
+}
+
+/// The monitor the user is working on: the foreground window's monitor if it is known, otherwise
+/// the monitor under the pointer, otherwise the primary one.
+fn active_mon(s: &State) -> usize {
+    let h = unsafe { GetForegroundWindow() }.0 as isize;
+    if s.mon.contains_key(&h) {
+        return s.mi(h);
+    }
+    let mut pt = POINT::default();
+    if unsafe { GetCursorPos(&mut pt) }.is_ok() {
+        return monitor::at(pt).min(MON - 1);
+    }
+    0
+}
+
+/// Seed the slot identities before the first window collection. The Win32 enumeration order is
+/// convenient for indexing, but must not be treated as the identity of a physical display.
+fn remember_monitor_slots() {
+    let monitors = monitor::list();
+    STATE.with(|state| {
+        let mut state = state.borrow_mut();
+        for (i, mon) in monitors.iter().take(MON).enumerate() {
+            state.monitor_ids[i] = Some(mon.device.clone());
+        }
+    });
+}
+
+fn monitor_slot_map(
+    old: &[monitor::Monitor],
+    new: &[monitor::Monitor],
+    identities: &[Option<String>; MON],
+) -> ([usize; MON], [bool; MON]) {
+    let primary = monitor::primary_index(new).min(MON - 1);
+    let mut old_to_new = [primary; MON];
+    let mut exact = [false; MON];
+    for old_i in 0..MON {
+        let key = identities[old_i]
+            .as_deref()
+            .or_else(|| old.get(old_i).map(|m| m.device.as_str()));
+        if let Some(key) = key {
+            if let Some(new_i) = new
+                .iter()
+                .take(MON)
+                .position(|candidate| candidate.device == key)
+            {
+                old_to_new[old_i] = new_i;
+                exact[old_i] = true;
+                continue;
+            }
+        }
+        if let Some(previous) = old.get(old_i) {
+            let center = POINT {
+                x: previous.full.left + (previous.full.right - previous.full.left) / 2,
+                y: previous.full.top + (previous.full.bottom - previous.full.top) / 2,
+            };
+            old_to_new[old_i] = monitor::nearest(&new[..new.len().min(MON)], center);
+        }
+    }
+    (old_to_new, exact)
+}
+
+/// Preserve each screen's workspace/layout when Windows changes monitor enumeration order. When
+/// a display disappeared, its visible windows follow Windows' re-homing; parked windows go to
+/// the nearest surviving display and its current workspace.
+fn reconcile_monitor_slots(old: &[monitor::Monitor], new: &[monitor::Monitor]) {
+    if new.is_empty() {
+        return;
+    }
+    STATE.with(|state| {
+        let mut s = state.borrow_mut();
+        let (old_to_new, exact) = monitor_slot_map(old, new, &s.monitor_ids);
+
+        let mut new_cur = [0u8; MON];
+        let mut new_ratios: [HashMap<u8, Vec<f32>>; MON] = std::array::from_fn(|_| HashMap::new());
+        let mut has_exact = [false; MON];
+        for old_i in 0..MON {
+            if exact[old_i] {
+                let new_i = old_to_new[old_i];
+                if !has_exact[new_i] {
+                    new_cur[new_i] = s.cur[old_i];
+                    new_ratios[new_i] = std::mem::take(&mut s.ratios[old_i]);
+                    has_exact[new_i] = true;
+                }
+            }
+        }
+        let mut new_order: [Vec<isize>; MON] = std::array::from_fn(|_| Vec::new());
+        let old_window_mon = s.mon.clone();
+        for old_i in 0..MON {
+            let fallback = old_to_new[old_i];
+            for h in std::mem::take(&mut s.order[old_i]) {
+                let hwnd = HWND(h as *mut _);
+                let dest = if unsafe { IsWindow(Some(hwnd)) }.as_bool() && !is_parked(hwnd) {
+                    monitor::of_window(hwnd).min(MON - 1)
+                } else {
+                    fallback
+                };
+                if dest != fallback || !exact[old_i] {
+                    s.ws.insert(h, new_cur[dest]);
+                }
+                s.mon.insert(h, dest);
+                if !new_order[dest].contains(&h) {
+                    new_order[dest].push(h);
+                }
+            }
+        }
+        // Include any tracked window whose order entry was already lost, and refresh fullscreen
+        // monitor ownership without trusting MonitorFromWindow for our off-screen parked windows.
+        for (h, old_slot) in old_window_mon {
+            let previous = old_slot.min(MON - 1);
+            let fallback = old_to_new[previous];
+            let hwnd = HWND(h as *mut _);
+            let dest = if unsafe { IsWindow(Some(hwnd)) }.as_bool() && !is_parked(hwnd) {
+                monitor::of_window(hwnd).min(MON - 1)
+            } else {
+                fallback
+            };
+            if dest != fallback || !exact[previous] {
+                s.ws.insert(h, new_cur[dest]);
+            }
+            s.mon.insert(h, dest);
+            if !new_order[dest].contains(&h) {
+                new_order[dest].push(h);
+            }
+        }
+        let fullscreen: Vec<(isize, usize)> = s.fs_mon.iter().map(|(h, mi)| (*h, *mi)).collect();
+        for (h, old_i) in fullscreen {
+            let old_i = old_i.min(MON - 1);
+            let fallback = old_to_new[old_i];
+            let hwnd = HWND(h as *mut _);
+            let dest = if unsafe { IsWindow(Some(hwnd)) }.as_bool()
+                && !unsafe { IsIconic(hwnd) }.as_bool()
+            {
+                monitor::of_window(hwnd).min(MON - 1)
+            } else {
+                fallback
+            };
+            if dest != fallback || !exact[old_i] {
+                s.fs_ws.insert(h, new_cur[dest]);
+            }
+            s.fs_mon.insert(h, dest);
+        }
+
+        s.cur = new_cur;
+        s.order = new_order;
+        s.ratios = new_ratios;
+        s.monitor_ids = std::array::from_fn(|i| new.get(i).map(|mon| mon.device.clone()));
+        for i in 0..MON {
+            s.last[i].clear();
+            s.rects[i].clear();
+            s.regions[i].clear();
+        }
+        s.reflow = true;
+    });
 }
 
 // ---------------------------------------------------------------------------
@@ -694,39 +1129,54 @@ struct Anim {
 }
 
 /// Put the *visible* frame of a window at `vis`, given its invisible border.
-fn set_frame(hwnd: isize, vis: &RECT, b: (i32, i32, i32, i32)) {
-    unsafe {
-        let _ = SetWindowPos(
-            HWND(hwnd as *mut _),
-            None,
-            vis.left - b.0,
-            vis.top - b.1,
-            (vis.right - vis.left) + b.0 + b.2,
-            (vis.bottom - vis.top) + b.1 + b.3,
-            SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOOWNERZORDER,
-        );
-    }
+fn set_frame(hwnd: isize, vis: &RECT, b: (i32, i32, i32, i32)) -> bool {
+    apply_window_pos(
+        HWND(hwnd as *mut _),
+        vis.left - b.0,
+        vis.top - b.1,
+        (vis.right - vis.left) + b.0 + b.2,
+        (vis.bottom - vis.top) + b.1 + b.3,
+        SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOOWNERZORDER,
+        "animation-frame",
+    )
 }
 
 /// Moves a window to `target`: instantly, or - if `animate` and animations are enabled -
 /// by gliding. Always cancels an animation that was already running for this window.
 fn move_window(s: &mut State, hwnd: HWND, target: RECT, animate: bool) {
     let h = hwnd.0 as isize;
+    if animate
+        && config::animation().0
+        && s.anims
+            .iter()
+            .any(|a| a.hwnd == h && same_rect(&a.to, &target, 0))
+    {
+        return;
+    }
     s.anims.retain(|a| a.hwnd != h);
+    if placement_blocked(s, hwnd, &target) {
+        return;
+    }
     let (on, ms) = config::animation();
     let busy = unsafe { IsZoomed(hwnd).as_bool() } || is_parked(hwnd);
     // if the frame timer could not be created, place windows instantly rather than freeze them
     if !animate || !on || ms == 0 || busy || s.anim_timer.is_invalid() {
-        place(hwnd, target);
-        observe_min_size(s, hwnd, &target);
+        let succeeded = place(hwnd, target);
+        note_placement_result(s, hwnd, target, succeeded);
+        if succeeded && observe_min_size(s, hwnd, &target) {
+            s.min_size_reflow = true;
+        }
         if s.border_on == Some(h) {
             place_border(&target, h);
         }
         return;
     }
     let Some(from) = visible_rect(hwnd) else {
-        place(hwnd, target);
-        observe_min_size(s, hwnd, &target);
+        let succeeded = place(hwnd, target);
+        note_placement_result(s, hwnd, target, succeeded);
+        if succeeded && observe_min_size(s, hwnd, &target) {
+            s.min_size_reflow = true;
+        }
         if s.border_on == Some(h) {
             place_border(&target, h);
         }
@@ -774,16 +1224,47 @@ fn move_window(s: &mut State, hwnd: HWND, target: RECT, animate: bool) {
 /// window overlap its neighbour. Only ever grows the remembered size: once a tile has been grown
 /// to fit, the window also fits it, so forgetting the minimum would make the tile shrink again
 /// and start an endless grow/shrink loop.
-fn observe_min_size(s: &mut State, hwnd: HWND, target: &RECT) {
+fn observe_min_size(s: &mut State, hwnd: HWND, target: &RECT) -> bool {
     let h = hwnd.0 as isize;
     let Some(vis) = visible_rect(hwnd) else {
-        return;
+        return false;
     };
+    // DWM can still report the previous frame immediately after SetWindowPos.
+    // A visible frame outside the current native window is not minimum-size evidence.
+    let mut native = RECT::default();
+    if unsafe { GetWindowRect(hwnd, &mut native) }.is_err()
+        || vis.left < native.left - 2
+        || vis.top < native.top - 2
+        || vis.right > native.right + 2
+        || vis.bottom > native.bottom + 2
+    {
+        return false;
+    }
     let (vw, vh) = (vis.right - vis.left, vis.bottom - vis.top);
     let (tw, th) = (target.right - target.left, target.bottom - target.top);
-    if vw > tw + 2 || vh > th + 2 {
-        s.min_size.insert(h, (vw.max(tw), vh.max(th)));
+    let previous = s.min_size.get(&h).copied().unwrap_or((0, 0));
+    let observed = rejected_minimum(previous, (tw, th), (vw, vh));
+    if observed != previous {
+        s.min_size.insert(h, observed);
+        return true;
     }
+    false
+}
+
+/// A rejected height must never turn an accepted (possibly very wide) width into a minimum.
+fn rejected_minimum(previous: (i32, i32), target: (i32, i32), actual: (i32, i32)) -> (i32, i32) {
+    (
+        if actual.0 > target.0 + 2 {
+            previous.0.max(actual.0)
+        } else {
+            previous.0
+        },
+        if actual.1 > target.1 + 2 {
+            previous.1.max(actual.1)
+        } else {
+            previous.1
+        },
+    )
 }
 
 /// Creates the timer that drives animation frames. Prefers the high-resolution variant
@@ -802,45 +1283,61 @@ fn create_anim_timer() -> HANDLE {
     }
 }
 
-/// Frame interval of the window animations, in milliseconds, derived from the primary monitor's
-/// refresh rate so frames line up with the display instead of beating against it (a fixed 16 ms
-/// timer judders on a 60 Hz screen and wastes headroom on 120/144 Hz). The result is cached; an
-/// unknown or implausible refresh rate falls back to `ANIM_FRAME_MS`.
+/// Refresh the cadence at the start of each motion burst. This is a scheduling hint, not vsync.
 fn anim_frame_ms() -> u32 {
-    static FRAME_MS: OnceLock<u32> = OnceLock::new();
-    *FRAME_MS.get_or_init(|| {
-        let hz = unsafe {
-            let dc = GetDC(None);
-            if dc.is_invalid() {
-                0
-            } else {
-                let hz = GetDeviceCaps(Some(dc), VREFRESH);
-                let _ = ReleaseDC(None, dc);
-                hz
+    use windows::Win32::Graphics::Gdi::{EnumDisplaySettingsW, DEVMODEW, ENUM_CURRENT_SETTINGS};
+    let hz = monitor::list()
+        .iter()
+        .filter_map(|mon| {
+            let device: Vec<u16> = mon.device.encode_utf16().chain(Some(0)).collect();
+            let mut mode = DEVMODEW {
+                dmSize: size_of::<DEVMODEW>() as u16,
+                ..Default::default()
+            };
+            if unsafe {
+                EnumDisplaySettingsW(PCWSTR(device.as_ptr()), ENUM_CURRENT_SETTINGS, &mut mode)
             }
-        };
-        // VREFRESH is 0/1 when the hardware reports a default rate: fall back then
-        if !(30..=1000).contains(&hz) {
-            return ANIM_FRAME_MS;
-        }
-        ((2000 + hz) / (2 * hz)).clamp(8, 33) as u32
-    })
+            .as_bool()
+                && (30..=1000).contains(&mode.dmDisplayFrequency)
+            {
+                Some(mode.dmDisplayFrequency)
+            } else {
+                None
+            }
+        })
+        .max();
+    hz.map_or(ANIM_FRAME_MS, |hz| ((1000 + hz / 2) / hz).clamp(4, 33))
 }
 
 /// (Re)arms the frame timer: the first frame fires in one frame interval, then every interval.
-fn arm_anim_timer(s: &State) {
-    if s.anim_timer.is_invalid() {
+fn arm_anim_timer(s: &mut State) {
+    if s.frame_armed {
         return;
     }
     let frame = anim_frame_ms().max(1);
     let due = -(frame as i64) * 10_000; // relative time, in 100 ns units
     unsafe {
-        let _ = SetWaitableTimer(s.anim_timer, &due, frame as i32, None, None, false);
+        s.frame_armed = !s.anim_timer.is_invalid()
+            && SetWaitableTimer(s.anim_timer, &due, frame as i32, None, None, false).is_ok();
+        if !s.frame_armed {
+            s.frame_fallback = SetTimer(None, s.frame_fallback, frame, None);
+            s.frame_armed = s.frame_fallback != 0;
+            if !s.frame_armed {
+                snapshot::clear();
+            }
+        }
     }
 }
 
 /// Stops the frame timer once nothing is animating.
-fn cancel_anim_timer(s: &State) {
+fn cancel_anim_timer(s: &mut State) {
+    s.frame_armed = false;
+    if s.frame_fallback != 0 {
+        unsafe {
+            let _ = KillTimer(None, s.frame_fallback);
+        }
+        s.frame_fallback = 0;
+    }
     if s.anim_timer.is_invalid() {
         return;
     }
@@ -851,6 +1348,23 @@ fn cancel_anim_timer(s: &State) {
 
 /// One animation frame (called from the frame timer).
 fn anim_tick() {
+    divider::tick();
+    if !divider::captured() && STATE.with(|s| s.borrow().divider.is_some()) {
+        end_divider(false);
+    }
+    let live = STATE.with(|s| std::mem::take(&mut s.borrow_mut().live));
+    if live {
+        live_resize();
+    }
+    if snapshot::tick() {
+        STATE.with(|s| {
+            let mut s = s.borrow_mut();
+            if !s.paused && s.dragging.is_none() {
+                s.enforce = true;
+                s.timer = unsafe { SetTimer(None, s.timer, VERIFY_MS, None) };
+            }
+        });
+    }
     let profiling = prof::on();
     let easing = config::easing();
     let border_w = config::border_width();
@@ -859,36 +1373,57 @@ fn anim_tick() {
         if s.anims.is_empty() {
             // The queue was emptied outside `anim_tick` (e.g. a drag started): stop the timer so
             // it does not keep firing at 60 Hz doing nothing.
-            cancel_anim_timer(&s);
+            if !snapshot::is_animating() && s.divider.is_none() {
+                cancel_anim_timer(&mut s);
+            }
             return;
         }
         let now = Instant::now();
         let mut keep = Vec::with_capacity(s.anims.len());
         let mut setpos = Duration::ZERO;
+        let mut min_size_changed = false;
         for mut a in std::mem::take(&mut s.anims) {
+            if !s.animation_current(a.hwnd) {
+                continue;
+            }
             if !unsafe { IsWindow(Some(HWND(a.hwnd as *mut _))) }.as_bool() {
                 continue; // closed while gliding
             }
             let dur = (a.dur_ms.max(1) as f32) / 1000.0;
             let t = (now - a.t0).as_secs_f32() / dur;
-            let (rect, done) = if t >= 1.0 {
+            let (mut rect, mut done) = if t >= 1.0 {
                 (a.to, true) // exact final position
             } else {
                 (lerp_rect(&a.from, &a.to, ease(easing, t)), false)
             };
+            let mut can_observe_size = true;
             // skip frames that would not move the window (the tail of an ease-out is almost flat)
             if a.last.as_ref().is_none_or(|l| !same_rect(l, &rect, 0)) {
                 let ts = profiling.then(Instant::now);
-                set_frame(a.hwnd, &rect, a.border);
+                let applied = set_frame(a.hwnd, &rect, a.border);
+                if applied {
+                    s.placement_failures.remove(&a.hwnd);
+                    s.expected.insert(a.hwnd, (rect, Instant::now()));
+                }
                 if let Some(ts) = ts {
                     setpos += ts.elapsed();
+                }
+                if !applied {
+                    // Do not keep posting frames to a window that rejected placement. Make one
+                    // direct final attempt and let the delayed geometry verification reconcile it.
+                    can_observe_size = place(HWND(a.hwnd as *mut _), a.to);
+                    note_placement_result(&mut s, HWND(a.hwnd as *mut _), a.to, can_observe_size);
+                    rect = a.to;
+                    done = true;
                 }
                 a.last = Some(rect);
             }
             let ahwnd = a.hwnd;
             if done {
                 // the window is at its tile now: note it if the app kept a bigger minimum size
-                observe_min_size(&mut s, HWND(ahwnd as *mut _), &a.to);
+                if can_observe_size {
+                    min_size_changed |= observe_min_size(&mut s, HWND(ahwnd as *mut _), &a.to);
+                }
             } else {
                 keep.push(a);
             }
@@ -898,10 +1433,23 @@ fn anim_tick() {
             }
         }
         s.anims = keep;
-        // our own moves must not look like the user moving windows
-        s.ignore_until = Some(now + Duration::from_millis(300));
+        s.min_size_reflow |= min_size_changed;
         if s.anims.is_empty() {
-            cancel_anim_timer(&s);
+            if !snapshot::is_animating() && s.divider.is_none() {
+                cancel_anim_timer(&mut s);
+            }
+            // A client can reject the target size while an animation is running. Reflow once
+            // after the animation settles so the newly observed minimum is reflected by the
+            // layout instead of leaving a temporary overlap until an unrelated later action.
+            if std::mem::take(&mut s.min_size_reflow) && !s.paused {
+                s.reflow = true;
+                s.timer = unsafe { SetTimer(None, s.timer, DEBOUNCE_MS, None) };
+            } else if !s.paused {
+                // A client may reposition itself or constrain a frame after accepting the
+                // animation request. Verify the settled geometry once, not on every frame.
+                s.enforce = true;
+                s.timer = unsafe { SetTimer(None, s.timer, VERIFY_MS, None) };
+            }
         }
         if profiling {
             anim_prof_frame(now, setpos.as_secs_f32() * 1e6);
@@ -962,7 +1510,8 @@ fn place_border_frame(vis: &RECT, target: isize, w: i32) {
 fn update_border(s: &mut State, focus: isize) {
     // a tiled window of the current workspace: in the applied layout, or (should the layout list
     // be momentarily stale) a known window that belongs to the current workspace
-    let tiled = s.last.contains(&focus) || s.ws.get(&focus) == Some(&s.cur);
+    let mi = s.mi(focus);
+    let tiled = s.last[mi].contains(&focus) || s.ws.get(&focus) == Some(&s.cur[mi]);
     s.border_on =
         (config::border().is_some() && !s.paused && s.dragging.is_none() && tiled).then_some(focus);
 }
@@ -972,6 +1521,230 @@ fn refresh_border() {
     let fg = unsafe { GetForegroundWindow() }.0 as isize;
     STATE.with(|s| update_border(&mut s.borrow_mut(), fg));
     sync_border();
+    sync_dividers();
+}
+
+fn sync_dividers() {
+    let fg = unsafe { GetForegroundWindow() }.0 as isize;
+    let handles = STATE.with(|state| {
+        let s = state.borrow();
+        if s.paused
+            || s.dragging.is_some()
+            || !s.anims.is_empty()
+            || snapshot::is_animating()
+            || !config::snapshot_animations()
+            || !s.last.iter().any(|windows| windows.contains(&fg))
+        {
+            return Vec::new();
+        }
+        (0..monitor::list().len().min(MON))
+            .flat_map(|mi| {
+                divider::handles(
+                    mi,
+                    config::layout(),
+                    &s.rects[mi],
+                    &s.regions[mi],
+                    config::inner_gap(),
+                )
+            })
+            .collect()
+    });
+    divider::sync(handles);
+}
+
+fn begin_divider(handle: divider::Handle, origin: POINT) -> bool {
+    let _profile = Timer::new("divider_prepare");
+    if STATE.with(|s| s.try_borrow_mut().is_err()) {
+        return false;
+    }
+    STATE.with(|state| {
+        let mut s = state.borrow_mut();
+        let mi = handle.monitor;
+        if mi >= MON
+            || s.paused
+            || s.dragging.is_some()
+            || s.divider.is_some()
+            || s.windows_changed
+            || !s.anims.is_empty()
+            || snapshot::is_animating()
+            || !config::snapshot_animations()
+            || !divider::handles(
+                mi,
+                config::layout(),
+                &s.rects[mi],
+                &s.regions[mi],
+                config::inner_gap(),
+            )
+            .contains(&handle)
+        {
+            return false;
+        }
+        let windows = s.last[mi].clone();
+        let sources: Vec<_> = windows
+            .iter()
+            .filter_map(|h| visible_rect(HWND(*h as *mut _)).map(|r| (*h, r)))
+            .collect();
+        if sources.len() != windows.len()
+            || sources
+                .iter()
+                .zip(&s.rects[mi])
+                .any(|((_, actual), target)| !same_rect(actual, target, 2))
+            || !snapshot::prepare(mi, monitor_work(mi), &sources)
+            || !snapshot::reveal(mi)
+        {
+            snapshot::cancel(mi);
+            return false;
+        }
+        let layout = config::layout();
+        let gaps = gaps();
+        // Recover ratios from settled geometry, including any adaptive minimum-size fitting.
+        let mut ratios = vec![0.5; windows.len() - 1];
+        let count = if layout == Layout::MasterStack {
+            1
+        } else {
+            ratios.len()
+        };
+        for (j, ratio) in ratios.iter_mut().enumerate().take(count) {
+            let q = s.regions[mi][j];
+            let t = s.rects[mi][j];
+            *ratio = if layout == Layout::MasterStack || j.is_multiple_of(2) {
+                ((t.right - q.left) as f32 + 0.25) / (q.right - q.left - gaps.inner).max(1) as f32
+            } else {
+                ((t.bottom - q.top) as f32 + 0.25) / (q.bottom - q.top - gaps.inner).max(1) as f32
+            };
+        }
+        let configured = config::min_tile();
+        let minimums = windows
+            .iter()
+            .zip(&s.rects[mi])
+            .map(|(h, r)| {
+                let observed = s.min_size.get(h).copied().unwrap_or_default();
+                (
+                    (configured.0.max(observed.0)).min(r.right - r.left),
+                    (configured.1.max(observed.1)).min(r.bottom - r.top),
+                )
+            })
+            .collect();
+        s.divider = Some(divider::Resize {
+            handle,
+            layout,
+            area: monitor_work(mi),
+            gaps,
+            windows,
+            workspace: s.cur[mi],
+            ratios,
+            tiles: s.rects[mi].clone(),
+            preview: s.rects[mi].clone(),
+            regions: s.regions[mi].clone(),
+            minimums,
+            origin,
+        });
+        s.border_on = None;
+        overlay::hide_border();
+        if s.timer != 0 {
+            unsafe {
+                let _ = KillTimer(None, s.timer);
+            }
+            s.timer = 0;
+        }
+        arm_anim_timer(&mut s);
+        true
+    })
+}
+
+fn update_divider(point: POINT) {
+    if STATE.with(|s| s.try_borrow_mut().is_err()) {
+        return;
+    }
+    let valid = STATE.with(|state| {
+        let mut s = state.borrow_mut();
+        let Some(gesture) = s.divider.as_ref() else {
+            return false;
+        };
+        let mi = gesture.handle.monitor;
+        if s.paused
+            || s.cur[mi] != gesture.workspace
+            || s.last[mi] != gesture.windows
+            || config::layout() != gesture.layout
+            || !snapshot::contains(mi)
+        {
+            return false;
+        }
+        let (_, tiles, _) = gesture.target(point);
+        if tiles == gesture.preview {
+            return true;
+        }
+        let targets: Vec<_> = gesture
+            .windows
+            .iter()
+            .copied()
+            .zip(tiles.iter().copied())
+            .collect();
+        if !snapshot::preview(mi, &targets) {
+            return false;
+        }
+        s.divider.as_mut().unwrap().preview = tiles;
+        true
+    });
+    if !valid {
+        end_divider(false);
+    }
+}
+
+fn end_divider(commit: bool) {
+    divider::release();
+    // SetWindowPos can pump a capture-loss callback during a placement transaction.
+    // The next frame cancels the gesture once the State borrow has been released.
+    if STATE.with(|s| s.try_borrow_mut().is_err()) {
+        return;
+    }
+    if STATE.with(|s| s.borrow().divider.is_none()) {
+        return;
+    }
+    STATE.with(|state| {
+        let mut s = state.borrow_mut();
+        let Some(gesture) = s.divider.take() else {
+            return;
+        };
+        let mi = gesture.handle.monitor;
+        let valid = !s.paused
+            && s.cur[mi] == gesture.workspace
+            && s.last[mi] == gesture.windows
+            && config::layout() == gesture.layout
+            && snapshot::contains(mi);
+        if commit && valid {
+            let mut point = POINT::default();
+            if unsafe { GetCursorPos(&mut point) }.is_ok() {
+                let (ratios, tiles, regions) = gesture.target(point);
+                let targets: Vec<_> = gesture
+                    .windows
+                    .iter()
+                    .copied()
+                    .zip(tiles.iter().copied())
+                    .collect();
+                place_batch(&mut s, &targets);
+                s.ratios[mi].insert(gesture.workspace, ratios);
+                s.rects[mi] = tiles;
+                s.regions[mi] = regions;
+                // Retain the final preview for one frame while applications begin repainting.
+                if snapshot::animate(mi, &targets, 1) {
+                    arm_anim_timer(&mut s);
+                } else {
+                    snapshot::cancel(mi);
+                }
+                s.enforce = true;
+                if std::mem::take(&mut s.min_size_reflow) {
+                    s.reflow = true;
+                }
+                s.timer = unsafe { SetTimer(None, s.timer, VERIFY_MS, None) };
+            } else {
+                snapshot::cancel(mi);
+            }
+        } else {
+            snapshot::cancel(mi);
+        }
+    });
+    refresh_border();
 }
 
 /// Repositions the border overlay around the current border window (`State::border_on`).
@@ -992,45 +1765,68 @@ fn clear_border() {
     overlay::hide_border();
 }
 
-/// Updates the workspace indicator (a small bar of dots at the top of the work area; the tiling
-/// area leaves room for it, so it never overlaps a window).
+/// Updates each monitor's workspace indicator; the tiling area leaves room for its own bar.
 fn sync_indicator() {
     if !config::workspace_indicator() {
         overlay::hide_indicator();
         return;
     }
-    let (cur, mask) = STATE.with(|s| {
-        let s = s.borrow();
-        let mut mask = 0u32;
-        for w in s.ws.values().chain(s.fs_ws.values()) {
-            mask |= 1u32 << (*w as u32).min(31);
-        }
-        (s.cur, mask)
-    });
-    let wa = raw_work_area();
+    let mons = monitor::list();
     let (w, h) = overlay::indicator_size();
-    let x = wa.left + (wa.right - wa.left - w) / 2;
-    let rect = RECT {
-        left: x,
-        top: wa.top,
-        right: x + w,
-        bottom: wa.top + h,
-    };
-    overlay::show_indicator(rect, cur, mask, config::border_color_value());
+    STATE.with(|s| {
+        let s = s.borrow();
+        for (mi, mon) in mons.iter().enumerate().take(MON) {
+            let x = mon.work.left + (mon.work.right - mon.work.left - w) / 2;
+            let rect = RECT {
+                left: x,
+                top: mon.work.top,
+                right: x + w,
+                bottom: mon.work.top + h,
+            };
+            let mut mask = 0u32;
+            for (window, ws) in &s.ws {
+                if s.mi(*window) == mi {
+                    mask |= 1u32 << (*ws as u32).min(31);
+                }
+            }
+            for (window, ws) in &s.fs_ws {
+                let fs_mi = s
+                    .fs_mon
+                    .get(window)
+                    .copied()
+                    .unwrap_or_else(|| monitor::of_window(HWND(*window as *mut _)))
+                    .min(MON - 1);
+                if fs_mi == mi {
+                    mask |= 1u32 << (*ws as u32).min(31);
+                }
+            }
+            overlay::show_indicator(mi, rect, s.cur[mi], mask);
+        }
+    });
 }
 
 /// (current workspace 0-based, paused) - for the tray.
 pub fn ui_state() -> (u8, bool) {
     STATE.with(|s| {
         let s = s.borrow();
-        (s.cur, s.paused)
+        (s.cur[active_mon(&s)], s.paused)
     })
 }
 
 /// The screen work area changed (display mode, taskbar size / auto-hide): rebuild the layout.
 pub fn request_relayout() {
+    end_divider(false);
+    snapshot::clear();
+    let old_monitors = monitor::list();
+    monitor::refresh();
+    let new_monitors = monitor::list();
+    reconcile_monitor_slots(&old_monitors, &new_monitors);
+    if config::workspace_indicator() {
+        let _ = overlay::sync_indicator_count(new_monitors.len());
+    }
     STATE.with(|s| {
         let mut s = s.borrow_mut();
+        s.placement_failures.clear();
         s.reflow = true;
         s.timer = unsafe { SetTimer(None, s.timer, DEBOUNCE_MS, None) };
     });
@@ -1048,16 +1844,22 @@ pub fn action_name(a: Action) -> String {
         Action::Swap(d) => format!("swap_{}", dir(d)),
         Action::Workspace(n) => format!("workspace_{}", n + 1),
         Action::MoveTo(n) => format!("move_to_workspace_{}", n + 1),
+        Action::WorkspaceNext => "workspace_next".into(),
+        Action::WorkspacePrev => "workspace_prev".into(),
+        Action::MoveToNext => "move_to_next_workspace".into(),
+        Action::MoveToPrev => "move_to_prev_workspace".into(),
         Action::Resize { width, grow } => format!(
             "{}_{}",
             if grow { "grow" } else { "shrink" },
             if width { "width" } else { "height" }
         ),
         Action::Minimize => "minimize".into(),
+        Action::ToggleFloat => "toggle_float".into(),
         Action::Close => "close".into(),
         Action::Pause => "pause".into(),
         Action::Quit => "quit".into(),
         Action::Retile => "retile".into(),
+        Action::CycleLayout => "cycle_layout".into(),
         Action::ReloadConfig => "reload_config".into(),
         Action::EditConfig => "edit_config".into(),
     }
@@ -1129,6 +1931,72 @@ fn register_hotkeys() -> Vec<String> {
 // event handling
 // ---------------------------------------------------------------------------
 
+/// Drop every piece of cached state for a destroyed HWND immediately. HWND values are reusable;
+/// waiting for the debounced EnumWindows pass can accidentally transfer stale workspace/order
+/// state to a newly created window that receives the same numeric handle.
+fn forget_window(s: &mut State, h: isize) -> bool {
+    let tracked = s.ws.contains_key(&h)
+        || s.mon.contains_key(&h)
+        || s.fs_ws.contains_key(&h)
+        || s.fs_mon.contains_key(&h)
+        || s.fs_hidden.contains(&h)
+        || s.manual_float.contains(&h)
+        || s.min_size.contains_key(&h)
+        || s.placement_failures.contains_key(&h)
+        || s.anims.iter().any(|animation| animation.hwnd == h)
+        || s.border_on == Some(h)
+        || s.order.iter().any(|order| order.contains(&h))
+        || s.last.iter().any(|last| last.contains(&h));
+    if !tracked {
+        return false;
+    }
+    snapshot::cancel(s.mi(h));
+    s.ws.remove(&h);
+    s.mon.remove(&h);
+    s.fs_ws.remove(&h);
+    s.fs_mon.remove(&h);
+    s.fs_hidden.remove(&h);
+    s.manual_float.remove(&h);
+    s.min_size.remove(&h);
+    s.placement_failures.remove(&h);
+    s.expected.remove(&h);
+    s.anims.retain(|a| a.hwnd != h);
+    for mi in 0..MON {
+        s.order[mi].retain(|window| *window != h);
+        if let Some(i) = s.last[mi].iter().position(|window| *window == h) {
+            s.last[mi].remove(i);
+            if i < s.rects[mi].len() {
+                s.rects[mi].remove(i);
+            }
+            if i < s.regions[mi].len() {
+                s.regions[mi].remove(i);
+            }
+        }
+    }
+    if s.dragging == Some(h) {
+        s.dragging = None;
+        s.drag_started = None;
+        s.resizing = false;
+        s.live = false;
+        if s.drag_timer != 0 {
+            unsafe {
+                let _ = KillTimer(None, s.drag_timer);
+            }
+            s.drag_timer = 0;
+        }
+    }
+    if s.drag_preview.is_some_and(|(_, preview)| preview == h) {
+        s.drag_preview = None;
+    }
+    if s.border_on == Some(h) {
+        s.border_on = None;
+        overlay::hide_border();
+    }
+    s.clear_layouts();
+    s.reflow = true;
+    true
+}
+
 unsafe extern "system" fn on_event(
     _hook: HWINEVENTHOOK,
     event: u32,
@@ -1145,7 +2013,58 @@ unsafe extern "system" fn on_event(
     if !menu && (id_object != 0 || id_child != 0 || hwnd.is_invalid()) {
         return;
     }
+    // Foreign window APIs can pump WinEvents while a layout borrows STATE. Preserve their order
+    // and replay after that transaction instead of panicking across the Win32 callback boundary.
+    if STATE.with(|s| s.try_borrow_mut().is_err()) {
+        let wake = PENDING_EVENTS.with(|pending| {
+            let mut pending = pending.borrow_mut();
+            let wake = pending.is_empty();
+            pending.push_back((event, hwnd, id_object, id_child, _thread, _time));
+            wake
+        });
+        if wake {
+            unsafe {
+                let _ = windows::Win32::UI::WindowsAndMessaging::PostThreadMessageW(
+                    windows::Win32::System::Threading::GetCurrentThreadId(),
+                    WM_PENDING_EVENTS,
+                    WPARAM(0),
+                    windows::Win32::Foundation::LPARAM(0),
+                );
+            }
+        }
+        return;
+    }
     let h = hwnd.0 as isize;
+    let cancel_divider = STATE.with(|state| {
+        let s = state.borrow();
+        let Some(gesture) = s.divider.as_ref() else {
+            return false;
+        };
+        match event {
+            EVENT_OBJECT_CREATE
+            | EVENT_OBJECT_SHOW
+            | EVENT_OBJECT_HIDE
+            | EVENT_OBJECT_DESTROY
+            | EVENT_OBJECT_CLOAKED
+            | EVENT_OBJECT_UNCLOAKED
+            | EVENT_SYSTEM_MINIMIZESTART
+            | EVENT_SYSTEM_MINIMIZEEND
+            | EVENT_SYSTEM_MOVESIZESTART
+            | EVENT_SYSTEM_FOREGROUND
+            | EVENT_SYSTEM_MENUPOPUPSTART => true,
+            EVENT_OBJECT_LOCATIONCHANGE => gesture
+                .windows
+                .iter()
+                .position(|window| *window == h)
+                .is_some_and(|i| {
+                    visible_rect(hwnd).is_none_or(|r| !same_rect(&r, &gesture.tiles[i], 2))
+                }),
+            _ => false,
+        }
+    });
+    if cancel_divider {
+        end_divider(false);
+    }
     let mut resync = false;
     // Focus moved within the current workspace: the border target was just set to the event's
     // window, so it only has to be repositioned (no re-derivation from `GetForegroundWindow`,
@@ -1172,10 +2091,19 @@ unsafe extern "system" fn on_event(
             EVENT_SYSTEM_MOVESIZESTART => {
                 // let the user drag freely; we decide what to do while / when they let go
                 if !s.paused {
-                    if let Some(k) = s.last.iter().position(|x| *x == h) {
-                        if k < s.rects.len() {
+                    let mi = s.mi(h);
+                    if let Some(k) = s.last[mi].iter().position(|x| *x == h) {
+                        if k < s.rects[mi].len() {
                             s.dragging = Some(h);
-                            s.anims.retain(|a| a.hwnd != h);
+                            s.placement_failures.remove(&h);
+                            s.drag_started = Some(Instant::now());
+                            if s.drag_timer != 0 {
+                                let _ = KillTimer(None, s.drag_timer);
+                            }
+                            s.drag_timer = SetTimer(None, 0, DRAG_WATCHDOG_MS, None);
+                            let affected: HashSet<isize> = s.last[mi].iter().copied().collect();
+                            s.anims.retain(|a| !affected.contains(&a.hwnd));
+                            snapshot::cancel(mi);
                             s.resizing = false;
                             s.live = false;
                             s.drag_preview = None;
@@ -1184,6 +2112,17 @@ unsafe extern "system" fn on_event(
                             // for the duration of the drag and let the re-tile restore it
                             s.border_on = None;
                             overlay::hide_border();
+                            if config::snapshot_animations() {
+                                let sources: Vec<_> = s.last[mi]
+                                    .iter()
+                                    .filter_map(|h| {
+                                        visible_rect(HWND(*h as *mut _)).map(|r| (*h, r))
+                                    })
+                                    .collect();
+                                if sources.len() == s.last[mi].len() {
+                                    snapshot::prepare(mi, monitor_work(mi), &sources);
+                                }
+                            }
                             // Remember the window's *actual* size, not the tile's: an app with a
                             // minimum size (or one that resized itself) can be larger than its
                             // tile, and comparing a plain move against the tile size would then be
@@ -1191,7 +2130,7 @@ unsafe extern "system" fn on_event(
                             s.drag_size = visible_rect(hwnd)
                                 .map(|v| (v.right - v.left, v.bottom - v.top))
                                 .unwrap_or_else(|| {
-                                    let t = s.rects[k];
+                                    let t = s.rects[mi][k];
                                     (t.right - t.left, t.bottom - t.top)
                                 });
                         }
@@ -1202,43 +2141,80 @@ unsafe extern "system" fn on_event(
             EVENT_SYSTEM_MOVESIZEEND => {
                 if s.dragging == Some(h) {
                     s.dragging = None;
-                    if s.resizing {
+                    s.placement_failures.remove(&h);
+                    s.drag_started = None;
+                    if s.drag_timer != 0 {
+                        let _ = KillTimer(None, s.drag_timer);
+                        s.drag_timer = 0;
+                    }
+                    let old_mi = s.mi(h);
+                    let new_mi = monitor::of_window(hwnd).min(MON - 1);
+                    if old_mi != new_mi {
+                        snapshot::cancel(old_mi);
+                        snapshot::cancel(new_mi);
+                        // A manual cross-monitor drag is an explicit move to the destination
+                        // monitor's currently visible workspace. Do not interpret its final size
+                        // as a resize of a split on the source monitor.
+                        s.order[old_mi].retain(|window| *window != h);
+                        if !s.order[new_mi].contains(&h) {
+                            s.order[new_mi].push(h);
+                        }
+                        s.mon.insert(h, new_mi);
+                        let destination_workspace = s.cur[new_mi];
+                        s.ws.insert(h, destination_workspace);
+                        s.last[old_mi].clear();
+                        s.last[new_mi].clear();
+                        s.resizing = false;
+                        s.live = false;
+                        s.drag_preview = None;
+                    } else if s.resizing {
+                        let mi = old_mi;
                         // final size: take the last position of the dragged edges
                         if let (Some(k), Some(vis)) =
-                            (s.last.iter().position(|x| *x == h), visible_rect(hwnd))
+                            (s.last[mi].iter().position(|x| *x == h), visible_rect(hwnd))
                         {
-                            let cur = s.cur;
-                            let (tiles, regions) = (s.rects.clone(), s.regions.clone());
-                            let mut rs = s.ratios.remove(&cur).unwrap_or_default();
-                            apply_resize(&mut rs, &tiles, &regions, k, vis, config::gap());
-                            s.ratios.insert(cur, rs);
+                            let cur = s.cur[mi];
+                            let (tiles, regions) = (s.rects[mi].clone(), s.regions[mi].clone());
+                            let mut rs = s.ratios[mi].remove(&cur).unwrap_or_default();
+                            apply_resize_for(
+                                config::layout(),
+                                &mut rs,
+                                &tiles,
+                                &regions,
+                                k,
+                                vis,
+                                config::inner_gap(),
+                            );
+                            s.ratios[mi].insert(cur, rs);
                         }
                         s.resizing = false;
                         s.live = false;
                     } else {
+                        let mi = old_mi;
+                        snapshot::cancel(mi);
                         // dropped onto another tile? -> swap the two windows; otherwise snap back
                         let mut p = POINT::default();
                         let _ = GetCursorPos(&mut p);
-                        let hit = s.rects.iter().position(|r| {
+                        let hit = s.rects[mi].iter().position(|r| {
                             p.x >= r.left && p.x < r.right && p.y >= r.top && p.y < r.bottom
                         });
-                        let swap_at = hit.filter(|i| *i < s.last.len() && s.last[*i] != h);
+                        let swap_at = hit.filter(|i| *i < s.last[mi].len() && s.last[mi][*i] != h);
                         // the live preview already slid the hovered window into our slot: it stays
                         // there if it is the one we swap with, otherwise it goes back
                         if let Some((pi, ph)) = s.drag_preview.take() {
-                            if swap_at != Some(pi) && pi < s.rects.len() {
-                                let back = s.rects[pi];
+                            if swap_at != Some(pi) && pi < s.rects[mi].len() {
+                                let back = s.rects[mi][pi];
                                 move_window(&mut s, HWND(ph as *mut _), back, true);
                             }
                         }
                         if let Some(i) = swap_at {
-                            let other = s.last[i];
+                            let other = s.last[mi][i];
                             let (ia, ib) = (
-                                s.order.iter().position(|x| *x == h),
-                                s.order.iter().position(|x| *x == other),
+                                s.order[mi].iter().position(|x| *x == h),
+                                s.order[mi].iter().position(|x| *x == other),
                             );
                             if let (Some(ia), Some(ib)) = (ia, ib) {
-                                s.order.swap(ia, ib);
+                                s.order[mi].swap(ia, ib);
                             }
                         }
                     }
@@ -1272,17 +2248,16 @@ unsafe extern "system" fn on_event(
                         }
                         if s.resizing {
                             // a resize is not a drop: undo any live swap preview
+                            let mi = s.mi(h);
                             if let Some((pi, ph)) = s.drag_preview.take() {
-                                if pi < s.rects.len() {
-                                    let back = s.rects[pi];
+                                if pi < s.rects[mi].len() {
+                                    let back = s.rects[mi][pi];
                                     move_window(&mut s, HWND(ph as *mut _), back, true);
                                 }
                             }
                             s.live = true;
-                            // throttle (not debounce): one live update every ~30 ms
-                            if s.timer == 0 {
-                                s.timer = SetTimer(None, 0, LIVE_MS, None);
-                            }
+                            // Coalesce input to the next frame without resetting its deadline.
+                            arm_anim_timer(&mut s);
                         } else {
                             update_drag_preview(&mut s, h);
                         }
@@ -1290,11 +2265,14 @@ unsafe extern "system" fn on_event(
                     return;
                 }
                 // a window moved/resized outside of a drag (and not because of us)
-                let quiet = s.ignore_until.is_none_or(|t| Instant::now() >= t);
-                if !quiet {
+                let own_event = visible_rect(hwnd)
+                    .is_some_and(|actual| s.expected_frame(h, &actual, Instant::now()));
+                let parked =
+                    s.ws.get(&h).is_some_and(|ws| *ws != s.cur[s.mi(h)]) && is_parked(hwnd);
+                if own_event || parked {
                     return;
                 }
-                if s.last.contains(&h) {
+                if s.last[s.mi(h)].contains(&h) {
                     s.enforce = true; // a tiled window moved on its own: pull it back
                     dirty = true;
                 } else if s.fs_ws.contains_key(&h) || h == GetForegroundWindow().0 as isize {
@@ -1305,6 +2283,9 @@ unsafe extern "system" fn on_event(
                 }
             }
             EVENT_OBJECT_SHOW => {
+                if let Some(dragged) = s.dragging {
+                    snapshot::cancel(s.mi(dragged));
+                }
                 s.windows_changed = true;
                 dirty = true;
                 // a window just appeared: put it into its tile right away, without waiting
@@ -1321,10 +2302,19 @@ unsafe extern "system" fn on_event(
                     .last_switch
                     .is_some_and(|t| t.elapsed() < Duration::from_millis(500));
                 // a window of another workspace got focus (taskbar / Alt+Tab), tiled or fullscreen
+                let mi = s
+                    .mon
+                    .get(&h)
+                    .copied()
+                    .unwrap_or_else(|| monitor::of_window(HWND(h as *mut _)))
+                    .min(MON - 1);
                 let ws = s.ws.get(&h).copied().or_else(|| s.fs_ws.get(&h).copied());
+                if !recently || ws != Some(s.cur[mi]) {
+                    snapshot::clear();
+                }
                 match ws {
-                    Some(w) if w != s.cur && !s.paused && !recently => {
-                        s.follow = Some((w, h));
+                    Some(w) if w != s.cur[mi] && !s.paused && !recently => {
+                        s.follow = Some((mi, w, h));
                         s.windows_changed = true;
                         dirty = true;
                     }
@@ -1337,12 +2327,16 @@ unsafe extern "system" fn on_event(
                 }
             }
             EVENT_OBJECT_CREATE
-            | EVENT_OBJECT_DESTROY
             | EVENT_OBJECT_HIDE
             | EVENT_OBJECT_CLOAKED
             | EVENT_OBJECT_UNCLOAKED
             | EVENT_SYSTEM_MINIMIZESTART
             | EVENT_SYSTEM_MINIMIZEEND => {
+                s.windows_changed = true;
+                dirty = true;
+            }
+            EVENT_OBJECT_DESTROY => {
+                let _ = forget_window(&mut s, h);
                 s.windows_changed = true;
                 dirty = true;
             }
@@ -1359,6 +2353,9 @@ unsafe extern "system" fn on_event(
         // the borrow above is released: move the border onto the window that just got focus
         sync_border();
     }
+    if reposition || dirty {
+        sync_dividers();
+    }
     if resync {
         // the menu just closed: re-evaluate the border from the real foreground window
         refresh_border();
@@ -1367,19 +2364,11 @@ unsafe extern "system" fn on_event(
 
 /// Does the visible frame of `hwnd` differ from `target` by more than a few pixels?
 fn off_target(hwnd: HWND, target: &RECT) -> bool {
-    let mut vis = RECT::default();
-    let ok = unsafe {
-        DwmGetWindowAttribute(
-            hwnd,
-            DWMWA_EXTENDED_FRAME_BOUNDS,
-            &mut vis as *mut _ as *mut _,
-            size_of::<RECT>() as u32,
-        )
-        .is_ok()
-    };
-    if !ok {
+    // DWM can temporarily reject the query (for example during a transition). Use the same
+    // fallback geometry as placement/animation rather than interpreting that as "on target".
+    let Some(vis) = visible_rect(hwnd) else {
         return false;
-    }
+    };
     let t = 4;
     (vis.left - target.left).abs() > t
         || (vis.top - target.top).abs() > t
@@ -1396,22 +2385,23 @@ fn resize_focused(width: bool, grow: bool) {
     let fg = unsafe { GetForegroundWindow() }.0 as isize;
     STATE.with(|s| {
         let mut s = s.borrow_mut();
+        let mi = s.mi(fg);
         if s.paused
             || s.dragging.is_some()
-            || s.rects.len() != s.last.len()
-            || s.regions.len() != s.last.len()
+            || s.rects[mi].len() != s.last[mi].len()
+            || s.regions[mi].len() != s.last[mi].len()
         {
             return;
         }
-        let n = s.last.len();
-        let Some(k) = s.last.iter().position(|h| *h == fg) else {
+        let n = s.last[mi].len();
+        let Some(k) = s.last[mi].iter().position(|h| *h == fg) else {
             return;
         };
-        let Some((j, sign)) = split_for(k, n, width) else {
+        let Some((j, sign)) = split_for_layout(config::layout(), k, n, width) else {
             return;
         };
-        let gap = config::gap();
-        let q = s.regions[j];
+        let gap = config::inner_gap();
+        let q = s.regions[mi][j];
         let span = if j % 2 == 0 {
             q.right - q.left - gap
         } else {
@@ -1423,9 +2413,9 @@ fn resize_focused(width: bool, grow: bool) {
         s.last_resize = Some(Instant::now());
         let step = effective_step(config::resize_step(), held) as f32 / span.max(1) as f32;
         let delta = step * sign * if grow { 1.0 } else { -1.0 };
-        let cur = s.cur;
+        let cur = s.cur[mi];
         let ratios = {
-            let rs = s.ratios.entry(cur).or_default();
+            let rs = s.ratios[mi].entry(cur).or_default();
             rs.resize(n - 1, 0.5);
             let before = rs[j];
             rs[j] = (before + delta).clamp(MIN_RATIO, MAX_RATIO);
@@ -1434,15 +2424,21 @@ fn resize_focused(width: bool, grow: bool) {
             }
             rs.clone()
         };
-        let (tiles, regions) = fitted(work_area(), &s.last, &ratios, &s.min_size);
-        let last = s.last.clone();
-        for (i, h) in last.iter().enumerate() {
-            // single taps glide; a held key resizes instantly so it stays responsive
-            move_window(&mut s, HWND(*h as *mut _), tiles[i], !held);
+        let (tiles, regions) = fitted(monitor_work(mi), &s.last[mi], &ratios, &s.min_size);
+        let last = s.last[mi].clone();
+        let targets: Vec<_> = last.iter().copied().zip(tiles.iter().copied()).collect();
+        // Hotkeys must not capture/upload a monitor or queue a frozen transition on
+        // every repeat. In particular, a held key commits all neighbours together.
+        snapshot::cancel(mi);
+        if held {
+            place_batch(&mut s, &targets);
+        } else {
+            for (i, h) in last.iter().enumerate() {
+                move_window(&mut s, HWND(*h as *mut _), tiles[i], true);
+            }
         }
-        s.rects = tiles;
-        s.regions = regions;
-        s.ignore_until = Some(Instant::now() + Duration::from_millis(500));
+        s.rects[mi] = tiles;
+        s.regions[mi] = regions;
     });
     refresh_border();
 }
@@ -1452,36 +2448,36 @@ fn resize_focused(width: bool, grow: bool) {
 /// here swaps the two. Moving away - or hovering the dragged window's own slot - undoes it.
 /// `State::drag_preview` remembers which window was slid where.
 fn update_drag_preview(s: &mut State, h: isize) {
-    if s.rects.len() != s.last.len() {
+    let mi = s.mi(h);
+    if s.rects[mi].len() != s.last[mi].len() {
         return;
     }
-    let Some(k) = s.last.iter().position(|x| *x == h) else {
+    let Some(k) = s.last[mi].iter().position(|x| *x == h) else {
         return;
     };
     let mut p = POINT::default();
     if unsafe { GetCursorPos(&mut p) }.is_err() {
         return;
     }
-    let hit = s
-        .rects
+    let hit = s.rects[mi]
         .iter()
         .position(|r| p.x >= r.left && p.x < r.right && p.y >= r.top && p.y < r.bottom);
-    let slot = s.rects[k];
+    let slot = s.rects[mi][k];
     // cursor over the dragged window's own slot (or over nothing): undo any preview
     if hit.is_none() || hit == Some(k) {
         if let Some((pi, ph)) = s.drag_preview.take() {
-            if pi < s.rects.len() {
-                let back = s.rects[pi];
+            if pi < s.rects[mi].len() {
+                let back = s.rects[mi][pi];
                 move_window(s, HWND(ph as *mut _), back, true);
             }
         }
         return;
     }
     let i = hit.unwrap();
-    if i >= s.last.len() {
+    if i >= s.last[mi].len() {
         return;
     }
-    let partner = s.last[i];
+    let partner = s.last[mi][i];
     if partner == h {
         return;
     }
@@ -1495,8 +2491,8 @@ fn update_drag_preview(s: &mut State, h: isize) {
             }
         } else {
             // hovering a different tile: send the previous window back first
-            if pi < s.rects.len() {
-                let back = s.rects[pi];
+            if pi < s.rects[mi].len() {
+                let back = s.rects[mi][pi];
                 move_window(s, HWND(ph as *mut _), back, true);
             }
         }
@@ -1514,33 +2510,53 @@ fn live_resize() {
             return;
         }
         let Some(h) = s.dragging else { return };
-        let Some(k) = s.last.iter().position(|x| *x == h) else {
+        let mi = s.mi(h);
+        let Some(k) = s.last[mi].iter().position(|x| *x == h) else {
             return;
         };
         let Some(vis) = visible_rect(HWND(h as *mut _)) else {
             return;
         };
-        let cur = s.cur;
-        let (tiles, regions) = (s.rects.clone(), s.regions.clone());
-        let mut rs = s.ratios.remove(&cur).unwrap_or_default();
-        let changed = apply_resize(&mut rs, &tiles, &regions, k, vis, config::gap());
+        let cur = s.cur[mi];
+        let (tiles, regions) = (s.rects[mi].clone(), s.regions[mi].clone());
+        let mut rs = s.ratios[mi].remove(&cur).unwrap_or_default();
+        let changed = apply_resize_for(
+            config::layout(),
+            &mut rs,
+            &tiles,
+            &regions,
+            k,
+            vis,
+            config::inner_gap(),
+        );
         if changed {
-            // While the user is dragging, lay out the *plain* spiral straight from the ratios:
+            // While the user is dragging, lay out the *plain* layout straight from the ratios:
             // the adaptive fitting (`fitted`) reshuffles every tile the moment a minimum size or
             // the narrowed master crosses a threshold, which makes the neighbours jump around
             // mid-drag. The full fitted layout is applied once on release (see `retile`).
-            let (new_tiles, new_regions) = spiral(work_area(), s.last.len(), &rs, config::gap());
-            let last = s.last.clone();
-            for (i, hw) in last.iter().enumerate() {
-                if *hw != h {
-                    move_window(&mut s, HWND(*hw as *mut _), new_tiles[i], false);
-                }
+            let (new_tiles, new_regions) = layout_tiles(
+                config::layout(),
+                monitor_work(mi),
+                s.last[mi].len(),
+                &rs,
+                gaps(),
+            );
+            let last = s.last[mi].clone();
+            let targets: Vec<_> = last
+                .iter()
+                .copied()
+                .zip(new_tiles.iter().copied())
+                .collect();
+            let preview = snapshot::contains(mi) && snapshot::preview(mi, &targets);
+            if !preview {
+                snapshot::cancel(mi);
+                let others: Vec<_> = targets.into_iter().filter(|(hw, _)| *hw != h).collect();
+                place_batch(&mut s, &others);
             }
-            s.rects = new_tiles;
-            s.regions = new_regions;
-            s.ignore_until = Some(Instant::now() + Duration::from_millis(400));
+            s.rects[mi] = new_tiles;
+            s.regions[mi] = new_regions;
         }
-        s.ratios.insert(cur, rs);
+        s.ratios[mi].insert(cur, rs);
     });
 }
 
@@ -1550,41 +2566,49 @@ fn enforce_layout() -> bool {
     let _t = Timer::new("enforce_layout");
     STATE.with(|s| {
         let mut s = s.borrow_mut();
-        if s.paused || s.dragging.is_some() || s.rects.len() != s.last.len() {
+        if s.paused || s.dragging.is_some() || s.divider.is_some() {
             return false;
         }
         let mut moved = 0;
         let mut fullscreen = false;
-        let (last, rects) = (s.last.clone(), s.rects.clone());
-        for (h, r) in last.iter().zip(rects.iter()) {
-            let hw = HWND(*h as *mut _);
-            if unsafe { IsZoomed(hw).as_bool() || IsIconic(hw).as_bool() } {
-                continue; // maximized / minimized by the user: leave it alone
-            }
-            if is_fullscreen(hw) {
-                fullscreen = true; // a game went fullscreen: let it be, re-tile drops it
+        let animating: HashSet<isize> = s.anims.iter().map(|a| a.hwnd).collect();
+        for mi in 0..MON {
+            if s.rects[mi].len() != s.last[mi].len() {
                 continue;
             }
-            if s.anims.iter().any(|a| a.hwnd == *h) {
-                continue; // already on its way
-            }
-            if off_target(hw, r) {
-                // an app with a minimum size cannot shrink to a small tile: retrying every time
-                // only makes it flicker, so leave it as it is (it overflows its tile instead)
-                if let Some(vis) = visible_rect(hw) {
-                    let bigger = (vis.right - vis.left) > (r.right - r.left) + 4
-                        || (vis.bottom - vis.top) > (r.bottom - r.top) + 4;
-                    if bigger {
-                        continue;
-                    }
+            let (last, rects) = (s.last[mi].clone(), s.rects[mi].clone());
+            for (h, r) in last.iter().zip(rects.iter()) {
+                let hw = HWND(*h as *mut _);
+                if unsafe { IsZoomed(hw).as_bool() || IsIconic(hw).as_bool() } {
+                    continue; // maximized / minimized by the user: leave it alone
                 }
-                move_window(&mut s, hw, *r, true);
-                moved += 1;
+                if is_fullscreen(hw) {
+                    fullscreen = true; // a game went fullscreen: let it be, re-tile drops it
+                    continue;
+                }
+                if animating.contains(h) {
+                    continue; // already on its way
+                }
+                if placement_blocked(&s, hw, r) {
+                    continue; // a previous bounded retry also failed for this exact target
+                }
+                if off_target(hw, r) {
+                    // an app with a minimum size cannot shrink to a small tile: retrying every time
+                    // only makes it flicker, so leave it as it is (it overflows its tile instead)
+                    if let Some(vis) = visible_rect(hw) {
+                        let bigger = (vis.right - vis.left) > (r.right - r.left) + 4
+                            || (vis.bottom - vis.top) > (r.bottom - r.top) + 4;
+                        if bigger {
+                            continue;
+                        }
+                    }
+                    move_window(&mut s, hw, *r, true);
+                    moved += 1;
+                }
             }
         }
         if moved > 0 {
             log(format!("snapped {} window(s) back to their tiles", moved));
-            s.ignore_until = Some(Instant::now() + Duration::from_millis(500));
         }
         fullscreen
     })
@@ -1599,14 +2623,15 @@ fn fast_add(s: &mut State, hwnd: HWND) -> bool {
     if s.ws.contains_key(&h) {
         return false; // known window shown again: the normal path decides
     }
-    if config::auto_overflow() && s.last.len() >= tile_budget() {
+    let mi = monitor::of_window(hwnd).min(MON - 1);
+    if config::auto_overflow() && s.last[mi].len() >= tile_budget(mi) {
         return false; // this workspace is full: the normal path moves it to the next one
     }
     let style = unsafe { GetWindowLongW(hwnd, GWL_STYLE) } as u32;
     if style & WS_CHILD.0 != 0 {
         return false; // controls and other child windows
     }
-    if s.rects.len() != s.last.len() || s.regions.len() != s.last.len() {
+    if s.rects[mi].len() != s.last[mi].len() || s.regions[mi].len() != s.last[mi].len() {
         return false;
     }
     let rules = config::rules();
@@ -1614,48 +2639,76 @@ fn fast_add(s: &mut State, hwnd: HWND) -> bool {
         Verdict::Tileable(w) => w,
         _ => return false, // not tileable (yet): e.g. title not set, dialog, tool window
     };
-    let cur = s.cur;
+    let cur = s.cur[mi];
     if w.rule_ws.is_some_and(|n| n != cur) {
         return false; // belongs to another workspace: the normal path parks it
     }
     s.ws.insert(h, cur);
-    if !s.order.contains(&h) {
-        s.order.push(h);
+    s.mon.insert(h, mi);
+    if !s.order[mi].contains(&h) {
+        s.order[mi].push(h);
     }
-    let mut layout = s.last.clone();
+    let mut layout = s.last[mi].clone();
     layout.push(h);
     let ratios = {
-        let rs = s.ratios.entry(cur).or_default();
+        let rs = s.ratios[mi].entry(cur).or_default();
         rs.resize(layout.len() - 1, 0.5);
         rs.clone()
     };
     // Put the new window in its provisional tile first: an app with a minimum size refuses to
     // shrink below it, and only after it has been placed do we know that minimum.
-    let (prov, _) = fitted(work_area(), &layout, &ratios, &s.min_size);
-    place(hwnd, prov[layout.len() - 1]);
+    let (prov, _) = fitted(monitor_work(mi), &layout, &ratios, &s.min_size);
+    if !place(hwnd, prov[layout.len() - 1]) {
+        note_placement_result(s, hwnd, prov[layout.len() - 1], false);
+        s.ws.remove(&h);
+        s.mon.remove(&h);
+        s.order[mi].retain(|window| *window != h);
+        return false;
+    }
+    note_placement_result(s, hwnd, prov[layout.len() - 1], true);
     observe_min_size(s, hwnd, &prov[layout.len() - 1]);
     // Now that the minimum is known, lay the whole workspace out again (the new window's tile may
     // have grown, and the neighbours move aside).
-    let (rects, regions) = fitted(work_area(), &layout, &ratios, &s.min_size);
-    for (i, hh) in layout.iter().enumerate() {
-        // the new window appears in its tile instantly; the others glide to make room
-        move_window(s, HWND(*hh as *mut _), rects[i], *hh != h);
+    let (rects, regions) = fitted(monitor_work(mi), &layout, &ratios, &s.min_size);
+    let targets: Vec<_> = layout.iter().copied().zip(rects.iter().copied()).collect();
+    if !visual_commit(s, mi, &targets, config::animation().1, &[h]) {
+        for (i, hh) in layout.iter().enumerate() {
+            // the new window appears in its tile instantly; the others glide to make room
+            move_window(s, HWND(*hh as *mut _), rects[i], *hh != h);
+        }
     }
-    s.rects = rects;
-    s.regions = regions;
-    s.last = layout;
-    s.ignore_until = Some(Instant::now() + Duration::from_millis(60));
+    s.rects[mi] = rects;
+    s.regions[mi] = regions;
+    s.last[mi] = layout;
     log(format!(
         "workspace {}: new window placed instantly ({} tiled)",
         cur + 1,
-        s.last.len()
+        s.last[mi].len()
     ));
     true
 }
 
 fn retile() {
+    if STATE.with(|s| s.borrow().divider.is_some()) {
+        end_divider(false);
+    }
     let _t = Timer::new("retile");
-    let c = collect(false);
+    if STATE.with(|s| {
+        let mut s = s.borrow_mut();
+        if s.paused {
+            return true;
+        }
+        if s.dragging.is_some() {
+            s.windows_changed = true;
+            true
+        } else {
+            false
+        }
+    }) {
+        return;
+    }
+    let manual = STATE.with(|s| s.borrow().manual_float.clone());
+    let c = collect(false, &manual);
     STATE.with(|s| {
         let mut s = s.borrow_mut();
         if s.paused {
@@ -1672,9 +2725,9 @@ fn retile() {
         reconcile_fullscreen(&mut s, &c.fullscreen);
         apply_fullscreen(&mut s);
         let present: Vec<isize> = c.tileable.iter().map(|w| w.hwnd.0 as isize).collect();
-        let cur = s.cur;
+        let present_set: HashSet<isize> = present.iter().copied().collect();
         // windows we have not seen before are placed instantly; known ones glide
-        let fresh: Vec<isize> = present
+        let fresh: HashSet<isize> = present
             .iter()
             .copied()
             .filter(|h| !s.ws.contains_key(h))
@@ -1683,74 +2736,128 @@ fn retile() {
         // forget windows that are gone (their observed minimum size goes with them)
         s.min_size
             .retain(|h, _| unsafe { IsWindow(Some(HWND(*h as *mut _))) }.as_bool());
+        s.manual_float
+            .retain(|h| unsafe { IsWindow(Some(HWND(*h as *mut _))) }.as_bool());
         // forget windows that are gone; new windows join the current workspace, the workspace a
         // config rule asks for, or - if the current workspace is full - the next workspace
-        s.ws.retain(|h, _| present.contains(h));
-        let mut overflow: Option<(u8, isize)> = None;
+        s.ws.retain(|h, _| present_set.contains(h));
+        s.mon.retain(|h, _| present_set.contains(h));
+        let mut overflow: Option<(usize, u8, isize)> = None;
         for w in &c.tileable {
             let h = w.hwnd.0 as isize;
+            let mi = monitor::of_window(w.hwnd).min(MON - 1);
             if s.ws.contains_key(&h) {
+                // remember which monitor the window is on, unless it is parked off-screen (where
+                // the nearest monitor would be wrong)
+                if !is_parked(w.hwnd) {
+                    s.mon.insert(h, mi);
+                }
                 continue;
             }
+            let cur = s.cur[mi];
             let ws = w
                 .rule_ws
-                .unwrap_or_else(|| workspace_for_new_window(&s, cur));
+                .unwrap_or_else(|| workspace_for_new_window(&s, mi, cur));
             s.ws.insert(h, ws);
+            s.mon.insert(h, mi);
             if ws != cur && overflow.is_none() {
-                overflow = Some((ws, h));
+                overflow = Some((mi, ws, h));
             }
         }
         if overflow.is_some() {
             s.follow = overflow; // switch to the new workspace, like the taskbar "follow"
         }
         // keep known windows in their old order, drop the gone ones, append the new ones
-        let mut order: Vec<isize> = s
-            .order
-            .iter()
-            .copied()
-            .filter(|h| present.contains(h))
-            .collect();
-        for h in &present {
-            if !order.contains(h) {
-                order.push(*h);
+        for mi in 0..MON {
+            let mut order: Vec<isize> = s.order[mi]
+                .iter()
+                .copied()
+                .filter(|h| present_set.contains(h) && s.mon.get(h).copied() == Some(mi))
+                .collect();
+            let mut seen: HashSet<isize> = order.iter().copied().collect();
+            for h in &present {
+                if s.mon.get(h).copied() == Some(mi) && seen.insert(*h) {
+                    order.push(*h);
+                }
+            }
+            s.order[mi] = order;
+        }
+        // make sure windows of other workspaces stay out of sight, and group the shown ones
+        let mut layouts: Vec<Vec<isize>> = vec![Vec::new(); MON];
+        for (mi, layout) in layouts.iter_mut().enumerate() {
+            let order = s.order[mi].clone();
+            for h in order {
+                if s.ws[&h] != s.cur[mi] {
+                    park(HWND(h as *mut _));
+                } else {
+                    layout.push(h);
+                }
             }
         }
-        s.order = order.clone();
-        // make sure windows of other workspaces stay out of sight
-        for h in &order {
-            if s.ws[h] != cur {
-                park(HWND(*h as *mut _));
+        let mut changed = false;
+        for (mi, layout) in layouts.iter().enumerate() {
+            let layout = layout.clone();
+            let cur = s.cur[mi];
+            let ratios = {
+                let rs = s.ratios[mi].entry(cur).or_default();
+                rs.resize(layout.len().saturating_sub(1), 0.5);
+                rs.clone()
+            };
+            let (rects, regions) = fitted(monitor_work(mi), &layout, &ratios, &s.min_size);
+            if layout == s.last[mi] && rects == s.rects[mi] {
+                // same windows and same tiles: leave them alone (respects manual tweaks)
+                continue;
             }
-        }
-        let layout: Vec<isize> = order.into_iter().filter(|h| s.ws[h] == cur).collect();
-        let ratios = {
-            let rs = s.ratios.entry(cur).or_default();
-            rs.resize(layout.len().saturating_sub(1), 0.5);
-            rs.clone()
-        };
-        let (rects, regions) = fitted(work_area(), &layout, &ratios, &s.min_size);
-        if layout == s.last && rects == s.rects {
-            // same windows and same tiles: leave them alone (respects manual tweaks). The tile
-            // comparison matters: a minimum size learned after the last layout (or after a new
-            // window appeared) changes the tiles even though the window set did not.
-            return;
-        }
-        s.rects = rects.clone();
-        s.regions = regions;
-        for (h, r) in layout.iter().zip(rects) {
-            if s.dragging == Some(*h) {
-                continue; // the user is dragging it right now: leave it under the cursor
+            let targets: Vec<_> = layout.iter().copied().zip(rects.iter().copied()).collect();
+            let (animation_on, ms) = config::animation();
+            if !snapshot::supports(mi, &targets) {
+                snapshot::cancel(mi);
             }
-            let animate = animate_all && !fresh.contains(h);
-            move_window(&mut s, HWND(*h as *mut _), r, animate);
+            // Reuse a scene prepared by a native resize, but never capture here:
+            // this path also handles latency-sensitive swaps and drag previews.
+            let entering: Vec<_> = layout
+                .iter()
+                .filter(|h| fresh.contains(h))
+                .copied()
+                .collect();
+            snapshot::entering(mi, &entering);
+            let visual = snapshot::contains(mi) && snapshot::reveal(mi);
+            s.rects[mi] = rects.clone();
+            s.regions[mi] = regions;
+            if visual {
+                place_batch(&mut s, &targets);
+                if snapshot::animate(mi, &targets, if animation_on { ms } else { 1 }) {
+                    arm_anim_timer(&mut s);
+                } else {
+                    snapshot::cancel(mi);
+                }
+            } else {
+                for (h, r) in layout.iter().zip(rects) {
+                    if s.dragging == Some(*h) {
+                        continue; // the user is dragging it right now: leave it under the cursor
+                    }
+                    let animate = animate_all && !fresh.contains(h);
+                    move_window(&mut s, HWND(*h as *mut _), r, animate);
+                }
+            }
+            log(format!(
+                "monitor {}: workspace {}: tiled {} window(s)",
+                mi + 1,
+                s.cur[mi] + 1,
+                layout.len()
+            ));
+            s.last[mi] = layout;
+            changed = true;
         }
-        log(format!(
-            "workspace {}: tiled {} window(s)",
-            cur + 1,
-            layout.len()
-        ));
-        s.last = layout;
-        s.ignore_until = Some(Instant::now() + Duration::from_millis(500));
+        if std::mem::take(&mut s.min_size_reflow) && s.anims.is_empty() && !s.paused {
+            s.reflow = true;
+            s.timer = unsafe { SetTimer(None, s.timer, DEBOUNCE_MS, None) };
+        } else if changed && s.anims.is_empty() && !s.paused {
+            // Verify instant placements too; this catches clients that adjust their own
+            // geometry after the synchronous SetWindowPos call has returned.
+            s.enforce = true;
+            s.timer = unsafe { SetTimer(None, s.timer, VERIFY_MS, None) };
+        }
     });
     // the focused window may only now have joined the layout: make sure it has the border
     refresh_border();
@@ -1768,7 +2875,11 @@ fn focus_hwnd(h: isize) {
 }
 
 fn focus_first_or_desktop() {
-    let first = STATE.with(|s| s.borrow().last.first().copied());
+    let first = STATE.with(|s| {
+        let s = s.borrow();
+        let mi = active_mon(&s);
+        s.last[mi].first().copied()
+    });
     match first {
         Some(h) => focus_hwnd(h),
         // empty workspace: take focus away from the (now hidden) old window
@@ -1782,32 +2893,34 @@ fn focus_or_swap(dir: Dir, swap: bool) {
     let mut to_focus: Option<isize> = None;
     STATE.with(|s| {
         let mut s = s.borrow_mut();
-        if s.paused || s.last.is_empty() || s.rects.len() != s.last.len() {
+        let mi = s.mi(fg);
+        if s.paused || s.last[mi].is_empty() || s.rects[mi].len() != s.last[mi].len() {
             return;
         }
-        let Some(cur) = s.last.iter().position(|h| *h == fg) else {
+        let Some(cur) = s.last[mi].iter().position(|h| *h == fg) else {
             // foreground window is not tiled here: just jump to the first tiled one
             if !swap {
-                to_focus = Some(s.last[0]);
+                to_focus = Some(s.last[mi][0]);
             }
             return;
         };
-        let Some(to) = neighbour(&s.rects, cur, dir) else {
+        let Some(to) = neighbour(&s.rects[mi], cur, dir) else {
             return;
         };
         if swap {
-            let (a, b) = (s.last[cur], s.last[to]);
+            snapshot::cancel(mi);
+            let (a, b) = (s.last[mi][cur], s.last[mi][to]);
             let (ia, ib) = (
-                s.order.iter().position(|h| *h == a),
-                s.order.iter().position(|h| *h == b),
+                s.order[mi].iter().position(|h| *h == a),
+                s.order[mi].iter().position(|h| *h == b),
             );
             if let (Some(ia), Some(ib)) = (ia, ib) {
-                s.order.swap(ia, ib);
+                s.order[mi].swap(ia, ib);
             }
-            s.last.clear(); // force a re-layout with the new order
+            s.last[mi].clear(); // force a re-layout with the new order
             do_retile = true;
         } else {
-            to_focus = Some(s.last[to]);
+            to_focus = Some(s.last[mi][to]);
         }
     });
     if let Some(h) = to_focus {
@@ -1818,36 +2931,114 @@ fn focus_or_swap(dir: Dir, swap: bool) {
     }
 }
 
-fn switch_ws(n: u8, focus: Option<isize>) {
+/// Switch the workspace of the monitor whose indicator was clicked.
+fn switch_ws_on_monitor(mi: usize, n: u8) {
+    switch_ws(mi, n, None);
+}
+
+/// Switch the workspace on the active monitor (keyboard action).
+fn switch_ws_active(n: u8) {
+    let mi = STATE.with(|s| active_mon(&s.borrow()));
+    switch_ws(mi, n, None);
+}
+
+/// The current workspace of `mi` offset by `step`, wrapped into `0..WS_COUNT`.
+fn relative_ws(mi: usize, step: i8) -> u8 {
+    let cur = STATE.with(|s| s.borrow().cur[mi]) as i8;
+    (cur + step).rem_euclid(WS_COUNT as i8) as u8
+}
+
+/// Switch the workspace of the monitor the user is on, `step` away (wrapping).
+fn switch_ws_relative(step: i8) {
+    let mi = STATE.with(|s| active_mon(&s.borrow()));
+    let n = relative_ws(mi, step);
+    switch_ws(mi, n, None);
+}
+
+/// Move the focused window to the workspace `step` away (wrapping) and follow it there.
+fn move_ws_relative(step: i8) {
+    let mi = STATE.with(|s| {
+        let s = s.borrow();
+        let h = unsafe { GetForegroundWindow() }.0 as isize;
+        s.mon
+            .get(&h)
+            .copied()
+            .unwrap_or_else(|| monitor::of_window(HWND(h as *mut _)))
+            .min(MON - 1)
+    });
+    let n = relative_ws(mi, step);
+    move_to_ws(n);
+}
+
+fn switch_ws(mi: usize, n: u8, focus: Option<isize>) {
+    end_divider(false);
+    let mut departure = None;
+    let mut offset = -48;
     let changed = STATE.with(|s| {
         let mut s = s.borrow_mut();
-        if s.paused || n == s.cur || n >= WS_COUNT {
+        if mi >= MON || s.paused || s.dragging.is_some() || n == s.cur[mi] || n >= WS_COUNT {
             return false;
         }
-        s.cur = n;
-        s.last.clear();
+        snapshot::cancel(mi);
+        if config::snapshot_animations() && config::animation().0 {
+            let sources: Vec<_> = s.last[mi]
+                .iter()
+                .filter_map(|h| visible_rect(HWND(*h as *mut _)).map(|r| (*h, r)))
+                .collect();
+            if sources.len() == s.last[mi].len()
+                && snapshot::prepare(mi, monitor_work(mi), &sources)
+            {
+                departure = snapshot::hold(mi);
+                if n < s.cur[mi] {
+                    offset = 48;
+                }
+            }
+        }
+        s.cur[mi] = n;
+        s.no_anim = true;
+        let affected: HashSet<isize> = s.order[mi].iter().copied().collect();
+        s.anims.retain(|a| !affected.contains(&a.hwnd));
+        s.last[mi].clear();
         s.last_switch = Some(Instant::now());
         true
     });
     if !changed {
         return;
     }
+    STATE.with(|s| s.borrow_mut().placement_failures.clear());
     retile();
     match focus {
         Some(h) => focus_hwnd(h),
-        None => focus_workspace(n),
+        None => focus_workspace(mi, n),
+    }
+    if let Some(scene) = departure {
+        if snapshot::depart(mi, scene, offset, config::animation().1) {
+            STATE.with(|s| arm_anim_timer(&mut s.borrow_mut()));
+        } else {
+            snapshot::cancel(mi);
+        }
     }
     tray::update();
     log(format!("switched to workspace {}", n + 1));
 }
 
-/// Focuses the fullscreen window of workspace `n` if it has one, otherwise the first tiled one.
-fn focus_workspace(n: u8) {
+/// Focuses the fullscreen window of workspace `n` on monitor `mi` if it has one, otherwise the
+/// first tiled one.
+fn focus_workspace(mi: usize, n: u8) {
     let fs = STATE.with(|s| {
-        s.borrow()
-            .fs_ws
+        let s = s.borrow();
+        s.fs_ws
             .iter()
-            .find(|(h, w)| **w == n && !unsafe { IsIconic(HWND(**h as *mut _)) }.as_bool())
+            .find(|(h, w)| {
+                let hw = HWND(**h as *mut _);
+                **w == n
+                    && s.fs_mon
+                        .get(*h)
+                        .copied()
+                        .unwrap_or_else(|| monitor::of_window(hw).min(MON - 1))
+                        == mi
+                    && !unsafe { IsIconic(hw) }.as_bool()
+            })
             .map(|(h, _)| *h)
     });
     match fs {
@@ -1858,12 +3049,21 @@ fn focus_workspace(n: u8) {
 
 fn move_to_ws(n: u8) {
     let fg = unsafe { GetForegroundWindow() }.0 as isize;
-    let cur = STATE.with(|s| s.borrow().cur);
+    let (mi, cur) = STATE.with(|s| {
+        let s = s.borrow();
+        let mi = s
+            .mon
+            .get(&fg)
+            .copied()
+            .unwrap_or_else(|| monitor::of_window(HWND(fg as *mut _)))
+            .min(MON - 1);
+        (mi, s.cur[mi])
+    });
     // Reassign the window to workspace `n`: a tiled window moves its `ws` entry, a fullscreen one
     // its `fs_ws` entry. Either way `retile` below makes the new workspace show the right set.
     let moved = STATE.with(|s| {
         let mut s = s.borrow_mut();
-        if s.paused || n >= WS_COUNT {
+        if s.paused || s.dragging.is_some() || n >= WS_COUNT {
             return false;
         }
         if let Some(w) = s.fs_ws.get(&fg).copied() {
@@ -1877,8 +3077,6 @@ fn move_to_ws(n: u8) {
             return false;
         }
         s.ws.insert(fg, n);
-        s.last.clear();
-        s.last_switch = Some(Instant::now());
         true
     });
     if !moved {
@@ -1886,7 +3084,7 @@ fn move_to_ws(n: u8) {
     }
     if n != cur {
         // follow the window: open the target workspace with the moved window focused
-        switch_ws(n, Some(fg));
+        switch_ws(mi, n, Some(fg));
     } else {
         retile();
         focus_hwnd(fg);
@@ -1896,20 +3094,19 @@ fn move_to_ws(n: u8) {
 
 /// Windows left parked off-screen (e.g. after a crash) are brought back into view.
 fn recover_parked() {
-    let c = collect(false);
+    let manual = STATE.with(|s| s.borrow().manual_float.clone());
+    let c = collect(false, &manual);
     for w in &c.tileable {
         if is_parked(w.hwnd) {
-            unsafe {
-                let _ = SetWindowPos(
-                    w.hwnd,
-                    None,
-                    100,
-                    100,
-                    0,
-                    0,
-                    SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOOWNERZORDER,
-                );
-            }
+            let _ = apply_window_pos(
+                w.hwnd,
+                100,
+                100,
+                0,
+                0,
+                SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOOWNERZORDER,
+                "recover-parked",
+            );
             log("recovered a window that was parked off-screen");
         }
     }
@@ -1919,14 +3116,27 @@ fn recover_parked() {
 fn bring_everything_back() {
     STATE.with(|s| {
         let mut s = s.borrow_mut();
-        let cur = s.cur;
-        for v in s.ws.values_mut() {
-            *v = cur;
+        // bring every window to its own monitor's current workspace
+        let ws: Vec<(isize, u8)> = s.ws.keys().map(|h| (*h, s.cur[s.mi(*h)])).collect();
+        for (h, w) in ws {
+            s.ws.insert(h, w);
         }
-        for v in s.fs_ws.values_mut() {
-            *v = cur; // so the fullscreen windows are not hidden again below
+        let fs: Vec<(isize, u8)> = s
+            .fs_ws
+            .keys()
+            .map(|h| {
+                let mi = s
+                    .fs_mon
+                    .get(h)
+                    .copied()
+                    .unwrap_or_else(|| monitor::of_window(HWND(*h as *mut _)).min(MON - 1));
+                (*h, s.cur[mi])
+            })
+            .collect();
+        for (h, w) in fs {
+            s.fs_ws.insert(h, w); // so the fullscreen windows are not hidden again below
         }
-        s.last.clear();
+        s.clear_layouts();
         s.paused = false;
         s.no_anim = true; // the process is about to exit: no gliding
         restore_hidden_fullscreen(&mut s);
@@ -1935,9 +3145,15 @@ fn bring_everything_back() {
 }
 
 fn toggle_pause() {
+    end_divider(false);
     let paused = STATE.with(|s| {
         let mut s = s.borrow_mut();
         s.paused = !s.paused;
+        if s.paused {
+            s.anims.clear();
+            cancel_anim_timer(&mut s);
+            snapshot::clear();
+        }
         s.paused
     });
     log(if paused { "paused" } else { "resumed" });
@@ -1945,10 +3161,11 @@ fn toggle_pause() {
     tray::update();
     if paused {
         clear_border();
+        sync_dividers();
         STATE.with(|s| restore_hidden_fullscreen(&mut s.borrow_mut()));
     }
     if !paused {
-        STATE.with(|s| s.borrow_mut().last.clear());
+        STATE.with(|s| s.borrow_mut().clear_layouts());
         retile();
         refresh_border();
     }
@@ -1967,17 +3184,27 @@ pub fn dispatch_quit() {
 }
 
 pub fn reload_config() {
+    end_divider(false);
+    snapshot::clear();
+    STATE.with(|s| {
+        let mut s = s.borrow_mut();
+        s.anims.clear();
+        cancel_anim_timer(&mut s);
+    });
+    STATE.with(|s| s.borrow_mut().placement_failures.clear());
     match config::load() {
         Ok(c) => {
+            overlay::set_indicator_size(c.workspace_indicator_size);
             config::set(c);
             overlay::set_border_color(config::border_color_value());
             let failed = register_hotkeys();
-            STATE.with(|s| s.borrow_mut().last.clear());
+            STATE.with(|s| s.borrow_mut().clear_layouts());
             retile();
             tray::update();
             clear_border(); // the colour (or the on/off switch) may have changed
             refresh_border();
             sync_indicator();
+            apply_focus_follows_timer();
             log("config reloaded");
             if !failed.is_empty() {
                 notify(
@@ -2004,7 +3231,6 @@ fn minimize_focused() {
         let mut s = s.borrow_mut();
         // the user chose to minimize it: do not restore it on the next workspace switch
         s.fs_hidden.remove(&h);
-        s.ignore_until = Some(Instant::now() + Duration::from_millis(300));
     });
     unsafe {
         let _ = ShowWindow(fg, SW_MINIMIZE);
@@ -2024,27 +3250,82 @@ fn close_focused() {
     log("closed the focused window");
 }
 
+/// Hotkey: float the focused window (leave it where it is) or, if it is already floating, tile it
+/// again. The choice lasts for this session; a config reload does not clear it.
+fn toggle_float() {
+    let fg = unsafe { GetForegroundWindow() };
+    if fg.is_invalid() {
+        return;
+    }
+    let h = fg.0 as isize;
+    let floating = STATE.with(|s| {
+        let mut s = s.borrow_mut();
+        if s.manual_float.remove(&h) {
+            false
+        } else {
+            s.manual_float.insert(h);
+            true
+        }
+    });
+    retile();
+    refresh_border();
+    if floating {
+        log("floating the focused window");
+    } else {
+        log("tiling the focused window again");
+    }
+}
+
+/// Hotkey: switch to the next layout (spiral -> master-stack -> grid -> columns -> spiral) and
+/// remember it in `config.toml`, so the choice survives a restart like the launcher's picker.
+fn cycle_layout() {
+    let next = match config::layout() {
+        Layout::Spiral => Layout::MasterStack,
+        Layout::MasterStack => Layout::Grid,
+        Layout::Grid => Layout::Columns,
+        Layout::Columns => Layout::Spiral,
+    };
+    let path = config::config_path();
+    let text = std::fs::read_to_string(&path).unwrap_or_default();
+    let new = config::edit_top(&text, &[("layout", format!("\"{}\"", next.name()))]);
+    if let Err(e) = std::fs::write(&path, new) {
+        log(format!("could not save the layout to config.toml: {e}"));
+        return;
+    }
+    reload_config();
+    notify("tile-rs", &format!("Layout: {}", next.name()));
+}
+
 pub fn dispatch(a: Action) {
+    end_divider(false);
     match a {
         Action::Focus(d) => focus_or_swap(d, false),
         Action::Swap(d) => focus_or_swap(d, true),
-        Action::Workspace(n) => switch_ws(n, None),
+        Action::Workspace(n) => switch_ws_active(n),
         Action::MoveTo(n) => move_to_ws(n),
+        Action::WorkspaceNext => switch_ws_relative(1),
+        Action::WorkspacePrev => switch_ws_relative(-1),
+        Action::MoveToNext => move_ws_relative(1),
+        Action::MoveToPrev => move_ws_relative(-1),
         Action::Resize { width, grow } => resize_focused(width, grow),
         Action::Minimize => minimize_focused(),
+        Action::ToggleFloat => toggle_float(),
         Action::Close => close_focused(),
         Action::Pause => toggle_pause(),
         Action::Quit => unsafe { PostQuitMessage(0) },
         Action::Retile => {
-            // also resets the sizes of the current workspace to equal halves
+            // also resets the sizes of every workspace to equal halves
             STATE.with(|s| {
                 let mut s = s.borrow_mut();
-                let cur = s.cur;
-                s.ratios.remove(&cur);
-                s.last.clear();
+                s.placement_failures.clear();
+                for mi in 0..MON {
+                    s.ratios[mi].clear();
+                }
+                s.clear_layouts();
             });
             retile();
         }
+        Action::CycleLayout => cycle_layout(),
         Action::ReloadConfig => reload_config(),
         Action::EditConfig => {
             config::ensure_default();
@@ -2056,9 +3337,172 @@ pub fn dispatch(a: Action) {
     }
 }
 
-/// Handles the debounce / live / verify timer (a classic `SetTimer` message).
+/// Starts or stops the focus-follows-mouse poll to match the current setting (on start-up and after
+/// every config reload).
+fn apply_focus_follows_timer() {
+    let want = config::focus_follows_mouse();
+    STATE.with(|s| {
+        let mut s = s.borrow_mut();
+        let on = s.ffm_timer != 0;
+        if want && !on {
+            s.ffm_timer = unsafe { SetTimer(None, 0, FFM_MS, None) };
+        } else if !want && on {
+            unsafe {
+                let _ = KillTimer(None, s.ffm_timer);
+            }
+            s.ffm_timer = 0;
+        }
+        if !want {
+            s.ffm_last = None;
+        }
+    });
+}
+
+/// Focus-follows-mouse poll: focus the tiled window under the pointer, if it is not focused yet.
+/// Runs on its own timer, only while the `focus_follows_mouse` setting is enabled.
+fn focus_follows_tick() {
+    let mut pt = POINT::default();
+    if unsafe { GetCursorPos(&mut pt) }.is_err() {
+        return;
+    }
+    let under = unsafe { WindowFromPoint(pt) };
+    if under.is_invalid() {
+        return;
+    }
+    let root = unsafe { GetAncestor(under, GA_ROOT) };
+    if root.is_invalid() {
+        return;
+    }
+    let h = root.0 as isize;
+    let (is_tiled, dragging, last) = STATE.with(|s| {
+        let s = s.borrow();
+        let mi = s.mi(h);
+        (
+            s.ws.get(&h).is_some_and(|w| *w == s.cur[mi]) && !s.manual_float.contains(&h),
+            s.dragging.is_some() || s.divider.is_some(),
+            s.ffm_last,
+        )
+    });
+    if dragging {
+        return;
+    }
+    if !is_tiled {
+        // the pointer is off the tiled area (desktop, taskbar, a floating window): let the next
+        // tile the pointer enters take focus again
+        if last.is_some() {
+            STATE.with(|s| s.borrow_mut().ffm_last = None);
+        }
+        return;
+    }
+    if last == Some(h) {
+        return;
+    }
+    let fg = unsafe { GetForegroundWindow() };
+    if fg != root {
+        // SetForegroundWindow is refused unless our process may set the foreground; attaching to
+        // the current foreground thread lifts that restriction (the usual FFM trick).
+        unsafe {
+            let fg_thread = GetWindowThreadProcessId(fg, None);
+            let target_thread = GetWindowThreadProcessId(root, None);
+            let attach = fg_thread != 0 && target_thread != 0 && fg_thread != target_thread;
+            if attach {
+                let _ = AttachThreadInput(fg_thread, target_thread, true);
+            }
+            let _ = SetForegroundWindow(root);
+            if attach {
+                let _ = AttachThreadInput(fg_thread, target_thread, false);
+            }
+        }
+    }
+    STATE.with(|s| s.borrow_mut().ffm_last = Some(h));
+}
+
+/// Handles the thread timers: the debounce / live / verify timer and the focus-follows-mouse poll.
 fn handle_debounce_timer(wparam: usize) {
-    let timer = STATE.with(|s| s.borrow().timer);
+    let frame = STATE.with(|s| s.borrow().frame_fallback);
+    if frame != 0 && frame == wparam {
+        anim_tick();
+        return;
+    }
+    let (timer, ffm, drag_timer, dragging) = STATE.with(|s| {
+        let s = s.borrow();
+        (s.timer, s.ffm_timer, s.drag_timer, s.dragging)
+    });
+    if ffm != 0 && wparam == ffm {
+        focus_follows_tick();
+        return;
+    }
+    if drag_timer != 0 && wparam == drag_timer {
+        let Some(h) = dragging else {
+            unsafe {
+                let _ = KillTimer(None, drag_timer);
+            }
+            STATE.with(|s| s.borrow_mut().drag_timer = 0);
+            return;
+        };
+        let hwnd = HWND(h as *mut _);
+        if !unsafe { IsWindow(Some(hwnd)) }.as_bool() {
+            STATE.with(|s| {
+                let mut s = s.borrow_mut();
+                forget_window(&mut s, h);
+                s.windows_changed = true;
+                s.drag_timer = 0;
+                s.timer = unsafe { SetTimer(None, s.timer, DEBOUNCE_MS, None) };
+            });
+            unsafe {
+                let _ = KillTimer(None, drag_timer);
+            }
+            return;
+        }
+        let thread = unsafe { GetWindowThreadProcessId(hwnd, None) };
+        let mut info = GUITHREADINFO {
+            cbSize: size_of::<GUITHREADINFO>() as u32,
+            ..Default::default()
+        };
+        match unsafe { GetGUIThreadInfo(thread, &mut info) } {
+            Ok(()) if info.flags.contains(GUI_INMOVESIZE) => return,
+            Ok(()) => {
+                // A missed end notification is safe to synthesize only after Windows confirms
+                // the owning GUI thread has left its modal move/size loop.
+                unsafe {
+                    on_event(
+                        HWINEVENTHOOK(std::ptr::null_mut()),
+                        EVENT_SYSTEM_MOVESIZEEND,
+                        hwnd,
+                        0,
+                        0,
+                        thread,
+                        0,
+                    );
+                }
+                return;
+            }
+            Err(error) => {
+                let expired = STATE.with(|s| {
+                    s.borrow()
+                        .drag_started
+                        .is_some_and(|started| started.elapsed() >= Duration::from_secs(15))
+                });
+                if expired {
+                    log(format!(
+                        "move-size watchdog could not query GUI thread state; finalizing drag: {error}"
+                    ));
+                    unsafe {
+                        on_event(
+                            HWINEVENTHOOK(std::ptr::null_mut()),
+                            EVENT_SYSTEM_MOVESIZEEND,
+                            hwnd,
+                            0,
+                            0,
+                            thread,
+                            0,
+                        );
+                    }
+                }
+                return;
+            }
+        }
+    }
     if wparam != timer {
         return;
     }
@@ -2072,12 +3516,12 @@ fn handle_debounce_timer(wparam: usize) {
         let enforce = std::mem::take(&mut s.enforce);
         let live = std::mem::take(&mut s.live);
         if reflow {
-            s.last.clear(); // force a fresh layout (snap back / apply a swap)
+            s.clear_layouts(); // force a fresh layout (snap back / apply a swap)
         }
         (s.follow.take(), reflow, enforce, live)
     });
     match follow {
-        Some((w, h)) => switch_ws(w, Some(h)),
+        Some((mi, w, h)) => switch_ws(mi, w, Some(h)),
         None if reflow => retile(),
         None if live => live_resize(),
         None if enforce => {
@@ -2092,6 +3536,7 @@ fn handle_debounce_timer(wparam: usize) {
         }
         None => retile(),
     }
+    sync_dividers();
 }
 
 // ---------------------------------------------------------------------------
@@ -2124,17 +3569,14 @@ fn start(interactive: bool) {
         log("config: added settings introduced by this version (backup: config.toml.bak)");
     }
     match config::load() {
-        Ok(c) => config::set(c),
+        Ok(c) => {
+            overlay::set_indicator_size(c.workspace_indicator_size);
+            config::set(c);
+        }
         Err(e) => {
             log(format!("config error: {e}"));
             notify("tile-rs: config error (built-in defaults are used)", &e);
         }
-    }
-    if config::layout() != config::Layout::Spiral {
-        log(format!(
-            "layout \"{}\" is not implemented yet; using the spiral",
-            config::layout().name()
-        ));
     }
 
     if interactive && first_run {
@@ -2150,11 +3592,22 @@ fn start(interactive: bool) {
     }
 
     window::SKIP_ZOOMED.store(true, Ordering::Relaxed);
+    remember_monitor_slots();
     recover_parked();
+    let mut event_hooks: Vec<HWINEVENTHOOK> = Vec::new();
+    let mut hook_failures = Vec::new();
     unsafe {
         let flags = WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS;
-        let hook = |lo: u32, hi: u32| {
-            let _ = SetWinEventHook(lo, hi, None, Some(on_event), 0, 0, flags);
+        let mut hook = |lo: u32, hi: u32| {
+            let handle = SetWinEventHook(lo, hi, None, Some(on_event), 0, 0, flags);
+            if handle.0.is_null() {
+                hook_failures.push(format!(
+                    "{lo:#06x}-{hi:#06x}: Win32 error {}",
+                    GetLastError().0
+                ));
+            } else {
+                event_hooks.push(handle);
+            }
         };
         hook(EVENT_OBJECT_CREATE, EVENT_OBJECT_HIDE); // created / destroyed / shown / hidden
         hook(EVENT_SYSTEM_MINIMIZESTART, EVENT_SYSTEM_MINIMIZEEND);
@@ -2164,6 +3617,16 @@ fn start(interactive: bool) {
         hook(EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_FOREGROUND);
         hook(EVENT_SYSTEM_MENUPOPUPSTART, EVENT_SYSTEM_MENUPOPUPEND); // right-click menus
     }
+    if !hook_failures.is_empty() {
+        log(format!(
+            "WinEvent hook registration failed: {}",
+            hook_failures.join("; ")
+        ));
+        notify(
+            "tile-rs: some window events are unavailable",
+            "Window tracking may be incomplete. Check tile-rs.log for the failed hooks.",
+        );
+    }
     let failed = register_hotkeys();
     tray::create();
     launcher::create();
@@ -2171,10 +3634,14 @@ fn start(interactive: bool) {
         log("could not create the border overlay window");
     }
     overlay::set_border_color(config::border_color_value());
-    overlay::set_indicator_click(|n| switch_ws(n, None));
-    overlay::create_indicator();
+    overlay::set_indicator_click(switch_ws_on_monitor);
+    overlay::create_indicator(monitor::list().len());
     let anim_timer = create_anim_timer();
     STATE.with(|s| s.borrow_mut().anim_timer = anim_timer);
+    apply_focus_follows_timer();
+    if config::focus_follows_mouse() {
+        log("focus follows the mouse pointer");
+    }
     log("tile-rs running");
     if !failed.is_empty() {
         notify(
@@ -2193,10 +3660,16 @@ fn start(interactive: bool) {
     // the debounce / live / verify timers stay ordinary SetTimer messages.
     unsafe {
         let mut msg = MSG::default();
-        let handles = [anim_timer];
+        let timers = [anim_timer];
+        let handles = if anim_timer.is_invalid() {
+            &timers[..0]
+        } else {
+            &timers[..]
+        };
         loop {
+            replay_events();
             let r = MsgWaitForMultipleObjectsEx(
-                Some(&handles),
+                Some(handles),
                 INFINITE,
                 QS_ALLINPUT,
                 MWMO_INPUTAVAILABLE,
@@ -2213,6 +3686,10 @@ fn start(interactive: bool) {
                 if msg.message == WM_QUIT {
                     quit = true;
                     break;
+                }
+                if msg.message == WM_PENDING_EVENTS {
+                    replay_events();
+                    continue;
                 }
                 // Only *thread* timers (created with a NULL hwnd, i.e. the debounce / live / verify
                 // timer) are ours to handle here. A WM_TIMER that belongs to a window (the
@@ -2244,14 +3721,39 @@ fn start(interactive: bool) {
             }
         }
     }
+    end_divider(false);
+    divider::sync(Vec::new());
     clear_border();
+    snapshot::clear();
+    STATE.with(|s| {
+        let mut s = s.borrow_mut();
+        s.anims.clear();
+        cancel_anim_timer(&mut s);
+    });
     bring_everything_back();
     tray::remove();
     launcher::destroy();
     overlay::destroy_indicator();
     overlay::destroy_border();
+    let (ffm_timer, drag_timer) = STATE.with(|s| {
+        let s = s.borrow();
+        (s.ffm_timer, s.drag_timer)
+    });
+    if ffm_timer != 0 {
+        unsafe {
+            let _ = KillTimer(None, ffm_timer);
+        }
+    }
+    if drag_timer != 0 {
+        unsafe {
+            let _ = KillTimer(None, drag_timer);
+        }
+    }
     unsafe {
         let _ = CloseHandle(anim_timer);
+        for hook in event_hooks {
+            let _ = UnhookWinEvent(hook);
+        }
     }
     log("bye");
 }
@@ -2274,6 +3776,7 @@ fn main() {
     match cmd.as_deref() {
         None => start(true),
         Some("run") | Some("--autostart") => start(false),
+        Some("--launcher-ui") => launcher::run(),
         Some("--version") | Some("-V") => {
             let mut out = console_out();
             let _ = writeln!(out, "tile-rs {}", env!("CARGO_PKG_VERSION"));
@@ -2306,11 +3809,31 @@ fn main() {
                 config::set(c);
             }
             let mut out = console_out();
-            let c = collect(true);
+            let c = collect(true, &HashSet::new());
             if cmd.as_deref() == Some("list") {
                 let _ = writeln!(out, "TILEABLE ({}):", c.tileable.len());
+                let mut grouped = vec![Vec::new(); MON];
                 for w in &c.tileable {
-                    let _ = writeln!(out, "  [{:>6}] {:<28} {}", w.pid, w.class, w.title);
+                    grouped[monitor::of_window(w.hwnd).min(MON - 1)].push(w);
+                }
+                for (mi, wins) in grouped.iter().enumerate() {
+                    if wins.is_empty() {
+                        continue;
+                    }
+                    let area = monitor_work(mi);
+                    let _ = writeln!(
+                        out,
+                        "\nMONITOR {} ({}x{} at {}, {}) - {} tileable:",
+                        mi + 1,
+                        area.right - area.left,
+                        area.bottom - area.top,
+                        area.left,
+                        area.top,
+                        wins.len()
+                    );
+                    for w in wins {
+                        let _ = writeln!(out, "  [{:>6}] {:<28} {}", w.pid, w.class, w.title);
+                    }
                 }
                 if !c.fullscreen.is_empty() {
                     let _ = writeln!(out, "\nFULLSCREEN ({}):", c.fullscreen.len());
@@ -2333,28 +3856,42 @@ fn main() {
                         w.pid, w.class, w.title, r
                     );
                 }
-                let a = work_area();
-                let _ = writeln!(
-                    out,
-                    "\nWork area: {}x{} at ({}, {})",
-                    a.right - a.left,
-                    a.bottom - a.top,
-                    a.left,
-                    a.top
-                );
-            } else {
-                let (rects, _) = spiral(work_area(), c.tileable.len(), &[], config::gap());
-                for (w, r) in c.tileable.iter().zip(rects) {
+                for mi in 0..monitor::list().len().min(MON) {
+                    let area = monitor_work(mi);
                     let _ = writeln!(
                         out,
-                        "{} -> {}x{} at ({}, {})",
-                        w.title,
-                        r.right - r.left,
-                        r.bottom - r.top,
-                        r.left,
-                        r.top
+                        "WORK AREA monitor {}: {}x{} at ({}, {})",
+                        mi + 1,
+                        area.right - area.left,
+                        area.bottom - area.top,
+                        area.left,
+                        area.top
                     );
-                    place(w.hwnd, r);
+                }
+            } else {
+                let mut grouped = vec![Vec::new(); MON];
+                for w in &c.tileable {
+                    grouped[monitor::of_window(w.hwnd).min(MON - 1)].push(w);
+                }
+                for (mi, wins) in grouped.iter().enumerate() {
+                    if wins.is_empty() {
+                        continue;
+                    }
+                    let (rects, _) =
+                        layout_tiles(config::layout(), monitor_work(mi), wins.len(), &[], gaps());
+                    for (w, r) in wins.iter().zip(rects) {
+                        let _ = writeln!(
+                            out,
+                            "{}: {} -> {}x{} at ({}, {})",
+                            mi + 1,
+                            w.title,
+                            r.right - r.left,
+                            r.bottom - r.top,
+                            r.left,
+                            r.top
+                        );
+                        place(w.hwnd, r);
+                    }
                 }
             }
         }
@@ -2371,6 +3908,240 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rejected_height_does_not_lock_width_and_vice_versa() {
+        assert_eq!(rejected_minimum((0, 0), (2200, 600), (2200, 650)), (0, 650));
+        assert_eq!(rejected_minimum((0, 0), (400, 1100), (480, 1100)), (480, 0));
+        assert_eq!(
+            rejected_minimum((480, 650), (2200, 800), (2201, 802)),
+            (480, 650)
+        );
+        assert_eq!(
+            rejected_minimum((480, 650), (400, 600), (500, 700)),
+            (500, 700)
+        );
+    }
+
+    #[test]
+    fn browser_can_grow_back_after_neighbour_rejects_height() {
+        let area = RECT {
+            left: 0,
+            top: 0,
+            right: 3440,
+            bottom: 1440,
+        };
+        let gaps = Gaps {
+            inner: 10,
+            outer: 10,
+        };
+        let ratios = vec![0.35, 0.55];
+        let (tiles, regions) = layout_tiles(Layout::Spiral, area, 3, &ratios, gaps);
+        let right_width = tiles[1].right - tiles[1].left;
+        let observed = rejected_minimum((0, 0), (right_width, 600), (right_width, 650));
+        let handle = divider::handles(0, Layout::Spiral, &tiles, &regions, gaps.inner)[0];
+        let origin = POINT {
+            x: handle.rect.left,
+            y: handle.rect.top,
+        };
+        let gesture = divider::Resize {
+            handle,
+            layout: Layout::Spiral,
+            area,
+            gaps,
+            windows: vec![1, 2, 3],
+            workspace: 0,
+            ratios,
+            preview: tiles.clone(),
+            tiles: tiles.clone(),
+            regions,
+            minimums: vec![
+                (480, 320),
+                (480.max(observed.0), 320.max(observed.1)),
+                (480, 320),
+            ],
+            origin,
+        };
+        let (_, enlarged, _) = gesture.target(POINT {
+            x: origin.x + 200,
+            y: origin.y,
+        });
+        assert_eq!(enlarged[0].right - tiles[0].right, 200);
+        let (_, shrunk, _) = gesture.target(POINT {
+            x: origin.x - 200,
+            y: origin.y,
+        });
+        assert_eq!(tiles[0].right - shrunk[0].right, 200);
+    }
+
+    #[test]
+    fn reentrant_destroy_event_is_replayed_after_the_layout_borrow() {
+        STATE.with(|state| {
+            let mut state = state.borrow_mut();
+            *state = State::default();
+            state.ws.insert(11, 0);
+            unsafe {
+                on_event(
+                    HWINEVENTHOOK(std::ptr::null_mut()),
+                    EVENT_OBJECT_DESTROY,
+                    HWND(11usize as *mut _),
+                    0,
+                    0,
+                    0,
+                    0,
+                );
+            }
+            assert!(state.ws.contains_key(&11));
+            assert_eq!(PENDING_EVENTS.with(|events| events.borrow().len()), 1);
+        });
+        replay_events();
+        STATE.with(|state| {
+            let mut state = state.borrow_mut();
+            assert!(!state.ws.contains_key(&11));
+            if state.timer != 0 {
+                unsafe {
+                    let _ = KillTimer(None, state.timer);
+                }
+            }
+            *state = State::default();
+        });
+        assert!(PENDING_EVENTS.with(|events| events.borrow().is_empty()));
+    }
+
+    #[test]
+    fn frame_timer_has_a_cancellable_fallback_without_a_waitable_handle() {
+        let mut state = State::default();
+        arm_anim_timer(&mut state);
+        assert!(state.frame_armed);
+        assert_ne!(state.frame_fallback, 0);
+        cancel_anim_timer(&mut state);
+        assert!(!state.frame_armed);
+        assert_eq!(state.frame_fallback, 0);
+    }
+
+    #[test]
+    fn animation_cannot_run_after_workspace_switch_pause_or_manual_drag() {
+        let mut state = State::default();
+        state.ws.insert(11, 0);
+        assert!(state.animation_current(11));
+        state.cur[0] = 1;
+        assert!(!state.animation_current(11));
+        state.cur[0] = 0;
+        state.paused = true;
+        assert!(!state.animation_current(11));
+        state.paused = false;
+        state.dragging = Some(11);
+        assert!(!state.animation_current(11));
+        assert!(!state.animation_current(12));
+    }
+
+    #[test]
+    fn expected_geometry_does_not_suppress_another_window_or_user_resize() {
+        let mut state = State::default();
+        let now = Instant::now();
+        let target = RECT {
+            left: 0,
+            top: 0,
+            right: 500,
+            bottom: 400,
+        };
+        state.expected.insert(11, (target, now));
+        assert!(state.expected_frame(11, &target, now));
+        assert!(!state.expected_frame(12, &target, now));
+        let resized = RECT {
+            right: 700,
+            ..target
+        };
+        assert!(!state.expected_frame(11, &resized, now));
+        assert!(!state.expected_frame(11, &target, now + Duration::from_secs(2)));
+    }
+
+    #[test]
+    fn repeating_an_animation_target_preserves_its_start_time() {
+        config::set(config::parse("animations = true").unwrap());
+        let mut state = State::default();
+        let target = RECT {
+            left: 0,
+            top: 0,
+            right: 500,
+            bottom: 400,
+        };
+        let started = Instant::now() - Duration::from_millis(40);
+        state.anims.push(Anim {
+            hwnd: 11,
+            from: RECT::default(),
+            to: target,
+            border: (0, 0, 0, 0),
+            t0: started,
+            dur_ms: 140,
+            last: None,
+        });
+        move_window(&mut state, HWND(11usize as *mut _), target, true);
+        assert_eq!(state.anims.len(), 1);
+        assert_eq!(state.anims[0].t0, started);
+    }
+
+    #[test]
+    fn destroying_a_window_clears_its_expected_geometry_and_pending_motion() {
+        let mut state = State::default();
+        state.ws.insert(11, 0);
+        state.expected.insert(11, (RECT::default(), Instant::now()));
+        state.dragging = Some(11);
+        state.resizing = true;
+        assert!(forget_window(&mut state, 11));
+        assert!(!state.ws.contains_key(&11));
+        assert!(!state.expected.contains_key(&11));
+        assert!(state.dragging.is_none());
+        assert!(!state.resizing);
+        assert!(state.reflow);
+    }
+
+    fn test_monitor(device: &str, left: i32, right: i32, primary: bool) -> monitor::Monitor {
+        let rect = RECT {
+            left,
+            top: 0,
+            right,
+            bottom: 100,
+        };
+        monitor::Monitor {
+            handle: windows::Win32::Graphics::Gdi::HMONITOR(std::ptr::null_mut()),
+            device: device.into(),
+            work: rect,
+            full: rect,
+            primary,
+        }
+    }
+
+    #[test]
+    fn monitor_slot_map_follows_device_names_when_enumeration_reorders() {
+        let old = [
+            test_monitor("DISPLAY-A", 0, 100, true),
+            test_monitor("DISPLAY-B", 100, 200, false),
+        ];
+        let new = [
+            test_monitor("DISPLAY-B", 100, 200, false),
+            test_monitor("DISPLAY-A", 0, 100, true),
+        ];
+        let identities = std::array::from_fn(|i| old.get(i).map(|m| m.device.clone()));
+        let (mapped, exact) = monitor_slot_map(&old, &new, &identities);
+        assert_eq!(&mapped[..2], &[1, 0]);
+        assert!(exact[0] && exact[1]);
+    }
+
+    #[test]
+    fn monitor_slot_map_uses_nearest_survivor_when_a_display_disappears() {
+        let old = [
+            test_monitor("DISPLAY-A", 0, 100, true),
+            test_monitor("DISPLAY-B", 100, 200, false),
+        ];
+        let new = [test_monitor("DISPLAY-A", 0, 100, true)];
+        let identities = std::array::from_fn(|i| old.get(i).map(|m| m.device.clone()));
+        let (mapped, exact) = monitor_slot_map(&old, &new, &identities);
+        assert_eq!(mapped[0], 0);
+        assert_eq!(mapped[1], 0);
+        assert!(exact[0]);
+        assert!(!exact[1]);
+    }
 
     const TEST_SUBKEY: &str = r"Software\tile-rs-test";
     const TEST_VALUE: &str = "tile-rs-test";

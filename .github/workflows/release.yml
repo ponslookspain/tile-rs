@@ -28,11 +28,21 @@ jobs:
               Select-Object -First 1).Matches[0].Groups[1].Value
           if ($tagVersion -ne $ver) { throw "Tag $env:TAG does not match Cargo.toml version $ver" }
 
+      - name: Format
+        run: cargo fmt --all -- --check
+
+      - name: Clippy (warnings are errors)
+        run: cargo clippy --all-targets -- -D warnings
+
       - name: Test
         run: cargo test --all-targets
 
       - name: Package
         shell: pwsh
+        env:
+          TILE_RS_SIGN_CERT_PFX_BASE64: ${{ secrets.WINDOWS_CERT_PFX_BASE64 }}
+          TILE_RS_SIGN_CERT_PASSWORD: ${{ secrets.WINDOWS_CERT_PASSWORD }}
+          TILE_RS_SIGN_THUMBPRINT: ${{ secrets.WINDOWS_CERT_THUMBPRINT }}
         run: ./scripts/package.ps1
 
       - name: Install Inno Setup
@@ -40,6 +50,10 @@ jobs:
 
       - name: Build the Windows installer
         shell: pwsh
+        env:
+          TILE_RS_SIGN_CERT_PFX_BASE64: ${{ secrets.WINDOWS_CERT_PFX_BASE64 }}
+          TILE_RS_SIGN_CERT_PASSWORD: ${{ secrets.WINDOWS_CERT_PASSWORD }}
+          TILE_RS_SIGN_THUMBPRINT: ${{ secrets.WINDOWS_CERT_THUMBPRINT }}
         run: ./scripts/build-installer.ps1
 
       - name: Release notes from CHANGELOG.md
@@ -53,8 +67,16 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          $files = Get-ChildItem release\*.zip, release\*.sha256, dist\*-setup.exe |
-              ForEach-Object { $_.FullName }
+          $version = $env:TAG.TrimStart('v')
+          $expectedAssets = @(
+              "release\tile-rs-v$version-windows-x64.zip",
+              "release\tile-rs-v$version-windows-x64.zip.sha256",
+              "dist\tile-rs-$version-setup.exe"
+          )
+          $files = foreach ($asset in $expectedAssets) {
+              if (-not (Test-Path $asset)) { throw "Expected release asset is missing: $asset" }
+              (Resolve-Path $asset).Path
+          }
           $ghArgs = @('release', 'create', $env:TAG) + $files +
               @('--title', "tile-rs $env:TAG", '--notes-file', 'notes.md')
           if ($env:TAG -match '-') { $ghArgs += '--prerelease' }

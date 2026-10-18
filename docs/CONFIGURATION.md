@@ -21,9 +21,11 @@ These keys go at the top of the file, before any `[section]`.
 
 | Key | Default | Meaning |
 |---|---|---|
-| `layout` | `"spiral"` | Tiling layout. Only `spiral` (dwindle) is implemented; `master_stack`, `grid` and `columns` are planned. |
-| `gap` | `10` | Pixels between windows and around the screen edges. `0`–`200`. |
+| `layout` | `"spiral"` | Tiling layout: `spiral` (dwindle, the default), `master_stack` (a master column on the left, the rest stacked on the right), `grid` or `columns`. |
+| `inner_gap` | `10` | Pixels between neighbouring windows. `0`–`200`. |
+| `outer_gap` | `10` | Pixels around the screen edges. `0`–`200`. The old `gap` still sets both. |
 | `animations` | `true` | Smooth movement of windows when the layout changes. |
+| `snapshot_animations` | `true` | Stretch frozen window images during mouse resize and eligible layout/workspace transitions. Enables draggable gaps in Spiral and Master/stack when `inner_gap > 0`: actual windows keep their sizes until release; Escape cancels. Hardware Direct2D rendering with GDI fallback. Overlapping, occluded or oversized captures disable gap dragging; native window edges remain available. Also available in the launcher. See [window motion](WINDOW-MOTION.md). |
 | `animation_ms` | `140` | Duration of the animation, `0`–`1000` ms. `0` turns animations off. Short moves take proportionally less time. |
 | `easing` | `"out_cubic"` | Animation curve: `linear`, `out_quad`, `out_cubic`, `out_quart`, `in_out_cubic`. |
 | `resize_step` | `40` | Pixels per key press of the grow/shrink hotkeys, `1`–`500`. A held key uses smaller, instant steps. |
@@ -36,7 +38,9 @@ These keys go at the top of the file, before any `[section]`.
 | `min_tile_height` | `320` | Comfortable minimum tile height. |
 | `max_tiles` | `0` | Maximum tiles per workspace; `0` = chosen automatically from the screen size. |
 | `auto_overflow` | `true` | When a workspace is full, open a new window on the next workspace and switch to it. |
-| `workspace_indicator` | `true` | Small row of workspace dots at the top of the screen. Hover a dot to highlight it and click it to switch to that workspace. |
+| `workspace_indicator` | `true` | Minimal workspace dots at the top of each monitor. The active dot is blue with an outline, occupied workspaces glow blue, and empty dots are dim. Click a dot to switch that monitor. |
+| `workspace_indicator_size` | `"medium"` | Visual dot and click target size: `"small"`, `"medium"`, or `"large"`. This can also be changed in the launcher. |
+| `focus_follows_mouse` | `false` | Move focus to the tiled window under the mouse pointer when the pointer moves onto it. This option is also available in the settings launcher. |
 
 ## Hotkeys
 
@@ -68,13 +72,17 @@ you which one and carries on with the rest.
 | `swap_left`, `swap_down`, `swap_up`, `swap_right` | Swap the focused window with its neighbour. |
 | `workspace_1` … `workspace_9` | Switch to a workspace. |
 | `move_to_workspace_1` … `move_to_workspace_9` | Move the focused window to a workspace and switch to it (the window keeps focus). |
+| `workspace_next`, `workspace_prev` | Switch to the next / previous workspace, wrapping around at the ends. |
+| `move_to_next_workspace`, `move_to_prev_workspace` | Move the focused window to the next / previous workspace (wrapping) and follow it. |
 | `grow_width`, `shrink_width` | Make the focused window wider / narrower. Repeats while the key is held. |
 | `grow_height`, `shrink_height` | Make the focused window taller / shorter. Repeats while the key is held. |
 | `minimize` | Minimize the focused window (a fullscreen game or a normal tiled window). |
+| `toggle_float` | Float the focused window in place, or tile it again. Lasts for the session. |
 | `close` | Close the focused window (like Alt+F4). |
 | `pause` | Pause / resume tiling. While paused only `pause`, `quit`, `reload_config` and `edit_config` keep their keys. |
 | `quit` | Quit; all windows are brought back to the current workspace. |
 | `retile` | Re-apply the layout and reset all sizes to equal halves. |
+| `cycle_layout` | Switch to the next tiling layout (spiral → master-stack → grid → columns → spiral) and save it. |
 | `reload_config` | Re-read `config.toml`. |
 | `edit_config` | Open `config.toml` in Notepad. |
 
@@ -88,17 +96,22 @@ An unknown action name is an error (it is reported on reload, with the name).
 | `swap_*` | `alt+shift+h/j/k/l`, `alt+shift+left/down/up/right` |
 | `workspace_N` | `alt+N` |
 | `move_to_workspace_N` | `alt+shift+N` |
+| `workspace_next` / `workspace_prev` | `alt+shift+period` / `alt+shift+comma` |
+| `move_to_next_workspace` / `move_to_prev_workspace` | `ctrl+alt+period` / `ctrl+alt+comma` |
 | `grow_width` / `shrink_width` | `alt+plus`, `alt+numpad_add` / `alt+minus`, `alt+numpad_subtract` |
 | `minimize` | `alt+shift+m` |
+| `toggle_float` | `alt+shift+f` |
 | `close` | `alt+shift+q` |
+| `cycle_layout` | `ctrl+alt+l` |
 | `pause` | `ctrl+alt+p`, `alt+shift+p` |
 | `quit` | `ctrl+alt+q` |
 
 No default keys: `grow_height`, `shrink_height`, `retile`, `reload_config`, `edit_config`
 (present as commented examples in the generated file).
 
-An older `config.toml` is updated in place on start-up: missing `close` and `quit` bindings are
-added (a commented-out or removed one is left alone).
+An older `config.toml` is updated in place on start-up: missing `toggle_float`, `close`,
+`cycle_layout`, `quit`, `workspace_next`, `workspace_prev`, `move_to_next_workspace` and
+`move_to_prev_workspace` bindings are added (a commented-out or removed one is left alone).
 
 ## Window rules
 
@@ -126,13 +139,15 @@ A rule needs at least one of `process`, `class`, `title`, and all given fields m
 Use `tile-rs.exe list` to see what the windows on your screen are called.
 
 Windows that are never tiled regardless of rules: invisible or minimized windows, dialogs
-(owned windows), tool windows, windows that cannot be resized, the taskbar and desktop, and
-windows you have maximized yourself.
+(owned windows), tool windows, windows that cannot be resized, the taskbar and desktop, windows
+you have maximized yourself, and the windows of elevated (administrator) processes while tile-rs
+itself is not running as administrator.
 
 ## Example: a compact personal config
 
 ```toml
-gap = 6
+inner_gap = 4
+outer_gap = 10
 animation_ms = 100
 border_color = "#ff9e64"
 

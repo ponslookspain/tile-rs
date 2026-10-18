@@ -22,6 +22,8 @@ use windows::Win32::UI::WindowsAndMessaging::{
 use crate::config::{self, Action};
 
 const WM_TRAY: u32 = WM_APP + 1;
+const WM_LAUNCHER_RELOAD: u32 = WM_APP + 2;
+const WM_LAUNCHER_QUIT: u32 = WM_APP + 3;
 const TRAY_UID: u32 = 1;
 
 static TRAY_HWND: AtomicIsize = AtomicIsize::new(0);
@@ -37,6 +39,7 @@ const M_FOLDER: usize = 6;
 const M_LOG: usize = 7;
 const M_AUTOSTART: usize = 8;
 const M_HOTKEYS: usize = 9;
+const M_UPDATE: usize = 11;
 const M_QUIT: usize = 10;
 
 pub fn wide(s: &str) -> Vec<u16> {
@@ -146,6 +149,28 @@ pub fn update() {
     }
 }
 
+/// Ask the running manager process to reload the config after the launcher saved it.
+pub fn request_manager_reload() -> bool {
+    post_manager_message(WM_LAUNCHER_RELOAD)
+}
+
+/// Ask the running manager process to quit from the launcher.
+pub fn request_manager_quit() -> bool {
+    post_manager_message(WM_LAUNCHER_QUIT)
+}
+
+fn post_manager_message(message: u32) -> bool {
+    unsafe {
+        let Ok(hwnd) = windows::Win32::UI::WindowsAndMessaging::FindWindowW(
+            w!("tile-rs-tray"),
+            PCWSTR::null(),
+        ) else {
+            return false;
+        };
+        !hwnd.0.is_null() && PostMessageW(Some(hwnd), message, WPARAM(0), LPARAM(0)).is_ok()
+    }
+}
+
 pub fn remove() {
     let raw = TRAY_HWND.swap(0, Ordering::Relaxed);
     if raw == 0 {
@@ -242,6 +267,7 @@ fn show_menu(hwnd: HWND) {
         item(menu, M_HOTKEYS, "Show hotkeys", false);
         item(menu, M_FOLDER, "Open config folder", false);
         item(menu, M_LOG, "Open log", false);
+        item(menu, M_UPDATE, "Check for updates", false);
         let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
         item(
             menu,
@@ -283,6 +309,7 @@ fn show_menu(hwnd: HWND) {
                 "notepad.exe",
                 &format!("\"{}\"", crate::log_file().display()),
             ),
+            M_UPDATE => crate::update::check_and_notify(),
             M_AUTOSTART => {
                 let want = !crate::autostart_enabled();
                 if !crate::set_autostart(want) {
@@ -335,6 +362,14 @@ fn show_hotkeys() {
 }
 
 unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+    if msg == WM_LAUNCHER_RELOAD {
+        crate::reload_config();
+        return LRESULT(0);
+    }
+    if msg == WM_LAUNCHER_QUIT {
+        crate::dispatch_quit();
+        return LRESULT(0);
+    }
     if msg == WM_TRAY {
         match lparam.0 as u32 {
             WM_RBUTTONUP => show_menu(hwnd),

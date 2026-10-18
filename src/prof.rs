@@ -7,6 +7,7 @@ pub static PROFILE: AtomicBool = AtomicBool::new(false);
 
 /// How many times `collect()` (a full `EnumWindows` walk) ran.
 pub static COLLECT_CALLS: AtomicU32 = AtomicU32::new(0);
+pub static PLACEMENTS: AtomicU32 = AtomicU32::new(0);
 
 pub fn on() -> bool {
     PROFILE.load(Ordering::Relaxed)

@@ -1,0 +1,462 @@
+import { ComboBox, LineEdit, TextEdit } from "std-widgets.slint";
+
+component NavItem inherits Rectangle {
+    in property <string> title;
+    in property <bool> selected: false;
+    callback activated();
+    height: 36px;
+    border-radius: 6px;
+    background: selected ? #202b31 : transparent;
+    Text {
+        x: 12px;
+        height: parent.height;
+        vertical-alignment: center;
+        color: selected ? #f2f6f8 : #a5afb6;
+        font-size: 12px;
+        text: title;
+    }
+    TouchArea { clicked => { root.activated(); } }
+}
+
+component ActionButton inherits Rectangle {
+    in property <string> label;
+    in property <bool> primary: false;
+    in property <length> button-width: 112px;
+    callback activated();
+    width: button-width;
+    height: 30px;
+    border-radius: 6px;
+    background: primary ? #42c7a1 : #1b2226;
+    border-width: 1px;
+    border-color: primary ? #42c7a1 : #303a40;
+    Text {
+        text: label;
+        color: primary ? #081a16 : #e5ecef;
+        font-size: 11px;
+        font-weight: 600;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+    TouchArea { clicked => { root.activated(); } }
+}
+
+component ToggleRow inherits Rectangle {
+    in property <string> label;
+    in property <bool> checked: false;
+    callback changed(bool);
+    height: 30px;
+    background: transparent;
+    HorizontalLayout {
+        spacing: 8px;
+        Rectangle {
+            width: 14px;
+            height: 14px;
+            border-radius: 4px;
+            border-width: 1px;
+            border-color: checked ? #42c7a1 : #58646c;
+            background: checked ? #42c7a1 : #1b2226;
+            Text {
+                text: checked ? "✓" : "";
+                color: #081a16;
+                font-size: 9px;
+                font-weight: 700;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+        }
+        Text {
+            text: label;
+            color: #c5cdd1;
+            font-size: 11px;
+            vertical-alignment: center;
+            horizontal-stretch: 1;
+        }
+    }
+    TouchArea { clicked => { root.changed(!root.checked); } }
+}
+
+component SettingCard inherits Rectangle {
+    in property <string> title;
+    in property <string> description: "";
+    in property <length> card-height: 130px;
+    height: card-height;
+    border-radius: 9px;
+    background: #151a1e;
+    border-width: 1px;
+    border-color: #252d32;
+}
+
+component NumberField inherits Rectangle {
+    in property <string> label;
+    in-out property <string> value;
+    in property <length> field-width: 90px;
+    width: field-width;
+    height: 52px;
+    VerticalLayout {
+        spacing: 5px;
+        Text { text: label; color: #aab4ba; font-size: 11px; height: 16px; }
+        LineEdit {
+            text: value;
+            height: 30px;
+            edited(text) => { value = text; }
+        }
+    }
+}
+
+component DotCell inherits Rectangle {
+    in property <int> state: 0; // 0 empty, 1 occupied, 2 active
+    in property <length> diameter: 14px;
+    callback activated();
+    width: 32px;
+    height: 32px;
+    background: transparent;
+    Rectangle {
+        x: (parent.width - diameter - 6px) / 2;
+        y: (parent.height - diameter - 6px) / 2;
+        width: diameter + 6px;
+        height: diameter + 6px;
+        border-radius: (diameter + 6px) / 2;
+        background: state == 2 ? #b7dcff : (state == 1 ? #183e63 : transparent);
+    }
+    Rectangle {
+        x: (parent.width - diameter) / 2;
+        y: (parent.height - diameter) / 2;
+        width: diameter;
+        height: diameter;
+        border-radius: diameter / 2;
+        background: state == 2 ? #278ff5 : (state == 1 ? #2780d8 : #48515a);
+    }
+    TouchArea { clicked => { root.activated(); } }
+}
+
+export component MainWindow inherits Window {
+    title: "tile-rs Settings";
+    preferred-width: 980px;
+    preferred-height: 690px;
+    min-width: 800px;
+    min-height: 590px;
+    background: #0d1013;
+
+    in-out property <int> page: 0;
+    in-out property <int> layout_index: 0;
+    in-out property <int> indicator_size: 1;
+    in-out property <bool> animations: true;
+    in-out property <bool> snapshot_animations: true;
+    in-out property <bool> auto_overflow: true;
+    in-out property <bool> show_indicator: true;
+    in-out property <bool> focus_follows_mouse: false;
+    in-out property <bool> highlight_window: true;
+    in-out property <bool> autostart: false;
+    in-out property <string> inner_gap: "10";
+    in-out property <string> outer_gap: "10";
+    in-out property <string> animation_ms: "140";
+    in-out property <string> easing: "out_cubic";
+    in-out property <string> resize_step: "80";
+    in-out property <string> min_tile_width: "480";
+    in-out property <string> min_tile_height: "320";
+    in-out property <string> max_tiles: "0";
+    in-out property <string> border_color: "#8dbcff";
+    in-out property <string> border_width: "2";
+    in-out property <int> fullscreen_windows: 0;
+    in-out property <int> media_windows: 0;
+    in-out property <string> hotkeys: "";
+    in-out property <string> status: "Настройки загружены";
+
+    callback check_updates();
+    callback open_github();
+    callback save();
+    callback open_config();
+    callback open_log();
+    callback quit_manager();
+
+    VerticalLayout {
+        spacing: 0px;
+
+        Rectangle {
+            height: 56px;
+            background: #12171b;
+            HorizontalLayout {
+                padding-left: 20px;
+                padding-right: 16px;
+                spacing: 10px;
+                Text { text: "tile-rs"; color: #f3f6f8; font-size: 21px; font-weight: 700; vertical-alignment: center; }
+                Text { text: "Настройки рабочего пространства"; color: #87939b; font-size: 12px; vertical-alignment: center; horizontal-stretch: 1; }
+                ActionButton { label: "Проверить обновления"; button-width: 152px; activated => { root.check_updates(); } }
+                ActionButton { label: "GitHub ↗"; button-width: 84px; activated => { root.open_github(); } }
+            }
+        }
+
+        HorizontalLayout {
+            spacing: 0px;
+            Rectangle {
+                width: 196px;
+                background: #101417;
+                VerticalLayout {
+                    padding-top: 12px;
+                    padding-bottom: 12px;
+                    padding-left: 12px;
+                    padding-right: 12px;
+                    spacing: 5px;
+                    Text { text: "ПАРАМЕТРЫ"; color: #75828a; font-size: 9px; font-weight: 700; height: 26px; vertical-alignment: center; }
+                    for item[index] in ["Общие", "Раскладка", "Рабочие столы", "Поведение окон", "Горячие клавиши", "Дополнительно"]: NavItem {
+                        title: item;
+                        selected: page == index;
+                        activated => { page = index; }
+                    }
+                    Rectangle { vertical-stretch: 1; }
+                    Rectangle {
+                        height: 62px;
+                        border-radius: 7px;
+                        background: #171d21;
+                        VerticalLayout {
+                            padding: 10px;
+                            spacing: 3px;
+                            Text { text: "tile-rs запущен"; color: #e6ecef; font-size: 12px; }
+                            Text { text: "Версия 0.4.0 · Windows"; color: #829099; font-size: 10px; }
+                        }
+                    }
+                }
+            }
+
+            Rectangle {
+                background: #0d1013;
+                VerticalLayout {
+                    padding: 22px;
+                    spacing: 10px;
+
+                    HorizontalLayout {
+                        height: 38px;
+                        Text {
+                            text: ["Общие", "Раскладка", "Рабочие столы", "Поведение окон", "Горячие клавиши", "Дополнительно"][page];
+                            color: #f3f6f8;
+                            font-size: 22px;
+                            font-weight: 700;
+                            vertical-alignment: center;
+                            horizontal-stretch: 1;
+                        }
+                        ActionButton { label: "Сохранить"; primary: true; button-width: 104px; activated => { root.save(); } }
+                    }
+                    Text { text: status; color: #89969d; font-size: 11px; height: 18px; }
+
+                    if page == 0: VerticalLayout {
+                        spacing: 12px;
+                        SettingCard {
+                            card-height: 180px;
+                            VerticalLayout {
+                                padding: 14px;
+                                spacing: 10px;
+                                Text { text: "Раскладка окон"; color: #edf2f4; font-size: 14px; font-weight: 600; height: 20px; }
+                                Text { text: "Выберите способ распределения окон на экране."; color: #93a0a7; font-size: 11px; height: 16px; }
+                                HorizontalLayout {
+                                    spacing: 8px;
+                                    for layout_name[index] in ["Спираль", "Мастер / стек", "Сетка", "Колонки"]: Rectangle {
+                                        horizontal-stretch: 1;
+                                        height: 80px;
+                                        border-radius: 7px;
+                                        background: layout_index == index ? #1c302e : #1c2226;
+                                        border-width: 1px;
+                                        border-color: layout_index == index ? #38c9a4 : #2b3338;
+                                        VerticalLayout {
+                                            padding: 8px;
+                                            spacing: 5px;
+                                            Text { text: "◫"; color: layout_index == index ? #46d7b0 : #8b979e; font-size: 19px; }
+                                            Text { text: layout_name; color: #e4eaed; font-size: 10px; }
+                                        }
+                                        TouchArea { clicked => { layout_index = index; } }
+                                    }
+                                }
+                            }
+                        }
+                        SettingCard {
+                            card-height: 220px;
+                            HorizontalLayout {
+                                padding: 14px;
+                                spacing: 18px;
+                                VerticalLayout {
+                                    horizontal-stretch: 1;
+                                    spacing: 8px;
+                                    Text { text: "Анимация"; color: #edf2f4; font-size: 14px; font-weight: 600; height: 20px; }
+                                    ToggleRow { label: "Плавно перемещать окна"; checked: animations; changed(value) => { animations = value; } }
+                                    ToggleRow { label: "Растягивать снимки окон"; checked: snapshot_animations; changed(value) => { snapshot_animations = value; } }
+                                    HorizontalLayout {
+                                        Text { text: "Длительность (мс)"; color: #aab4ba; font-size: 11px; vertical-alignment: center; horizontal-stretch: 1; }
+                                        NumberField { label: ""; value <=> animation_ms; field-width: 90px; }
+                                    }
+                                    HorizontalLayout {
+                                        Text { text: "Кривая движения"; color: #aab4ba; font-size: 11px; vertical-alignment: center; horizontal-stretch: 1; }
+                                        ComboBox { model: ["linear", "out_quad", "out_cubic", "out_quart", "in_out_cubic"]; current-value: easing; selected(value) => { easing = value; } }
+                                    }
+                                }
+                                Rectangle { width: 1px; background: #293137; }
+                                VerticalLayout {
+                                    width: 210px;
+                                    spacing: 5px;
+                                    Text { text: "Интервалы"; color: #edf2f4; font-size: 14px; font-weight: 600; height: 20px; }
+                                    NumberField { label: "Между окнами"; value <=> inner_gap; field-width: 210px; }
+                                    NumberField { label: "От края экрана"; value <=> outer_gap; field-width: 210px; }
+                                }
+                            }
+                        }
+                    }
+
+                    if page == 1: VerticalLayout {
+                        spacing: 12px;
+                        SettingCard {
+                            card-height: 148px;
+                            VerticalLayout {
+                                padding: 14px;
+                                spacing: 12px;
+                                Text { text: "Размеры и лимиты"; color: #edf2f4; font-size: 14px; font-weight: 600; height: 20px; }
+                                HorizontalLayout {
+                                    spacing: 14px;
+                                    NumberField { label: "Минимальная ширина"; value <=> min_tile_width; field-width: 140px; }
+                                    NumberField { label: "Минимальная высота"; value <=> min_tile_height; field-width: 140px; }
+                                    NumberField { label: "Лимит окон (0 — авто)"; value <=> max_tiles; field-width: 150px; }
+                                    NumberField { label: "Шаг изменения размера"; value <=> resize_step; field-width: 150px; }
+                                    Rectangle { horizontal-stretch: 1; }
+                                }
+                            }
+                        }
+                        SettingCard {
+                            card-height: 86px;
+                            VerticalLayout {
+                                padding: 14px;
+                                spacing: 4px;
+                                Text { text: "Поведение раскладки"; color: #edf2f4; font-size: 14px; font-weight: 600; height: 20px; }
+                                ToggleRow { label: "Переносить новые окна на следующий рабочий стол, если текущий заполнен"; checked: auto_overflow; changed(value) => { auto_overflow = value; } }
+                            }
+                        }
+                        Text { text: "Сейчас доступна спиральная раскладка. Другие варианты отображаются как будущие режимы."; color: #849199; font-size: 11px; height: 20px; }
+                    }
+
+                    if page == 2: VerticalLayout {
+                        spacing: 12px;
+                        SettingCard {
+                            card-height: 184px;
+                            VerticalLayout {
+                                padding: 14px;
+                                spacing: 9px;
+                                HorizontalLayout {
+                                    height: 22px;
+                                    Text { text: "Индикатор рабочих столов"; color: #edf2f4; font-size: 14px; font-weight: 600; horizontal-stretch: 1; }
+                                    Text { text: "Предпросмотр"; color: #849199; font-size: 10px; }
+                                }
+                                ToggleRow { label: "Показывать переключатель на каждом мониторе"; checked: show_indicator; changed(value) => { show_indicator = value; } }
+                                HorizontalLayout {
+                                    spacing: 2px;
+                                    for workspace[index] in [1, 2, 3, 4, 5, 6, 7, 8, 9]: DotCell {
+                                        state: index == 0 ? 2 : (index == 1 ? 1 : 0);
+                                        diameter: indicator_size == 0 ? 6px : (indicator_size == 2 ? 10px : 8px);
+                                    }
+                                }
+                                HorizontalLayout {
+                                    spacing: 7px;
+                                    for size_name[index] in ["Маленький", "Средний", "Большой"]: Rectangle {
+                                        width: 104px;
+                                        height: 28px;
+                                        border-radius: 6px;
+                                        background: indicator_size == index ? #20322f : #1c2226;
+                                        border-width: 1px;
+                                        border-color: indicator_size == index ? #38c9a4 : #30383d;
+                                        Text { text: size_name; color: #e3e9ec; font-size: 10px; horizontal-alignment: center; vertical-alignment: center; }
+                                        TouchArea { clicked => { indicator_size = index; } }
+                                    }
+                                    Text { text: "Активный — синий с обводкой · занятый — синий · пустой — тусклый"; color: #829099; font-size: 10px; vertical-alignment: center; }
+                                }
+                            }
+                        }
+                        SettingCard {
+                            card-height: 82px;
+                            VerticalLayout {
+                                padding: 14px;
+                                spacing: 4px;
+                                Text { text: "Фокус"; color: #edf2f4; font-size: 14px; font-weight: 600; height: 20px; }
+                                ToggleRow { label: "Передавать фокус окну под указателем"; checked: focus_follows_mouse; changed(value) => { focus_follows_mouse = value; } }
+                            }
+                        }
+                    }
+
+                    if page == 3: VerticalLayout {
+                        spacing: 12px;
+                        HorizontalLayout {
+                            spacing: 12px;
+                            SettingCard {
+                                horizontal-stretch: 1;
+                                card-height: 160px;
+                                VerticalLayout {
+                                    padding: 14px;
+                                    spacing: 10px;
+                                    Text { text: "Полноэкранные приложения"; color: #edf2f4; font-size: 14px; font-weight: 600; height: 20px; }
+                                    Text { text: "При переключении на другой рабочий стол:"; color: #aab4ba; font-size: 11px; height: 16px; }
+                                    ComboBox { model: ["Сворачивать и восстанавливать", "Оставлять без изменений"]; current-index: fullscreen_windows; selected(value) => { fullscreen_windows = self.current-index; } }
+                                    Text { text: "Окна с фото и видео:"; color: #aab4ba; font-size: 11px; height: 16px; }
+                                    ComboBox { model: ["Оставлять плавающими", "Размещать плиткой"]; current-index: media_windows; selected(value) => { media_windows = self.current-index; } }
+                                }
+                            }
+                            SettingCard {
+                                horizontal-stretch: 1;
+                                card-height: 160px;
+                                VerticalLayout {
+                                    padding: 14px;
+                                    spacing: 8px;
+                                    Text { text: "Подсветка активного окна"; color: #edf2f4; font-size: 14px; font-weight: 600; height: 20px; }
+                                    ToggleRow { label: "Показывать рамку"; checked: highlight_window; changed(value) => { highlight_window = value; } }
+                                    HorizontalLayout {
+                                        spacing: 8px;
+                                        NumberField { label: "Цвет (#RRGGBB)"; value <=> border_color; field-width: 126px; }
+                                        NumberField { label: "Толщина (px)"; value <=> border_width; field-width: 96px; }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    if page == 4: VerticalLayout {
+                        spacing: 9px;
+                        Text { text: "Изменяйте сочетания в формате action = key. Несколько сочетаний можно задать списком TOML."; color: #aab4ba; font-size: 11px; height: 18px; }
+                        TextEdit {
+                            text: hotkeys;
+                            vertical-stretch: 1;
+                            edited(text) => { hotkeys = text; }
+                        }
+                    }
+
+                    if page == 5: VerticalLayout {
+                        spacing: 12px;
+                        SettingCard {
+                            card-height: 104px;
+                            VerticalLayout {
+                                padding: 14px;
+                                spacing: 8px;
+                                Text { text: "Запуск и диагностика"; color: #edf2f4; font-size: 14px; font-weight: 600; height: 20px; }
+                                ToggleRow { label: "Запускать tile-rs при входе в Windows"; checked: autostart; changed(value) => { autostart = value; } }
+                                HorizontalLayout {
+                                    spacing: 8px;
+                                    ActionButton { label: "Открыть конфиг"; activated => { root.open_config(); } }
+                                    ActionButton { label: "Открыть журнал"; activated => { root.open_log(); } }
+                                }
+                            }
+                        }
+                        SettingCard {
+                            card-height: 92px;
+                            VerticalLayout {
+                                padding: 14px;
+                                spacing: 6px;
+                                Text { text: "Расширенные параметры"; color: #edf2f4; font-size: 14px; font-weight: 600; height: 20px; }
+                                Text { text: "Правила приложений и параметры, которые редко меняются, остаются в config.toml."; color: #aab4ba; font-size: 11px; }
+                                Text { text: "Версия 0.4.0 · Windows x64"; color: #829099; font-size: 10px; }
+                            }
+                        }
+                    }
+
+                    Rectangle { vertical-stretch: 1; }
+                    HorizontalLayout {
+                        height: 30px;
+                        Text { text: "Закрытие окна оставляет tile-rs в системном трее"; color: #77858d; font-size: 10px; vertical-alignment: center; horizontal-stretch: 1; }
+                        ActionButton { label: "Выйти из tile-rs"; button-width: 112px; activated => { root.quit_manager(); } }
+                    }
+                }
+            }
+        }
+    }
+}

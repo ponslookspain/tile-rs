@@ -29,6 +29,12 @@ pub enum Action {
     /// 0-based workspace index
     Workspace(u8),
     MoveTo(u8),
+    /// Switch to the next / previous workspace, wrapping around at the ends.
+    WorkspaceNext,
+    WorkspacePrev,
+    /// Move the focused window to the next / previous workspace (wrapping) and follow it.
+    MoveToNext,
+    MoveToPrev,
     /// Grow / shrink the focused window's width (or height) by `resize_step` pixels.
     Resize {
         width: bool,
@@ -36,11 +42,15 @@ pub enum Action {
     },
     /// Minimize the focused window.
     Minimize,
+    /// Toggle the focused window between tiled and floating.
+    ToggleFloat,
     /// Close the focused window (like Alt+F4).
     Close,
     Pause,
     Quit,
     Retile,
+    /// Switch to the next tiling layout (spiral -> master-stack -> grid -> columns -> spiral).
+    CycleLayout,
     ReloadConfig,
     EditConfig,
 }
@@ -64,6 +74,25 @@ pub enum MediaWindows {
     Float,
     /// Tile it like any other window.
     Tile,
+}
+
+/// Visual and clickable size of the workspace indicator.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum IndicatorSize {
+    Small,
+    #[default]
+    Medium,
+    Large,
+}
+
+impl IndicatorSize {
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Small => "small",
+            Self::Medium => "medium",
+            Self::Large => "large",
+        }
+    }
 }
 
 /// The tiling layout. Only `Spiral` is implemented so far; the others are placeholders (they are
@@ -114,8 +143,12 @@ enum OneOrMany {
 #[derive(Deserialize, Default, Debug)]
 struct RawConfig {
     layout: Option<String>,
+    /// Legacy single gap (used for both inner and outer unless either is set).
     gap: Option<i32>,
+    inner_gap: Option<i32>,
+    outer_gap: Option<i32>,
     animations: Option<bool>,
+    snapshot_animations: Option<bool>,
     animation_ms: Option<u32>,
     easing: Option<String>,
     fullscreen_windows: Option<String>,
@@ -129,6 +162,8 @@ struct RawConfig {
     max_tiles: Option<u32>,
     auto_overflow: Option<bool>,
     workspace_indicator: Option<bool>,
+    workspace_indicator_size: Option<String>,
+    focus_follows_mouse: Option<bool>,
     #[serde(default)]
     hotkeys: BTreeMap<String, OneOrMany>,
     #[serde(default)]
@@ -139,8 +174,12 @@ struct RawConfig {
 pub struct Config {
     /// The tiling layout (`spiral` for now).
     pub layout: Layout,
-    pub gap: i32,
+    /// Gap between neighbouring windows, in pixels.
+    pub inner_gap: i32,
+    /// Gap around the screen edges, in pixels.
+    pub outer_gap: i32,
     pub animations: bool,
+    pub snapshot_animations: bool,
     pub animation_ms: u32,
     /// Easing curve of the animations.
     pub easing: Easing,
@@ -166,6 +205,9 @@ pub struct Config {
     pub auto_overflow: bool,
     /// Show the small workspace indicator.
     pub workspace_indicator: bool,
+    pub workspace_indicator_size: IndicatorSize,
+    /// Focus the window under the mouse pointer when it moves over a tiled window.
+    pub focus_follows_mouse: bool,
     /// (action, "alt+shift+h")
     pub bindings: Vec<(Action, String)>,
     pub rules: Vec<Rule>,
@@ -191,12 +233,14 @@ pub fn default_config() -> String {
 # are planned.
 layout = "spiral"
 
-# Gap between windows and around the screen edges, in pixels.
-gap = 10
+# Gap between neighbouring windows (inner) and around the screen edges (outer), in pixels.
+inner_gap = 10
+outer_gap = 10
 
 # Smooth window movement when the layout changes (0..1000 ms; 0 or false = instant).
 # If windows feel laggy on your PC, set animations = false.
 animations = true
+snapshot_animations = true # frozen images during resizing and layout transitions
 animation_ms = 140
 
 # Easing of the window animations: linear, out_quad, out_cubic (default), out_quart, in_out_cubic.
@@ -220,6 +264,10 @@ max_tiles = 0
 auto_overflow = true
 # Small indicator at the top of the screen showing the workspaces (dots).
 workspace_indicator = true
+workspace_indicator_size = "medium" # small, medium, large
+
+# Move focus to the window under the mouse pointer when it moves onto a tiled window.
+focus_follows_mouse = false
 
 # Windows that run fullscreen or borderless fullscreen (games, video players): "minimize" hides
 # them while their workspace is not shown and restores them when you switch back; "ignore" leaves
@@ -248,7 +296,9 @@ shrink_width  = ["alt+minus", "alt+numpad_subtract"]
 # grow_height   = "alt+shift+plus"
 # shrink_height = "alt+shift+minus"
 minimize      = "alt+shift+m"
+toggle_float  = "alt+shift+f"
 close         = "alt+shift+q"
+cycle_layout  = "ctrl+alt+l"
 pause         = ["ctrl+alt+p", "alt+shift+p"]
 quit          = "ctrl+alt+q"
 # Optional (also available from the tray menu):
@@ -263,6 +313,10 @@ quit          = "ctrl+alt+q"
     for n in 1..=WS_COUNT {
         s.push_str(&format!("move_to_workspace_{n} = \"alt+shift+{n}\"\n"));
     }
+    s.push_str("workspace_next = \"alt+shift+period\"\n");
+    s.push_str("workspace_prev = \"alt+shift+comma\"\n");
+    s.push_str("move_to_next_workspace = \"ctrl+alt+period\"\n");
+    s.push_str("move_to_prev_workspace = \"ctrl+alt+comma\"\n");
     s.push_str(
         r#"
 # Rules. A window matches when ALL given fields match
@@ -322,11 +376,27 @@ pub fn migrate(text: &str) -> Option<String> {
     if !has("minimize") {
         hot.push(r#"minimize      = "alt+shift+m""#.into());
     }
+    if !has("toggle_float") {
+        hot.push(r#"toggle_float  = "alt+shift+f""#.into());
+    }
     if !has("close") {
         hot.push(r#"close         = "alt+shift+q""#.into());
     }
+    if !has("cycle_layout") {
+        hot.push(r#"cycle_layout  = "ctrl+alt+l""#.into());
+    }
     if !has("quit") {
         hot.push(r#"quit          = "ctrl+alt+q""#.into());
+    }
+    for (key, spec) in [
+        ("workspace_next", "alt+shift+period"),
+        ("workspace_prev", "alt+shift+comma"),
+        ("move_to_next_workspace", "ctrl+alt+period"),
+        ("move_to_prev_workspace", "ctrl+alt+comma"),
+    ] {
+        if !has(key) {
+            hot.push(format!("{key} = \"{spec}\""));
+        }
     }
     if !hot.is_empty() {
         if let Some(i) = lines.iter().position(|l| l.trim() == "[hotkeys]") {
@@ -343,6 +413,13 @@ pub fn migrate(text: &str) -> Option<String> {
         top.push("# Tiling layout: spiral (the only one for now).".into());
         top.push("layout = \"spiral\"".into());
     }
+    if !has("inner_gap") && !has("gap") {
+        top.push("# Gap between neighbouring windows (inner) and around the edges (outer).".into());
+        top.push("inner_gap = 10".into());
+    }
+    if !has("outer_gap") && !has("gap") {
+        top.push("outer_gap = 10".into());
+    }
     if !has("animations") {
         top.push(
             "# Smooth window movement (animation_ms: 0..1000; animations = false = instant)."
@@ -352,6 +429,9 @@ pub fn migrate(text: &str) -> Option<String> {
     }
     if !has("animation_ms") {
         top.push("animation_ms = 140".into());
+    }
+    if !has("snapshot_animations") {
+        top.push("snapshot_animations = true".into());
     }
     if !has("easing") {
         top.push(
@@ -391,6 +471,13 @@ pub fn migrate(text: &str) -> Option<String> {
     }
     if !has("workspace_indicator") {
         top.push("workspace_indicator = true".into());
+    }
+    if !has("workspace_indicator_size") {
+        top.push("workspace_indicator_size = \"medium\" # small, medium, large".into());
+    }
+    if !has("focus_follows_mouse") {
+        top.push("# Focus the window under the mouse pointer when it moves onto it.".into());
+        top.push("focus_follows_mouse = false".into());
     }
     if !has("fullscreen_windows") {
         top.push(
@@ -496,6 +583,14 @@ fn parse_action(name: &str) -> Option<Action> {
     if let Some(d) = n.strip_prefix("swap_") {
         return dir(d).map(Action::Swap);
     }
+    // "next"/"prev" are not numbers, so they must be matched before the numbered prefixes
+    match n.as_str() {
+        "workspace_next" => return Some(Action::WorkspaceNext),
+        "workspace_prev" => return Some(Action::WorkspacePrev),
+        "move_to_next_workspace" => return Some(Action::MoveToNext),
+        "move_to_prev_workspace" => return Some(Action::MoveToPrev),
+        _ => {}
+    }
     if let Some(i) = n.strip_prefix("move_to_workspace_") {
         return ws(i).map(Action::MoveTo);
     }
@@ -520,10 +615,12 @@ fn parse_action(name: &str) -> Option<Action> {
             grow: false,
         }),
         "minimize" => Some(Action::Minimize),
+        "toggle_float" => Some(Action::ToggleFloat),
         "close" => Some(Action::Close),
         "pause" => Some(Action::Pause),
         "quit" => Some(Action::Quit),
         "retile" => Some(Action::Retile),
+        "cycle_layout" => Some(Action::CycleLayout),
         "reload_config" => Some(Action::ReloadConfig),
         "edit_config" => Some(Action::EditConfig),
         _ => None,
@@ -664,9 +761,17 @@ pub fn parse_color(s: &str) -> Result<u32, String> {
 pub fn parse(text: &str) -> Result<Config, String> {
     let raw: RawConfig = toml::from_str(text).map_err(|e| e.to_string())?;
     let layout = parse_layout(raw.layout.as_deref().unwrap_or("spiral"))?;
-    let gap = raw.gap.unwrap_or(10);
-    if !(0..=200).contains(&gap) {
-        return Err(format!("gap = {gap}: must be between 0 and 200"));
+    let inner_gap = raw.inner_gap.or(raw.gap).unwrap_or(10);
+    let outer_gap = raw.outer_gap.or(raw.gap).unwrap_or(10);
+    if !(0..=200).contains(&inner_gap) {
+        return Err(format!(
+            "inner_gap = {inner_gap}: must be between 0 and 200"
+        ));
+    }
+    if !(0..=200).contains(&outer_gap) {
+        return Err(format!(
+            "outer_gap = {outer_gap}: must be between 0 and 200"
+        ));
     }
     let animation_ms = raw.animation_ms.unwrap_or(140);
     if animation_ms > 1000 {
@@ -675,6 +780,7 @@ pub fn parse(text: &str) -> Result<Config, String> {
         ));
     }
     let animations = raw.animations.unwrap_or(true) && animation_ms > 0;
+    let snapshot_animations = raw.snapshot_animations.unwrap_or(true);
     let easing = parse_easing(raw.easing.as_deref().unwrap_or("out_cubic"))?;
     let fullscreen_windows =
         parse_fullscreen_windows(raw.fullscreen_windows.as_deref().unwrap_or("minimize"))?;
@@ -706,6 +812,18 @@ pub fn parse(text: &str) -> Result<Config, String> {
     }
     let auto_overflow = raw.auto_overflow.unwrap_or(true);
     let workspace_indicator = raw.workspace_indicator.unwrap_or(true);
+    let workspace_indicator_size = match raw.workspace_indicator_size.as_deref().unwrap_or("medium")
+    {
+        "small" => IndicatorSize::Small,
+        "medium" => IndicatorSize::Medium,
+        "large" => IndicatorSize::Large,
+        value => {
+            return Err(format!(
+                "workspace_indicator_size = \"{value}\": expected small, medium, or large"
+            ))
+        }
+    };
+    let focus_follows_mouse = raw.focus_follows_mouse.unwrap_or(false);
     let mut bindings = Vec::new();
     for (name, v) in raw.hotkeys {
         let action =
@@ -746,8 +864,10 @@ pub fn parse(text: &str) -> Result<Config, String> {
     }
     Ok(Config {
         layout,
-        gap,
+        inner_gap,
+        outer_gap,
         animations,
+        snapshot_animations,
         animation_ms,
         easing,
         fullscreen_windows,
@@ -761,6 +881,8 @@ pub fn parse(text: &str) -> Result<Config, String> {
         max_tiles,
         auto_overflow,
         workspace_indicator,
+        workspace_indicator_size,
+        focus_follows_mouse,
         bindings,
         rules: raw.rules,
     })
@@ -813,13 +935,23 @@ pub fn layout() -> Layout {
     with_cfg(|c| c.layout)
 }
 
-pub fn gap() -> i32 {
-    with_cfg(|c| c.gap)
+/// Gap between neighbouring windows.
+pub fn inner_gap() -> i32 {
+    with_cfg(|c| c.inner_gap)
+}
+
+/// Gap around the screen edges.
+pub fn outer_gap() -> i32 {
+    with_cfg(|c| c.outer_gap)
 }
 
 /// (animations enabled, duration in ms)
 pub fn animation() -> (bool, u32) {
     with_cfg(|c| (c.animations, c.animation_ms))
+}
+
+pub fn snapshot_animations() -> bool {
+    with_cfg(|c| c.snapshot_animations)
 }
 
 /// Easing curve of the animations.
@@ -873,6 +1005,11 @@ pub fn workspace_indicator() -> bool {
     with_cfg(|c| c.workspace_indicator)
 }
 
+/// Whether moving the pointer over a tiled window focuses it.
+pub fn focus_follows_mouse() -> bool {
+    with_cfg(|c| c.focus_follows_mouse)
+}
+
 /// Just the rules (cheaper than cloning the whole config on hot paths).
 pub fn rules() -> Vec<Rule> {
     with_cfg(|c| c.rules.clone())
@@ -886,8 +1023,9 @@ mod tests {
     fn default_config_parses() {
         let c = parse(&default_config()).expect("default config must parse");
         assert_eq!(c.layout, Layout::Spiral);
-        assert_eq!(c.gap, 10);
+        assert_eq!((c.inner_gap, c.outer_gap), (10, 10));
         assert!(c.animations);
+        assert!(c.snapshot_animations);
         assert_eq!(c.animation_ms, 140);
         assert_eq!(c.easing, Easing::OutCubic);
         assert_eq!(c.fullscreen_windows, FullscreenWindows::Minimize);
@@ -900,6 +1038,7 @@ mod tests {
         assert_eq!(c.max_tiles, 0);
         assert!(c.auto_overflow);
         assert!(c.workspace_indicator);
+        assert!(!c.focus_follows_mouse);
         assert!(c
             .bindings
             .iter()
@@ -908,6 +1047,14 @@ mod tests {
             .bindings
             .iter()
             .any(|(a, s)| *a == Action::Close && s == "alt+shift+q"));
+        assert!(c
+            .bindings
+            .iter()
+            .any(|(a, s)| *a == Action::CycleLayout && s == "ctrl+alt+l"));
+        assert!(c
+            .bindings
+            .iter()
+            .any(|(a, s)| *a == Action::ToggleFloat && s == "alt+shift+f"));
         assert!(c.bindings.iter().any(|(a, s)| {
             *a == Action::Resize {
                 width: true,
@@ -920,8 +1067,17 @@ mod tests {
                 grow: false,
             } && s == "alt+minus"
         }));
-        // 16 direction bindings + 18 workspace bindings + 4 resize + pause x2 + close + quit
-        assert!(c.bindings.len() >= 16 + 18 + 4 + 4);
+        // 16 direction + 18 workspace + 4 resize + 4 misc (pause x2, toggle_float, close,
+        // cycle_layout, quit) + 4 next/prev switch & move
+        assert!(c.bindings.len() >= 16 + 18 + 4 + 10);
+        assert!(c
+            .bindings
+            .iter()
+            .any(|(a, s)| *a == Action::WorkspaceNext && s == "alt+shift+period"));
+        assert!(c
+            .bindings
+            .iter()
+            .any(|(a, s)| *a == Action::MoveToPrev && s == "ctrl+alt+comma"));
         assert_eq!(c.rules.len(), 1);
         assert!(c
             .bindings
@@ -988,8 +1144,10 @@ mod tests {
         let once = migrate(OLD_CONFIG).unwrap();
         assert!(migrate(&once).is_none(), "second run must change nothing");
         // a key the user commented out or turned off is not re-added
-        let custom = "layout = \"spiral\"\ngap = 5\nanimations = false\n# animation_ms = 99\neasing = \"linear\"\nfullscreen_windows = \"ignore\"\nmedia_windows = \"tile\"\nresize_step = 10\nborder = false\n# border_color = \"#112233\"\nborder_width = 3\nmin_tile_width = 400\nmin_tile_height = 300\nmax_tiles = 6\nauto_overflow = false\nworkspace_indicator = false\n\n[hotkeys]\n# grow_width = \"alt+plus\"\n# shrink_width = \"alt+minus\"\nminimize = \"alt+shift+m\"\nclose = \"alt+shift+q\"\nquit = \"ctrl+alt+q\"\n";
-        assert!(migrate(custom).is_none());
+        let custom = "layout = \"spiral\"\ngap = 5\nanimations = false\n# animation_ms = 99\neasing = \"linear\"\nfullscreen_windows = \"ignore\"\nmedia_windows = \"tile\"\nresize_step = 10\nborder = false\n# border_color = \"#112233\"\nborder_width = 3\nmin_tile_width = 400\nmin_tile_height = 300\nmax_tiles = 6\nauto_overflow = false\nworkspace_indicator = false\nworkspace_indicator_size = \"small\"\nfocus_follows_mouse = true\n\n[hotkeys]\n# grow_width = \"alt+plus\"\n# shrink_width = \"alt+minus\"\nminimize = \"alt+shift+m\"\ntoggle_float = \"alt+shift+f\"\nclose = \"alt+shift+q\"\ncycle_layout = \"ctrl+alt+l\"\nquit = \"ctrl+alt+q\"\nworkspace_next = \"alt+shift+period\"\nworkspace_prev = \"alt+shift+comma\"\nmove_to_next_workspace = \"ctrl+alt+period\"\nmove_to_prev_workspace = \"ctrl+alt+comma\"\n";
+        let custom = format!("snapshot_animations = false\n{custom}");
+        assert!(migrate(&custom).is_none());
+        assert!(!parse(&custom).unwrap().snapshot_animations);
         // the freshly generated default never needs migrating
         assert!(migrate(&default_config()).is_none());
     }
@@ -1003,6 +1161,22 @@ mod tests {
             "only CRLF line breaks"
         );
         assert!(parse(&new).is_ok());
+    }
+
+    #[test]
+    fn gaps_split_from_the_legacy_single_gap() {
+        // the old `gap` still sets both
+        let c = parse("gap = 4").unwrap();
+        assert_eq!((c.inner_gap, c.outer_gap), (4, 4));
+        // separate values win
+        let c = parse("inner_gap = 2\nouter_gap = 8").unwrap();
+        assert_eq!((c.inner_gap, c.outer_gap), (2, 8));
+        // one set, the other falls back to the legacy gap
+        let c = parse("gap = 6\ninner_gap = 1").unwrap();
+        assert_eq!((c.inner_gap, c.outer_gap), (1, 6));
+        // out of range is rejected
+        assert!(parse("inner_gap = 999").is_err());
+        assert!(parse("outer_gap = -1").is_err());
     }
 
     #[test]

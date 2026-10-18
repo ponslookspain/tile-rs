@@ -11,6 +11,8 @@ titles can contain it.
 
 ## Building
 
+See [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) for the full run, test, packaging and release flow.
+
 You need [Rust](https://rustup.rs) (stable) and the C++ build tools of Visual Studio
 (*Desktop development with C++*).
 

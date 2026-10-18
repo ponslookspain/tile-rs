@@ -92,8 +92,27 @@ through a pull request, then release `X.Y.(Z+1)` as above.
 Do not move or delete tags. Mark the release as a pre-release or edit its notes with a warning,
 and publish a fixed `PATCH` version.
 
+## Code signing (optional)
+
+`scripts/sign.ps1` code-signs a file with `signtool.exe` (SHA-256, DigiCert RFC 3161 timestamp).
+It is called from `scripts/package.ps1` (the zipped exe) and `scripts/build-installer.ps1` (the
+`dist\tile-rs.exe` and the installer), and it is a **no-op unless a certificate is configured**, so
+local builds and unsigned releases keep working.
+
+To sign a release, add these repository secrets (Settings → Secrets and variables → Actions) and
+they are passed to the packaging steps automatically:
+
+| Secret | Purpose |
+|---|---|
+| `WINDOWS_CERT_PFX_BASE64` | a code-signing `.pfx`, base64-encoded (`[Convert]::ToBase64String([IO.File]::ReadAllBytes('cert.pfx'))`) |
+| `WINDOWS_CERT_PASSWORD` | the `.pfx` password |
+| `WINDOWS_CERT_THUMBPRINT` | alternative: the SHA-1 thumbprint of a certificate already installed in the runner's user store |
+
+`WINDOWS_CERT_PFX_BASE64` takes precedence; set only one of the two. The signing machine needs the
+Windows SDK (for `signtool.exe`); the GitHub `windows-latest` runner has it.
+
 ## Binaries and trust
 
 Release binaries are built by GitHub Actions from the tagged commit; the zip's SHA-256 is
-published next to it. The executable is currently **not code-signed** (Windows SmartScreen shows
-a warning on the first start).
+published next to it. The executable is **not code-signed** until a certificate is configured as
+above (Windows SmartScreen shows a warning on the first start until then).
