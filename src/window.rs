@@ -109,19 +109,21 @@ const BROWSER_PROCESSES: &[&str] = &[
     "arc",
 ];
 
-/// True if `title` names a photo / video file: the extension must be followed by a boundary, so a
-/// title like "index.ts" or a word merely containing the letters is not mistaken for a media file.
+/// True if `title` names a photo / video file: a `.extension` whose extension is a media one. Only
+/// the run of letters/digits right after the dot counts, so "index.ts" or a word merely containing
+/// the letters is not mistaken for a media file. Allocation-free (one lower-case copy of the title).
 fn title_has_media_ext(title: &str) -> bool {
     let t = title.to_ascii_lowercase();
-    let bytes = t.as_bytes();
-    MEDIA_EXTS.iter().any(|e| {
-        let needle = format!(".{e}");
-        t.match_indices(&needle)
-            .any(|(i, _)| match bytes.get(i + needle.len()) {
-                None => true,
-                Some(&c) => !c.is_ascii_alphanumeric() && c != b'_',
-            })
-    })
+    for (i, _) in t.match_indices('.') {
+        let rest = &t[i + 1..];
+        let end = rest
+            .find(|c: char| !c.is_ascii_alphanumeric())
+            .unwrap_or(rest.len());
+        if end > 0 && MEDIA_EXTS.contains(&&rest[..end]) {
+            return true;
+        }
+    }
+    false
 }
 
 /// True if the window looks like a photo / video opened in a viewer or player: its title names a

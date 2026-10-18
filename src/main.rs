@@ -1103,6 +1103,10 @@ unsafe extern "system" fn on_event(
     }
     let h = hwnd.0 as isize;
     let mut resync = false;
+    // Focus moved within the current workspace: the border target was just set to the event's
+    // window, so it only has to be repositioned (no re-derivation from `GetForegroundWindow`,
+    // which can still race with the click).
+    let mut reposition = false;
     STATE.with(|s| {
         let mut s = s.borrow_mut();
         match event {
@@ -1272,7 +1276,12 @@ unsafe extern "system" fn on_event(
                         s.follow = Some((w, h));
                         s.windows_changed = true;
                     }
-                    _ => return, // focus change inside the current workspace: nothing to do
+                    _ => {
+                        // focus change inside the current workspace (a click on a tile): no re-tile
+                        // is needed, but the border overlay must move to the newly focused window
+                        reposition = true;
+                        return;
+                    }
                 }
             }
             EVENT_OBJECT_CREATE
@@ -1289,8 +1298,12 @@ unsafe extern "system" fn on_event(
         // (Re)arm the debounce timer: bursts of events cause a single re-tile.
         s.timer = SetTimer(None, s.timer, DEBOUNCE_MS, None);
     });
+    if reposition {
+        // the borrow above is released: move the border onto the window that just got focus
+        sync_border();
+    }
     if resync {
-        // the borrow above is released: safe to re-evaluate the border (menu just closed)
+        // the menu just closed: re-evaluate the border from the real foreground window
         refresh_border();
     }
 }
@@ -2138,7 +2151,11 @@ fn start(interactive: bool) {
                     quit = true;
                     break;
                 }
-                if msg.message == WM_TIMER {
+                // Only *thread* timers (created with a NULL hwnd, i.e. the debounce / live / verify
+                // timer) are ours to handle here. A WM_TIMER that belongs to a window (the
+                // indicator's hover animation) must go through DispatchMessage to its own window
+                // procedure - swallowing it would leave that timer running forever.
+                if msg.message == WM_TIMER && msg.hwnd.0.is_null() {
                     handle_debounce_timer(msg.wParam.0);
                     continue;
                 }

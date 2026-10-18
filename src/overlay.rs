@@ -499,8 +499,19 @@ pub fn hide_indicator() {
     let raw = INDICATOR.load(Ordering::Relaxed);
     if raw != 0 {
         unsafe {
-            let _ = ShowWindow(HWND(raw as *mut _), SW_HIDE);
+            let hwnd = HWND(raw as *mut _);
+            let _ = KillTimer(Some(hwnd), TIMER_HOVER);
+            let _ = ShowWindow(hwnd, SW_HIDE);
         }
+        reset_hover();
+    }
+}
+
+/// Clears the hover state and its animation (the indicator is hidden or gone).
+fn reset_hover() {
+    IND_HOVER.store(-1, Ordering::Relaxed);
+    for a in IND_ANIM.iter() {
+        a.store(0, Ordering::Relaxed);
     }
 }
 
@@ -508,7 +519,10 @@ pub fn destroy_indicator() {
     let raw = INDICATOR.swap(0, Ordering::Relaxed);
     if raw != 0 {
         unsafe {
-            let _ = DestroyWindow(HWND(raw as *mut _));
+            let hwnd = HWND(raw as *mut _);
+            let _ = KillTimer(Some(hwnd), TIMER_HOVER);
+            let _ = DestroyWindow(hwnd);
         }
     }
+    reset_hover();
 }
