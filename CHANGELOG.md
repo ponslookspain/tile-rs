@@ -9,6 +9,8 @@ follows [Semantic Versioning](https://semver.org) (see [docs/RELEASING.md](docs/
 ### Added
 - Moving the focused window to another workspace with `Alt+Shift+1`…`9` now follows it: the target
   workspace opens with the window focused (previously the window was parked and you stayed put).
+- A `close` action (default `Alt+Shift+Q`) that closes the focused window, like Alt+F4. It is added
+  to existing `config.toml` files that lack it, so the key works even on an old config.
 - An existing `config.toml` that predates the `quit` hotkey gets it added on start-up, so
   `Ctrl+Alt+Q` quits tile-rs even on an old config (a commented-out or removed one is left alone).
 

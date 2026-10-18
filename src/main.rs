@@ -32,7 +32,7 @@ use std::time::{Duration, Instant};
 use windows::core::{w, PCWSTR};
 use windows::Win32::Foundation::{
     CloseHandle, GetLastError, ERROR_ALREADY_EXISTS, ERROR_FILE_NOT_FOUND, ERROR_SUCCESS, HANDLE,
-    HWND, POINT, RECT, WAIT_FAILED, WAIT_OBJECT_0,
+    HWND, LPARAM, POINT, RECT, WAIT_FAILED, WAIT_OBJECT_0, WPARAM,
 };
 use windows::Win32::Graphics::Dwm::{DwmGetWindowAttribute, DWMWA_EXTENDED_FRAME_BOUNDS};
 use windows::Win32::Graphics::Gdi::{
@@ -55,15 +55,16 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{RegisterHotKey, UnregisterHotK
 use windows::Win32::UI::WindowsAndMessaging::{
     DispatchMessageW, GetCursorPos, GetForegroundWindow, GetShellWindow, GetWindowLongW,
     GetWindowRect, IsIconic, IsWindow, IsZoomed, KillTimer, MessageBoxW,
-    MsgWaitForMultipleObjectsEx, PeekMessageW, PostQuitMessage, SetForegroundWindow, SetTimer,
-    SetWindowPos, ShowWindow, TranslateMessage, EVENT_OBJECT_CLOAKED, EVENT_OBJECT_CREATE,
-    EVENT_OBJECT_DESTROY, EVENT_OBJECT_HIDE, EVENT_OBJECT_LOCATIONCHANGE, EVENT_OBJECT_SHOW,
-    EVENT_OBJECT_UNCLOAKED, EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_MENUPOPUPEND,
+    MsgWaitForMultipleObjectsEx, PeekMessageW, PostMessageW, PostQuitMessage, SetForegroundWindow,
+    SetTimer, SetWindowPos, ShowWindow, TranslateMessage, EVENT_OBJECT_CLOAKED,
+    EVENT_OBJECT_CREATE, EVENT_OBJECT_DESTROY, EVENT_OBJECT_HIDE, EVENT_OBJECT_LOCATIONCHANGE,
+    EVENT_OBJECT_SHOW, EVENT_OBJECT_UNCLOAKED, EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_MENUPOPUPEND,
     EVENT_SYSTEM_MENUPOPUPSTART, EVENT_SYSTEM_MINIMIZEEND, EVENT_SYSTEM_MINIMIZESTART,
     EVENT_SYSTEM_MOVESIZEEND, EVENT_SYSTEM_MOVESIZESTART, GWL_STYLE, IDYES, MB_ICONINFORMATION,
     MB_ICONQUESTION, MB_OK, MB_TOPMOST, MB_YESNO, MSG, MWMO_INPUTAVAILABLE, PM_REMOVE, QS_ALLINPUT,
     SWP_NOACTIVATE, SWP_NOOWNERZORDER, SWP_NOSIZE, SWP_NOZORDER, SW_MINIMIZE, SW_RESTORE,
-    WINEVENT_OUTOFCONTEXT, WINEVENT_SKIPOWNPROCESS, WM_HOTKEY, WM_QUIT, WM_TIMER, WS_CHILD,
+    WINEVENT_OUTOFCONTEXT, WINEVENT_SKIPOWNPROCESS, WM_CLOSE, WM_HOTKEY, WM_QUIT, WM_TIMER,
+    WS_CHILD,
 };
 
 use config::{Action, Dir, FullscreenWindows, WS_COUNT};
@@ -1053,6 +1054,7 @@ pub fn action_name(a: Action) -> String {
             if width { "width" } else { "height" }
         ),
         Action::Minimize => "minimize".into(),
+        Action::Close => "close".into(),
         Action::Pause => "pause".into(),
         Action::Quit => "quit".into(),
         Action::Retile => "retile".into(),
@@ -2010,6 +2012,18 @@ fn minimize_focused() {
     log("minimized the focused window");
 }
 
+/// Hotkey: close the focused window (like Alt+F4).
+fn close_focused() {
+    let fg = unsafe { GetForegroundWindow() };
+    if fg.is_invalid() {
+        return;
+    }
+    unsafe {
+        let _ = PostMessageW(Some(fg), WM_CLOSE, WPARAM(0), LPARAM(0));
+    }
+    log("closed the focused window");
+}
+
 pub fn dispatch(a: Action) {
     match a {
         Action::Focus(d) => focus_or_swap(d, false),
@@ -2018,6 +2032,7 @@ pub fn dispatch(a: Action) {
         Action::MoveTo(n) => move_to_ws(n),
         Action::Resize { width, grow } => resize_focused(width, grow),
         Action::Minimize => minimize_focused(),
+        Action::Close => close_focused(),
         Action::Pause => toggle_pause(),
         Action::Quit => unsafe { PostQuitMessage(0) },
         Action::Retile => {
