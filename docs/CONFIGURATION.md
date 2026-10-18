@@ -38,6 +38,7 @@ These keys go at the top of the file, before any `[section]`.
 | `max_tiles` | `0` | Maximum tiles per workspace; `0` = chosen automatically from the screen size. |
 | `auto_overflow` | `true` | When a workspace is full, open a new window on the next workspace and switch to it. |
 | `workspace_indicator` | `true` | Numbered workspace buttons at the top of each monitor. The current workspace and workspaces with windows have distinct states; click a number to switch that monitor. |
+| `workspace_indicator_size` | `"medium"` | Size of the workspace buttons and their click targets: `"small"`, `"medium"`, or `"large"`. This can also be changed in the launcher. |
 | `focus_follows_mouse` | `false` | Move focus to the tiled window under the mouse pointer when the pointer moves onto it. This option is also available in the settings launcher. |
 
 ## Hotkeys

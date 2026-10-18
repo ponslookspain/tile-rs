@@ -10,6 +10,8 @@ use std::mem::size_of;
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicIsize, AtomicU32, Ordering};
 use std::sync::OnceLock;
 
+use crate::config::IndicatorSize;
+
 use windows::core::w;
 use windows::Win32::Foundation::{COLORREF, HINSTANCE, HWND, LPARAM, LRESULT, RECT, WPARAM};
 use windows::Win32::Graphics::Gdi::{
@@ -207,10 +209,7 @@ pub fn destroy_border() {
 // ---------------------------------------------------------------------------
 
 const DOTS: i32 = 9;
-const DOT: i32 = 34;
-const DOT_GAP: i32 = 10;
-/// Padding above and below the dots.
-const PAD: i32 = 12;
+static INDICATOR_SCALE: AtomicU32 = AtomicU32::new(1);
 /// Colour key that is made transparent (the dots are drawn in other colours).
 const IND_KEY: u32 = 0x00FF_00FF;
 /// Hover animation: progress runs 0..=HOVER_MAX, HOVER_STEP per timer tick, and a hovered dot
@@ -220,6 +219,14 @@ const HOVER_STEP: u32 = 25;
 const HOVER_GROW: i32 = 2;
 /// Timer id of the hover animation on the indicator window.
 const TIMER_HOVER: usize = 1;
+
+fn indicator_metrics() -> (i32, i32, i32) {
+    match INDICATOR_SCALE.load(Ordering::Relaxed) {
+        0 => (24, 12, 8),
+        2 => (44, 14, 14),
+        _ => (34, 10, 12),
+    }
+}
 
 /// One indicator per monitor; the window index is the monitor slot.
 const MAX_MON: usize = 9;
@@ -272,11 +279,12 @@ pub fn set_indicator_click(f: fn(usize, u8)) {
 
 /// The dot index whose hit area (the dot plus half the gap on each side) contains `x`, or -1.
 fn dot_at_x(x: i32, width: i32) -> i32 {
-    let content = DOTS * DOT + (DOTS - 1) * DOT_GAP;
+    let (dot, gap, _) = indicator_metrics();
+    let content = DOTS * dot + (DOTS - 1) * gap;
     let x0 = (width - content) / 2;
-    let slot = DOT + DOT_GAP;
+    let slot = dot + gap;
     for i in 0..DOTS {
-        let cx = x0 + i * slot + DOT / 2;
+        let cx = x0 + i * slot + dot / 2;
         if (x - cx).abs() <= slot / 2 {
             return i;
         }
@@ -313,13 +321,46 @@ fn hover_tick(hwnd: HWND, ind: &Ind) -> bool {
 
 /// Width and height of the indicator bar (the tiling area leaves this much room at the top).
 pub fn indicator_size() -> (i32, i32) {
-    let w = PAD * 2 + DOTS * DOT + (DOTS - 1) * DOT_GAP;
-    let h = PAD * 2 + DOT;
+    let (dot, gap, pad) = indicator_metrics();
+    let w = pad * 2 + DOTS * dot + (DOTS - 1) * gap;
+    let h = pad * 2 + dot;
     (w, h)
 }
 
 /// Height of the reserved bar at the top of the work area.
-pub const INDICATOR_H: i32 = PAD * 2 + DOT;
+pub fn indicator_height() -> i32 {
+    indicator_size().1
+}
+
+/// Changes the indicator scale and resizes the existing overlay windows immediately.
+pub fn set_indicator_size(size: IndicatorSize) {
+    let scale = match size {
+        IndicatorSize::Small => 0,
+        IndicatorSize::Medium => 1,
+        IndicatorSize::Large => 2,
+    };
+    INDICATOR_SCALE.store(scale, Ordering::Relaxed);
+    let (w, h) = indicator_size();
+    for ind in &INDS {
+        let raw = ind.hwnd.load(Ordering::Relaxed);
+        if raw != 0 {
+            unsafe {
+                let _ = SetWindowPos(
+                    HWND(raw as *mut _),
+                    None,
+                    0,
+                    0,
+                    w,
+                    h,
+                    SWP_NOACTIVATE
+                        | SWP_NOZORDER
+                        | windows::Win32::UI::WindowsAndMessaging::SWP_NOMOVE,
+                );
+                let _ = InvalidateRect(Some(HWND(raw as *mut _)), None, false);
+            }
+        }
+    }
+}
 
 unsafe extern "system" fn indicator_wndproc(
     hwnd: HWND,
@@ -349,17 +390,18 @@ unsafe extern "system" fn indicator_wndproc(
                 let pop = ind.pop.load(Ordering::Relaxed);
                 let active = ind.active.load(Ordering::Relaxed);
                 // Numbered workspace tiles have a full-height hit area and a clear current state.
-                let content = DOTS * DOT + (DOTS - 1) * DOT_GAP;
+                let (dot, gap, _) = indicator_metrics();
+                let content = DOTS * dot + (DOTS - 1) * gap;
                 let x0 = (rc.right - content) / 2;
                 let cy = rc.bottom / 2;
                 let _ = SetBkMode(hdc, BACKGROUND_MODE(1)); // transparent text background
                 for (i, a) in ind.anim.iter().enumerate() {
                     let i = i as i32;
                     let grow = (a.load(Ordering::Relaxed) as i32 * HOVER_GROW) / HOVER_MAX as i32;
-                    let left = x0 + i * (DOT + DOT_GAP) - grow;
-                    let top = cy - DOT / 2 - grow;
-                    let right = x0 + i * (DOT + DOT_GAP) + DOT + grow;
-                    let bottom = cy + DOT / 2 + grow;
+                    let left = x0 + i * (dot + gap) - grow;
+                    let top = cy - dot / 2 - grow;
+                    let right = x0 + i * (dot + gap) + dot + grow;
+                    let bottom = cy + dot / 2 + grow;
                     let hovered = ind.hover.load(Ordering::Relaxed) == i;
                     let selected = i == cur;
                     let occupied = pop & (1 << i) != 0;

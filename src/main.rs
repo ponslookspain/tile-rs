@@ -440,7 +440,7 @@ fn monitor_work(mi: usize) -> RECT {
     let mut r = list.get(i).map(|m| m.work).unwrap_or_default();
     // Each managed monitor has its own workspace indicator bar.
     if config::workspace_indicator() {
-        r.top += overlay::INDICATOR_H;
+        r.top += overlay::indicator_height();
     }
     r
 }
@@ -1700,6 +1700,7 @@ fn enforce_layout() -> bool {
         }
         let mut moved = 0;
         let mut fullscreen = false;
+        let animating: HashSet<isize> = s.anims.iter().map(|a| a.hwnd).collect();
         for mi in 0..MON {
             if s.rects[mi].len() != s.last[mi].len() {
                 continue;
@@ -1714,7 +1715,7 @@ fn enforce_layout() -> bool {
                     fullscreen = true; // a game went fullscreen: let it be, re-tile drops it
                     continue;
                 }
-                if s.anims.iter().any(|a| a.hwnd == *h) {
+                if animating.contains(h) {
                     continue; // already on its way
                 }
                 if off_target(hw, r) {
@@ -1825,8 +1826,9 @@ fn retile() {
         reconcile_fullscreen(&mut s, &c.fullscreen);
         apply_fullscreen(&mut s);
         let present: Vec<isize> = c.tileable.iter().map(|w| w.hwnd.0 as isize).collect();
+        let present_set: HashSet<isize> = present.iter().copied().collect();
         // windows we have not seen before are placed instantly; known ones glide
-        let fresh: Vec<isize> = present
+        let fresh: HashSet<isize> = present
             .iter()
             .copied()
             .filter(|h| !s.ws.contains_key(h))
@@ -1839,8 +1841,8 @@ fn retile() {
             .retain(|h| unsafe { IsWindow(Some(HWND(*h as *mut _))) }.as_bool());
         // forget windows that are gone; new windows join the current workspace, the workspace a
         // config rule asks for, or - if the current workspace is full - the next workspace
-        s.ws.retain(|h, _| present.contains(h));
-        s.mon.retain(|h, _| present.contains(h));
+        s.ws.retain(|h, _| present_set.contains(h));
+        s.mon.retain(|h, _| present_set.contains(h));
         let mut overflow: Option<(usize, u8, isize)> = None;
         for w in &c.tileable {
             let h = w.hwnd.0 as isize;
@@ -1871,10 +1873,11 @@ fn retile() {
             let mut order: Vec<isize> = s.order[mi]
                 .iter()
                 .copied()
-                .filter(|h| present.contains(h) && s.mon.get(h).copied() == Some(mi))
+                .filter(|h| present_set.contains(h) && s.mon.get(h).copied() == Some(mi))
                 .collect();
+            let mut seen: HashSet<isize> = order.iter().copied().collect();
             for h in &present {
-                if s.mon.get(h).copied() == Some(mi) && !order.contains(h) {
+                if s.mon.get(h).copied() == Some(mi) && seen.insert(*h) {
                     order.push(*h);
                 }
             }
@@ -2222,6 +2225,7 @@ pub fn dispatch_quit() {
 pub fn reload_config() {
     match config::load() {
         Ok(c) => {
+            overlay::set_indicator_size(c.workspace_indicator_size);
             config::set(c);
             overlay::set_border_color(config::border_color_value());
             let failed = register_hotkeys();
@@ -2518,7 +2522,10 @@ fn start(interactive: bool) {
         log("config: added settings introduced by this version (backup: config.toml.bak)");
     }
     match config::load() {
-        Ok(c) => config::set(c),
+        Ok(c) => {
+            overlay::set_indicator_size(c.workspace_indicator_size);
+            config::set(c);
+        }
         Err(e) => {
             log(format!("config error: {e}"));
             notify("tile-rs: config error (built-in defaults are used)", &e);

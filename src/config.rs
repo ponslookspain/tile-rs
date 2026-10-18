@@ -76,6 +76,25 @@ pub enum MediaWindows {
     Tile,
 }
 
+/// Visual and clickable size of the workspace indicator.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum IndicatorSize {
+    Small,
+    #[default]
+    Medium,
+    Large,
+}
+
+impl IndicatorSize {
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Small => "small",
+            Self::Medium => "medium",
+            Self::Large => "large",
+        }
+    }
+}
+
 /// The tiling layout. Only `Spiral` is implemented so far; the others are placeholders (they are
 /// shown in the launcher as "coming soon" and fall back to the spiral).
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
@@ -142,6 +161,7 @@ struct RawConfig {
     max_tiles: Option<u32>,
     auto_overflow: Option<bool>,
     workspace_indicator: Option<bool>,
+    workspace_indicator_size: Option<String>,
     focus_follows_mouse: Option<bool>,
     #[serde(default)]
     hotkeys: BTreeMap<String, OneOrMany>,
@@ -183,6 +203,7 @@ pub struct Config {
     pub auto_overflow: bool,
     /// Show the small workspace indicator.
     pub workspace_indicator: bool,
+    pub workspace_indicator_size: IndicatorSize,
     /// Focus the window under the mouse pointer when it moves over a tiled window.
     pub focus_follows_mouse: bool,
     /// (action, "alt+shift+h")
@@ -240,6 +261,7 @@ max_tiles = 0
 auto_overflow = true
 # Small indicator at the top of the screen showing the workspaces (dots).
 workspace_indicator = true
+workspace_indicator_size = "medium" # small, medium, large
 
 # Move focus to the window under the mouse pointer when it moves onto a tiled window.
 focus_follows_mouse = false
@@ -443,6 +465,9 @@ pub fn migrate(text: &str) -> Option<String> {
     }
     if !has("workspace_indicator") {
         top.push("workspace_indicator = true".into());
+    }
+    if !has("workspace_indicator_size") {
+        top.push("workspace_indicator_size = \"medium\" # small, medium, large".into());
     }
     if !has("focus_follows_mouse") {
         top.push("# Focus the window under the mouse pointer when it moves onto it.".into());
@@ -780,6 +805,17 @@ pub fn parse(text: &str) -> Result<Config, String> {
     }
     let auto_overflow = raw.auto_overflow.unwrap_or(true);
     let workspace_indicator = raw.workspace_indicator.unwrap_or(true);
+    let workspace_indicator_size = match raw.workspace_indicator_size.as_deref().unwrap_or("medium")
+    {
+        "small" => IndicatorSize::Small,
+        "medium" => IndicatorSize::Medium,
+        "large" => IndicatorSize::Large,
+        value => {
+            return Err(format!(
+                "workspace_indicator_size = \"{value}\": expected small, medium, or large"
+            ))
+        }
+    };
     let focus_follows_mouse = raw.focus_follows_mouse.unwrap_or(false);
     let mut bindings = Vec::new();
     for (name, v) in raw.hotkeys {
@@ -837,6 +873,7 @@ pub fn parse(text: &str) -> Result<Config, String> {
         max_tiles,
         auto_overflow,
         workspace_indicator,
+        workspace_indicator_size,
         focus_follows_mouse,
         bindings,
         rules: raw.rules,

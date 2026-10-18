@@ -168,6 +168,7 @@ min_tile_height = 320
 max_tiles = 0            # тайлов на стол; 0 = авто по размеру экрана
 auto_overflow = true     # новое окно уходит на следующий стол, когда текущий полон
 workspace_indicator = true  # кнопки с номерами сверху; клик переключает рабочий стол
+workspace_indicator_size = "medium" # размер кнопок: small, medium или large
 focus_follows_mouse = false  # фокус на окне под курсором при наведении на тайл
 
 [hotkeys]

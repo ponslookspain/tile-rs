@@ -11,7 +11,7 @@ follows [Semantic Versioning](https://semver.org) (see [docs/RELEASING.md](docs/
   Visual C++ Redistributable separately.
 - The settings launcher now uses a clearer two-column layout, dark contrast, direct GitHub access,
   and exposes the existing `focus_follows_mouse` option. The workspace switcher uses larger,
-  numbered targets with clearer current/occupied states.
+  numbered targets with clearer current/occupied states, plus small, medium, and large size options.
 - Multi-monitor tiling: every screen keeps its own layout and current workspace, and a window is
   tiled on the screen it is on (move it to another screen and it re-homes there). Workspace hotkeys
   and the workspace actions apply to the screen under the pointer (or the screen of the focused
@@ -37,6 +37,7 @@ follows [Semantic Versioning](https://semver.org) (see [docs/RELEASING.md](docs/
   the right), `grid` and `columns`. The `layout` setting and the settings-launcher picker now work
   (before they fell back to the spiral with a "not implemented" warning). Spiral and master-stack
   resize by dragging an edge; grid and columns use equal, fixed tiles.
+- Grid layouts now adapt their row and column count to the monitor shape and avoid sparse rows.
 - Moving the focused window to another workspace with `Alt+Shift+1`…`9` now follows it: the target
   workspace opens with the window focused (previously the window was parked and you stayed put).
 - A `close` action (default `Alt+Shift+Q`) that closes the focused window, like Alt+F4. It is added
@@ -65,6 +66,8 @@ follows [Semantic Versioning](https://semver.org) (see [docs/RELEASING.md](docs/
   is kept open (and capped in size) instead of being reopened for every line, and configuration is
   read from a snapshot instead of taking a lock for each setting.
 - The workspace indicator is not repositioned or repainted when nothing about it changed.
+- Reconciliation uses indexed membership sets for present, new, and currently animating windows,
+  avoiding repeated nested scans when a large number of windows are open.
 
 ## [0.4.0] - 2026-10-18
 

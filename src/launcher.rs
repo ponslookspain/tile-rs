@@ -25,7 +25,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
     WS_DISABLED, WS_MINIMIZEBOX, WS_SYSMENU, WS_TABSTOP, WS_VISIBLE, WS_VSCROLL,
 };
 
-use crate::config::{self, FullscreenWindows, Layout, MediaWindows};
+use crate::config::{self, FullscreenWindows, IndicatorSize, Layout, MediaWindows};
 use crate::geometry::Easing;
 use crate::tray;
 
@@ -115,6 +115,7 @@ struct Controls {
     max_tiles: HWND,
     auto_overflow: HWND,
     indicator: HWND,
+    indicator_size: HWND,
     border: HWND,
     border_color: HWND,
     border_width: HWND,
@@ -326,7 +327,7 @@ fn build_controls(parent: HWND) {
         label(parent, "Resize step (px)", 462, 213);
         c.resize_step = edit(parent, 575, 210, 65);
 
-        group(parent, "WINDOW BEHAVIOUR", 16, 326, 416, 225);
+        group(parent, "WINDOW BEHAVIOUR", 16, 326, 416, 238);
         c.indicator = check(parent, "Show workspace switcher", 28, 356, 200, true);
         c.focus_follows_mouse = check(parent, "Focus follows pointer", 235, 356, 185, false);
         label(parent, "Fullscreen apps", 28, 392);
@@ -340,11 +341,13 @@ fn build_controls(parent: HWND) {
         );
         label(parent, "Photo / video windows", 28, 430);
         c.media = combo(parent, &["Float", "Tile"], 0, 168, 427, 252);
-        c.border = check(parent, "Highlight focused window", 28, 476, 220, true);
-        label(parent, "Border color", 28, 512);
-        c.border_color = edit(parent, 120, 509, 90);
-        label(parent, "Width", 250, 512);
-        c.border_width = edit(parent, 300, 509, 55);
+        label(parent, "Workspace dots", 28, 463);
+        c.indicator_size = combo(parent, &["Small", "Medium", "Large"], 1, 168, 460, 130);
+        c.border = check(parent, "Highlight focused window", 28, 492, 220, true);
+        label(parent, "Border color", 28, 528);
+        c.border_color = edit(parent, 120, 525, 90);
+        label(parent, "Width", 250, 528);
+        c.border_width = edit(parent, 300, 525, 55);
 
         group(
             parent,
@@ -449,6 +452,11 @@ fn save_and_apply(hwnd: HWND) {
         } else {
             "float"
         };
+        let indicator_size = match combo_sel(c.indicator_size).min(2) {
+            0 => IndicatorSize::Small,
+            2 => IndicatorSize::Large,
+            _ => IndicatorSize::Medium,
+        };
         let num = |h: HWND| get_text(h).trim().to_string();
         let pairs: Vec<(&str, String)> = vec![
             ("layout", format!("\"{}\"", layout.name())),
@@ -463,6 +471,10 @@ fn save_and_apply(hwnd: HWND) {
             ("max_tiles", num(c.max_tiles)),
             ("auto_overflow", is_checked(c.auto_overflow).to_string()),
             ("workspace_indicator", is_checked(c.indicator).to_string()),
+            (
+                "workspace_indicator_size",
+                format!("\"{}\"", indicator_size.name()),
+            ),
             (
                 "focus_follows_mouse",
                 is_checked(c.focus_follows_mouse).to_string(),
@@ -574,6 +586,12 @@ fn populate() {
         set_text(cc.max_tiles, &c.max_tiles.to_string());
         set_check(cc.auto_overflow, c.auto_overflow);
         set_check(cc.indicator, c.workspace_indicator);
+        let indicator_size = match c.workspace_indicator_size {
+            IndicatorSize::Small => 0,
+            IndicatorSize::Medium => 1,
+            IndicatorSize::Large => 2,
+        };
+        sm(cc.indicator_size, CB_SETCURSEL, indicator_size, 0);
         set_check(cc.focus_follows_mouse, c.focus_follows_mouse);
         set_check(cc.border, c.border);
         set_check(cc.autostart, crate::autostart_enabled());

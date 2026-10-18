@@ -174,6 +174,7 @@ min_tile_height = 320
 max_tiles = 0            # tiles per workspace; 0 = automatic from the screen size
 auto_overflow = true     # a new window goes to the next workspace when this one is full
 workspace_indicator = true  # numbered buttons at the top; click one to switch workspaces
+workspace_indicator_size = "medium" # button size: small, medium, or large
 focus_follows_mouse = false  # focus the tiled window under the pointer when it moves onto it
 
 [hotkeys]

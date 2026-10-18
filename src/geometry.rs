@@ -171,8 +171,9 @@ pub fn master_stack(
     (tiles, regions)
 }
 
-/// Grid: `ceil(sqrt(n))` equal columns and as many rows as needed, filled left to right, top to
-/// bottom. The last column / row takes the leftover pixels so the grid exactly covers the area.
+/// Grid: choose the row/column count that best fits the monitor shape while avoiding mostly empty
+/// rows. Cells target a comfortable landscape aspect ratio, and the last row/column absorbs pixels
+/// left over by integer division.
 pub fn grid(area: RECT, n: usize, gaps: impl Into<Gaps>) -> (Vec<RECT>, Vec<RECT>) {
     let gaps = gaps.into();
     let mut tiles = Vec::with_capacity(n);
@@ -180,8 +181,25 @@ pub fn grid(area: RECT, n: usize, gaps: impl Into<Gaps>) -> (Vec<RECT>, Vec<RECT
         return (Vec::new(), Vec::new());
     }
     let r = inner(area, gaps.outer);
-    let cols = (n as f64).sqrt().ceil().max(1.0) as usize;
-    let rows = n.div_ceil(cols);
+    // Compare every possible column count. A shape-only score would choose layouts with a nearly
+    // empty last row (e.g. 4 columns for 5 windows), so penalize unused cells as well.
+    const TARGET_TILE_ASPECT: f64 = 1.5;
+    const EMPTY_CELL_PENALTY: f64 = 2.0;
+    let rw = (r.right - r.left).max(1) as f64;
+    let rh = (r.bottom - r.top).max(1) as f64;
+    let (cols, rows) = (1..=n)
+        .map(|cols| {
+            let rows = n.div_ceil(cols);
+            let cell_w = (rw - gaps.inner as f64 * (cols - 1) as f64).max(1.0) / cols as f64;
+            let cell_h = (rh - gaps.inner as f64 * (rows - 1) as f64).max(1.0) / rows as f64;
+            let aspect_error = (cell_w / cell_h / TARGET_TILE_ASPECT).log2().abs();
+            let empty_fraction = (rows * cols - n) as f64 / n as f64;
+            let score = aspect_error + EMPTY_CELL_PENALTY * empty_fraction;
+            (cols, rows, score)
+        })
+        .min_by(|a, b| a.2.total_cmp(&b.2))
+        .map(|(cols, rows, _)| (cols, rows))
+        .unwrap_or((1, 1));
     let cw = ((r.right - r.left - (cols as i32 - 1) * gaps.inner).max(1) / cols as i32).max(1);
     let ch = ((r.bottom - r.top - (rows as i32 - 1) * gaps.inner).max(1) / rows as i32).max(1);
     for i in 0..n {
@@ -1089,11 +1107,24 @@ mod tests {
         assert!(t[0].right <= t[1].left);
         assert_eq!(t[3].right, inner(AREA, GAP).right);
         assert_eq!(t[3].bottom, inner(AREA, GAP).bottom);
-        // three windows still make a 2x2 grid: window 2 goes below window 0
+        // Three windows on this ultrawide area use one row instead of leaving a large empty cell.
         let (t3, _) = grid(AREA, 3, GAP);
-        assert_eq!(t3[2].left, t3[0].left);
-        assert!(t3[2].top > t3[0].top);
-        assert_eq!(t3[1].top, t3[0].top);
+        assert_eq!(t3[2].top, t3[0].top);
+        assert!(t3[2].left > t3[1].left);
+    }
+
+    #[test]
+    fn grid_adapts_to_portrait_monitor_shape() {
+        let portrait = RECT {
+            left: 0,
+            top: 0,
+            right: 1200,
+            bottom: 2400,
+        };
+        let (tiles, _) = grid(portrait, 3, GAP);
+        assert_eq!(tiles[0].left, tiles[1].left);
+        assert!(tiles[1].top > tiles[0].top);
+        assert!(tiles[2].top > tiles[1].top);
     }
 
     #[test]
