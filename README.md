@@ -12,9 +12,10 @@ everything lives in one small `.exe` with a tray icon and a plain-text config.
 - **Settings launcher**: a small window (tray menu -> *Settings...*, or on first start) with every
   option in one place - layout, gaps, animations, border, workspaces and hotkeys - plus a
   "check for updates" link. No config file editing needed.
-- **Automatic spiral layout**: window 1 takes the left part, window 2 the top-right, window 3 the
-  bottom-right, window 4 the left part of that, and so on. Close or open a window and the rest adapt.
-  (More layouts - master-stack, grid, columns - are planned.)
+- **Four layouts** (settings launcher, tray or the `layout` setting): **spiral** (dwindle, the
+  default - window 1 takes the left part, window 2 the top-right, and so on), **master-stack** (a
+  master column on the left, the rest stacked on the right), **grid** and **columns**. Close or open
+  a window and the rest adapt.
 - **New windows appear in their tile immediately** (no flash in the middle of the screen); the other
   windows glide aside with a short animation.
 - **Resize like a normal window**: drag any edge or corner and the neighbours follow live. Or use
@@ -203,7 +204,8 @@ back when you switch), so they still show up in the taskbar and in `Alt+Tab`.
 ## Limitations
 
 - Only the primary monitor is managed (multi-monitor support is planned).
-- Only one layout (the spiral) for now.
+- With `grid` and `columns` the tiles are fixed (even) sizes: only the spiral and master-stack can
+  be resized by dragging an edge.
 - Do not run it together with another window manager (GlazeWM, Komorebi, ...).
 - The executable is unsigned.
 

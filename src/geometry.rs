@@ -8,7 +8,7 @@ use std::collections::HashMap;
 
 use windows::Win32::Foundation::RECT;
 
-use crate::config::Dir;
+use crate::config::{Dir, Layout};
 
 pub const MIN_RATIO: f32 = 0.12;
 pub const MAX_RATIO: f32 = 0.88;
@@ -68,6 +68,236 @@ pub fn spiral(area: RECT, n: usize, ratios: &[f32], gap: i32) -> (Vec<RECT>, Vec
         }
     }
     (tiles, regions)
+}
+
+/// The area inside the outer gap: the whole `area` with a `gap` margin on every side.
+fn inner(area: RECT, gap: i32) -> RECT {
+    RECT {
+        left: area.left + gap,
+        top: area.top + gap,
+        right: area.right - gap,
+        bottom: area.bottom - gap,
+    }
+}
+
+/// Places `n` windows on `area` using `layout`. `ratios` is only read by the layouts that split
+/// (spiral, master-stack); grid and columns ignore it. Returns (tile of every window, free region
+/// that window `i` was cut out of), like `spiral`.
+pub fn place(
+    layout: Layout,
+    area: RECT,
+    n: usize,
+    ratios: &[f32],
+    gap: i32,
+) -> (Vec<RECT>, Vec<RECT>) {
+    match layout {
+        Layout::Spiral => spiral(area, n, ratios, gap),
+        Layout::MasterStack => master_stack(area, n, ratios, gap),
+        Layout::Grid => grid(area, n, gap),
+        Layout::Columns => columns(area, n, gap),
+    }
+}
+
+/// Master-stack: window 0 (the master) takes a left column whose width is `ratios[0]` (0.5 by
+/// default); the other windows share the right column in equal-height bands. Dragging the master's
+/// right edge changes `ratios[0]`, exactly like the spiral's first split.
+pub fn master_stack(area: RECT, n: usize, ratios: &[f32], gap: i32) -> (Vec<RECT>, Vec<RECT>) {
+    let mut tiles = Vec::with_capacity(n);
+    let mut regions = Vec::with_capacity(n);
+    if n == 0 {
+        return (tiles, regions);
+    }
+    let r = inner(area, gap);
+    if n == 1 {
+        tiles.push(r);
+        regions.push(r);
+        return (tiles, regions);
+    }
+    let ratio = ratios
+        .first()
+        .copied()
+        .unwrap_or(0.5)
+        .clamp(MIN_RATIO, MAX_RATIO);
+    let mid = r.left + ((r.right - r.left - gap).max(1) as f32 * ratio) as i32;
+    let master = RECT {
+        left: r.left,
+        top: r.top,
+        right: mid,
+        bottom: r.bottom,
+    };
+    let stack = RECT {
+        left: mid + gap,
+        top: r.top,
+        right: r.right,
+        bottom: r.bottom,
+    };
+    tiles.push(master);
+    regions.push(r); // the master was cut out of the whole area
+    let m = n - 1;
+    let band = ((stack.bottom - stack.top - (m as i32 - 1) * gap).max(1) / m as i32).max(1);
+    for i in 0..m {
+        let top = stack.top + (band + gap) * i as i32;
+        let bottom = if i == m - 1 { stack.bottom } else { top + band };
+        tiles.push(RECT {
+            left: stack.left,
+            top,
+            right: stack.right,
+            bottom,
+        });
+        regions.push(stack); // every stack window shares the right column
+    }
+    (tiles, regions)
+}
+
+/// Grid: `ceil(sqrt(n))` equal columns and as many rows as needed, filled left to right, top to
+/// bottom. The last column / row takes the leftover pixels so the grid exactly covers the area.
+pub fn grid(area: RECT, n: usize, gap: i32) -> (Vec<RECT>, Vec<RECT>) {
+    let mut tiles = Vec::with_capacity(n);
+    if n == 0 {
+        return (Vec::new(), Vec::new());
+    }
+    let r = inner(area, gap);
+    let cols = (n as f64).sqrt().ceil().max(1.0) as usize;
+    let rows = n.div_ceil(cols);
+    let cw = ((r.right - r.left - (cols as i32 - 1) * gap).max(1) / cols as i32).max(1);
+    let ch = ((r.bottom - r.top - (rows as i32 - 1) * gap).max(1) / rows as i32).max(1);
+    for i in 0..n {
+        let (row, col) = (i / cols, i % cols);
+        let left = r.left + (cw + gap) * col as i32;
+        let top = r.top + (ch + gap) * row as i32;
+        let right = if col == cols - 1 { r.right } else { left + cw };
+        let bottom = if row == rows - 1 { r.bottom } else { top + ch };
+        tiles.push(RECT {
+            left,
+            top,
+            right,
+            bottom,
+        });
+    }
+    (tiles.clone(), tiles)
+}
+
+/// Columns: `n` equal-width columns spanning the full height; the last one takes the leftover
+/// pixels so the columns exactly cover the area.
+pub fn columns(area: RECT, n: usize, gap: i32) -> (Vec<RECT>, Vec<RECT>) {
+    let mut tiles = Vec::with_capacity(n);
+    if n == 0 {
+        return (Vec::new(), Vec::new());
+    }
+    let r = inner(area, gap);
+    let cw = ((r.right - r.left - (n as i32 - 1) * gap).max(1) / n as i32).max(1);
+    for i in 0..n {
+        let left = r.left + (cw + gap) * i as i32;
+        let right = if i == n - 1 { r.right } else { left + cw };
+        tiles.push(RECT {
+            left,
+            top: r.top,
+            right,
+            bottom: r.bottom,
+        });
+    }
+    (tiles.clone(), tiles)
+}
+
+/// Like `place`, but keeps every tile usable:
+///  * the spiral uses `spiral_fitted` (master shrink + the observed per-window minimum sizes);
+///  * master-stack narrows the master so the stacked column keeps the comfortable minimum width;
+///  * grid and columns place equal tiles (their count is already capped by the workspace budget).
+///
+/// `mins` (application-enforced minimum sizes) is only honoured by the spiral so far.
+pub fn place_fitted(
+    layout: Layout,
+    area: RECT,
+    windows: &[isize],
+    ratios: &[f32],
+    mins: &HashMap<isize, (i32, i32)>,
+    min: (i32, i32),
+    gap: i32,
+) -> (Vec<RECT>, Vec<RECT>) {
+    let (min_w, _min_h) = min;
+    let n = windows.len();
+    match layout {
+        Layout::Spiral => spiral_fitted(area, windows, ratios, mins, min.0, min.1, gap),
+        Layout::MasterStack if n >= 2 => {
+            let span = (area.right - area.left - 2 * gap - gap).max(1) as f32;
+            let mut rs = ratios.to_vec();
+            rs.resize(1, 0.5);
+            // the stacked column must stay at least `min_w` wide: keep ratio[0] below 1 - min_w/span
+            let need = (min_w.max(0) as f32 / span).clamp(0.0, 1.0);
+            let upper = (1.0 - need).clamp(MIN_RATIO, MAX_RATIO);
+            rs[0] = rs[0].clamp(MIN_RATIO, MAX_RATIO).min(upper);
+            master_stack(area, n, &rs, gap)
+        }
+        _ => place(layout, area, n, ratios, gap),
+    }
+}
+
+/// Which split controls the width (or height) of window `k` for `layout`, and in which direction,
+/// like `split_for` (which is the spiral's implementation). Grid and columns are equal tiles with
+/// no user-adjustable splits, so they return `None`.
+pub fn split_for_layout(layout: Layout, k: usize, n: usize, width: bool) -> Option<(usize, f32)> {
+    match layout {
+        Layout::Spiral => split_for(k, n, width),
+        // in master-stack only the master's width (split 0) is adjustable; the bands are equal
+        Layout::MasterStack if width && k == 0 && n >= 2 => Some((0, 1.0)),
+        _ => None,
+    }
+}
+
+/// The user dragged edges of window `k`; turn that into new split ratios, for `layout`.
+pub fn apply_resize_for(
+    layout: Layout,
+    ratios: &mut Vec<f32>,
+    tiles: &[RECT],
+    regions: &[RECT],
+    k: usize,
+    new: RECT,
+    gap: i32,
+) -> bool {
+    match layout {
+        Layout::Spiral => apply_resize(ratios, tiles, regions, k, new, gap),
+        Layout::MasterStack => master_stack_resize(ratios, tiles, regions, k, new, gap),
+        Layout::Grid | Layout::Columns => false,
+    }
+}
+
+/// Drag-resize for master-stack: moving the master's right edge (or a stack window's left edge)
+/// changes the master's width ratio; anything else is ignored (the bands are equal).
+fn master_stack_resize(
+    ratios: &mut Vec<f32>,
+    tiles: &[RECT],
+    regions: &[RECT],
+    k: usize,
+    new: RECT,
+    gap: i32,
+) -> bool {
+    let n = tiles.len();
+    if n < 2 || k >= n || regions.is_empty() {
+        return false;
+    }
+    ratios.resize(1, 0.5);
+    let q = regions[0]; // the whole area the master/stack split was cut from
+    let span = (q.right - q.left - gap).max(1);
+    let t = tiles[k];
+    let moved = |a: i32, b: i32| (a - b).abs() > 3;
+    let edge = if k == 0 {
+        if !moved(new.right, t.right) {
+            return false;
+        }
+        new.right
+    } else {
+        if !moved(new.left, t.left) {
+            return false;
+        }
+        new.left - gap
+    };
+    let r = ((edge - q.left) as f32 / span as f32).clamp(MIN_RATIO, MAX_RATIO);
+    if (r - ratios[0]).abs() > 0.002 {
+        ratios[0] = r;
+        true
+    } else {
+        false
+    }
 }
 
 /// The user dragged edges of window `k`; turn that into new split ratios.
@@ -730,5 +960,195 @@ mod tests {
         let t = drag(4, 3, |r| r.left += 150);
         let (base, _) = layout(4, &[]);
         assert!(t[3].left > base[3].left);
+    }
+
+    fn overlaps(a: &RECT, b: &RECT) -> bool {
+        a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom
+    }
+
+    #[test]
+    fn place_matches_spiral() {
+        for n in 0..=8usize {
+            assert_eq!(
+                place(Layout::Spiral, AREA, n, &[0.3], GAP),
+                spiral(AREA, n, &[0.3], GAP)
+            );
+        }
+    }
+
+    #[test]
+    fn every_layout_covers_the_area_without_overlap() {
+        let layouts = [
+            Layout::Spiral,
+            Layout::MasterStack,
+            Layout::Grid,
+            Layout::Columns,
+        ];
+        for layout in layouts {
+            for n in 0..=12usize {
+                let (tiles, regions) = place(layout, AREA, n, &[], GAP);
+                assert_eq!(tiles.len(), n, "{layout:?} n={n}");
+                assert_eq!(regions.len(), n, "{layout:?} n={n}");
+                let r = inner(AREA, GAP);
+                for (i, t) in tiles.iter().enumerate() {
+                    assert!(
+                        t.left >= r.left
+                            && t.top >= r.top
+                            && t.right <= r.right
+                            && t.bottom <= r.bottom,
+                        "{layout:?} n={n} tile {i} {t:?} outside {r:?}"
+                    );
+                    assert!(
+                        t.right > t.left && t.bottom > t.top,
+                        "{layout:?} n={n} tile {i} is empty"
+                    );
+                }
+                for i in 0..n {
+                    for j in (i + 1)..n {
+                        assert!(
+                            !overlaps(&tiles[i], &tiles[j]),
+                            "{layout:?} n={n}: tiles {i} and {j} overlap"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn master_stack_puts_the_master_on_the_left() {
+        let r = inner(AREA, GAP);
+        let (t, _) = master_stack(AREA, 3, &[], GAP);
+        assert_eq!(t[0].top, r.top);
+        assert_eq!(t[0].bottom, r.bottom);
+        assert!(t[0].right <= t[1].left);
+        assert_eq!(t[1].left, t[2].left);
+        assert_eq!(t[1].right, t[2].right);
+        assert!(t[1].bottom <= t[2].top);
+        // a bigger master ratio widens the master
+        let (wide, _) = master_stack(AREA, 3, &[0.7], GAP);
+        assert!(wide[0].right > t[0].right);
+        // a single window fills the whole area, like the spiral
+        assert_eq!(master_stack(AREA, 1, &[], GAP).0[0], r);
+    }
+
+    #[test]
+    fn columns_are_equal_width() {
+        let r = inner(AREA, GAP);
+        let (t, _) = columns(AREA, 4, GAP);
+        let w = |x: &RECT| x.right - x.left;
+        assert!(near(w(&t[0]), w(&t[1])));
+        assert!(near(w(&t[2]), w(&t[1])));
+        assert!(
+            (w(&t[3]) - w(&t[0])).abs() <= 3,
+            "last column absorbs the remainder"
+        );
+        for x in &t {
+            assert_eq!(x.top, r.top);
+            assert_eq!(x.bottom, r.bottom);
+        }
+    }
+
+    #[test]
+    fn grid_two_by_two_for_four_windows() {
+        let (t, _) = grid(AREA, 4, GAP);
+        assert_eq!(t[0].top, t[1].top);
+        assert_eq!(t[2].top, t[3].top);
+        assert_eq!(t[0].left, t[2].left);
+        assert_eq!(t[1].left, t[3].left);
+        assert!(t[0].bottom <= t[2].top);
+        assert!(t[0].right <= t[1].left);
+        assert_eq!(t[3].right, inner(AREA, GAP).right);
+        assert_eq!(t[3].bottom, inner(AREA, GAP).bottom);
+        // three windows still make a 2x2 grid: window 2 goes below window 0
+        let (t3, _) = grid(AREA, 3, GAP);
+        assert_eq!(t3[2].left, t3[0].left);
+        assert!(t3[2].top > t3[0].top);
+        assert_eq!(t3[1].top, t3[0].top);
+    }
+
+    #[test]
+    fn split_for_layout_is_per_layout() {
+        assert_eq!(split_for_layout(Layout::Spiral, 0, 3, true), Some((0, 1.0)));
+        assert_eq!(
+            split_for_layout(Layout::MasterStack, 0, 3, true),
+            Some((0, 1.0))
+        );
+        assert_eq!(split_for_layout(Layout::MasterStack, 1, 3, true), None);
+        assert_eq!(split_for_layout(Layout::MasterStack, 0, 3, false), None);
+        assert_eq!(split_for_layout(Layout::MasterStack, 0, 1, true), None);
+        assert_eq!(split_for_layout(Layout::Grid, 0, 4, true), None);
+        assert_eq!(split_for_layout(Layout::Columns, 1, 4, true), None);
+    }
+
+    #[test]
+    fn master_stack_resize_changes_the_master_width() {
+        let (tiles, regions) = master_stack(AREA, 3, &[], GAP);
+        let mut rs: Vec<f32> = vec![];
+        // dragging the master's right edge past its tile widens the master
+        let new = RECT {
+            right: tiles[0].right + 400,
+            ..tiles[0]
+        };
+        assert!(apply_resize_for(
+            Layout::MasterStack,
+            &mut rs,
+            &tiles,
+            &regions,
+            0,
+            new,
+            GAP
+        ));
+        assert!(rs[0] > 0.5);
+        // dragging a stack window's left edge also moves the divider
+        let mut rs2: Vec<f32> = vec![0.5];
+        let new2 = RECT {
+            left: tiles[1].left + 300,
+            ..tiles[1]
+        };
+        assert!(apply_resize_for(
+            Layout::MasterStack,
+            &mut rs2,
+            &tiles,
+            &regions,
+            1,
+            new2,
+            GAP
+        ));
+        assert!(rs2[0] > 0.5);
+        // dragging a stack window's top edge does nothing (the bands are equal)
+        let mut rs3: Vec<f32> = vec![0.5];
+        let new3 = RECT {
+            top: tiles[1].top + 50,
+            ..tiles[1]
+        };
+        assert!(!apply_resize_for(
+            Layout::MasterStack,
+            &mut rs3,
+            &tiles,
+            &regions,
+            1,
+            new3,
+            GAP
+        ));
+    }
+
+    #[test]
+    fn place_fitted_master_stack_keeps_a_wide_stack() {
+        // a very large comfortable minimum forces the master to narrow so the stack stays usable
+        let windows = [1isize, 2, 3];
+        let (t, _) = place_fitted(
+            Layout::MasterStack,
+            AREA,
+            &windows,
+            &[],
+            &HashMap::new(),
+            (2000, 0),
+            GAP,
+        );
+        let stack_w = t[1].right - t[1].left;
+        let master_w = t[0].right - t[0].left;
+        assert!(stack_w >= 1998, "stack width {stack_w} < 2000");
+        assert!(master_w < stack_w, "the master narrowed to make room");
     }
 }

@@ -7,6 +7,10 @@ follows [Semantic Versioning](https://semver.org) (see [docs/RELEASING.md](docs/
 ## [Unreleased]
 
 ### Added
+- Three layouts beside the spiral: `master_stack` (a master column on the left, the rest stacked on
+  the right), `grid` and `columns`. The `layout` setting and the settings-launcher picker now work
+  (before they fell back to the spiral with a "not implemented" warning). Spiral and master-stack
+  resize by dragging an edge; grid and columns use equal, fixed tiles.
 - Moving the focused window to another workspace with `Alt+Shift+1`…`9` now follows it: the target
   workspace opens with the window focused (previously the window was parked and you stayed put).
 - A `close` action (default `Alt+Shift+Q`) that closes the focused window, like Alt+F4. It is added

@@ -69,8 +69,9 @@ use windows::Win32::UI::WindowsAndMessaging::{
 
 use config::{Action, Dir, FullscreenWindows, WS_COUNT};
 use geometry::{
-    anim_duration, apply_resize, ease, effective_step, fullscreen_action, lerp_rect, neighbour,
-    same_rect, spiral, spiral_fitted, split_for, FsAction, MAX_RATIO, MIN_RATIO, RESIZE_PX,
+    anim_duration, apply_resize_for, ease, effective_step, fullscreen_action, lerp_rect, neighbour,
+    place as layout_tiles, place_fitted, same_rect, split_for_layout, FsAction, MAX_RATIO,
+    MIN_RATIO, RESIZE_PX,
 };
 
 /// Where windows of inactive workspaces are parked (the same spot Windows uses for minimized ones).
@@ -394,8 +395,8 @@ fn workspace_for_new_window(s: &State, cur: u8) -> u8 {
     cur
 }
 
-/// The layout of `windows` on `area`: the spiral with the master shrink and the observed
-/// per-window minimum sizes applied (see `geometry::spiral_fitted`).
+/// The layout of `windows` on `area`: the configured layout with the adaptive fitting
+/// (master shrink / observed per-window minimum sizes) applied (see `geometry::place_fitted`).
 fn fitted(
     area: RECT,
     windows: &[isize],
@@ -403,7 +404,15 @@ fn fitted(
     mins: &HashMap<isize, (i32, i32)>,
 ) -> (Vec<RECT>, Vec<RECT>) {
     let (mw, mh) = config::min_tile();
-    spiral_fitted(area, windows, ratios, mins, mw, mh, config::gap())
+    place_fitted(
+        config::layout(),
+        area,
+        windows,
+        ratios,
+        mins,
+        (mw, mh),
+        config::gap(),
+    )
 }
 
 /// The monitor's work area (taskbar excluded), as Windows reports it.
@@ -1210,7 +1219,15 @@ unsafe extern "system" fn on_event(
                             let cur = s.cur;
                             let (tiles, regions) = (s.rects.clone(), s.regions.clone());
                             let mut rs = s.ratios.remove(&cur).unwrap_or_default();
-                            apply_resize(&mut rs, &tiles, &regions, k, vis, config::gap());
+                            apply_resize_for(
+                                config::layout(),
+                                &mut rs,
+                                &tiles,
+                                &regions,
+                                k,
+                                vis,
+                                config::gap(),
+                            );
                             s.ratios.insert(cur, rs);
                         }
                         s.resizing = false;
@@ -1407,7 +1424,7 @@ fn resize_focused(width: bool, grow: bool) {
         let Some(k) = s.last.iter().position(|h| *h == fg) else {
             return;
         };
-        let Some((j, sign)) = split_for(k, n, width) else {
+        let Some((j, sign)) = split_for_layout(config::layout(), k, n, width) else {
             return;
         };
         let gap = config::gap();
@@ -1523,13 +1540,27 @@ fn live_resize() {
         let cur = s.cur;
         let (tiles, regions) = (s.rects.clone(), s.regions.clone());
         let mut rs = s.ratios.remove(&cur).unwrap_or_default();
-        let changed = apply_resize(&mut rs, &tiles, &regions, k, vis, config::gap());
+        let changed = apply_resize_for(
+            config::layout(),
+            &mut rs,
+            &tiles,
+            &regions,
+            k,
+            vis,
+            config::gap(),
+        );
         if changed {
-            // While the user is dragging, lay out the *plain* spiral straight from the ratios:
+            // While the user is dragging, lay out the *plain* layout straight from the ratios:
             // the adaptive fitting (`fitted`) reshuffles every tile the moment a minimum size or
             // the narrowed master crosses a threshold, which makes the neighbours jump around
             // mid-drag. The full fitted layout is applied once on release (see `retile`).
-            let (new_tiles, new_regions) = spiral(work_area(), s.last.len(), &rs, config::gap());
+            let (new_tiles, new_regions) = layout_tiles(
+                config::layout(),
+                work_area(),
+                s.last.len(),
+                &rs,
+                config::gap(),
+            );
             let last = s.last.clone();
             for (i, hw) in last.iter().enumerate() {
                 if *hw != h {
@@ -2130,12 +2161,6 @@ fn start(interactive: bool) {
             notify("tile-rs: config error (built-in defaults are used)", &e);
         }
     }
-    if config::layout() != config::Layout::Spiral {
-        log(format!(
-            "layout \"{}\" is not implemented yet; using the spiral",
-            config::layout().name()
-        ));
-    }
 
     if interactive && first_run {
         let yes = msgbox(
@@ -2343,7 +2368,13 @@ fn main() {
                     a.top
                 );
             } else {
-                let (rects, _) = spiral(work_area(), c.tileable.len(), &[], config::gap());
+                let (rects, _) = layout_tiles(
+                    config::layout(),
+                    work_area(),
+                    c.tileable.len(),
+                    &[],
+                    config::gap(),
+                );
                 for (w, r) in c.tileable.iter().zip(rects) {
                     let _ = writeln!(
                         out,

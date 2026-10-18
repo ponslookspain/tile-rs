@@ -288,16 +288,9 @@ fn build_controls(parent: HWND) {
 
         group(parent, "Layout", 10, 190, 520, 215);
         c.layout[0] = radio(parent, "Spiral (dwindle)", 20, 220, true, true);
-        c.layout[1] = radio(
-            parent,
-            "Master - stack   (coming soon)",
-            20,
-            245,
-            false,
-            false,
-        );
-        c.layout[2] = radio(parent, "Grid   (coming soon)", 20, 270, false, false);
-        c.layout[3] = radio(parent, "Columns   (coming soon)", 20, 295, false, false);
+        c.layout[1] = radio(parent, "Master - stack", 20, 245, true, false);
+        c.layout[2] = radio(parent, "Grid", 20, 270, true, false);
+        c.layout[3] = radio(parent, "Columns", 20, 295, true, false);
         label(parent, "Min tile width (px):", 300, 220);
         c.min_w = edit(parent, 460, 217, 60);
         label(parent, "Min tile height (px):", 300, 245);
