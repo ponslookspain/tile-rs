@@ -6,6 +6,45 @@ follows [Semantic Versioning](https://semver.org) (see [docs/RELEASING.md](docs/
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-10-18
+
+### Added
+- Live drag & drop preview: while you drag a tiled window over another one's tile, that window
+  glides into the slot you are leaving, so it is clear the two will swap places when you let go.
+  Hovering away slides it back.
+- The workspace dots at the top can now be used with the mouse: hovering a dot brightens and gently
+  enlarges it (with a short animated transition), a hand cursor appears over it, and clicking a dot
+  switches to that workspace.
+- `media_windows` setting (`"float"`, the default, or `"tile"`): how to treat a window with a photo
+  or video open (a viewer / player showing a media file). `"float"` leaves it as the app opened it,
+  so a photo viewer or video player is not crammed into a tile; `"tile"` tiles it like any other
+  window. It can be overridden per app with a `[[rules]]` `action = "float"` / `"tile"`, and it is in
+  the settings launcher.
+
+### Changed
+- Animation frames now follow the primary monitor's refresh rate instead of a fixed 16 ms timer, so
+  window movement lines up with the display: it no longer judders against a 60 Hz screen and uses
+  the extra headroom on 120/144 Hz. An unreadable refresh rate falls back to the previous 16 ms.
+- While a window is gliding, the focus border is repositioned with fewer system calls per frame (no
+  window visibility toggle or background erase), keeping the animation cheaper.
+- The settings launcher scales with the display's DPI, so its window, controls and text stay
+  readable on high-DPI screens instead of rendering tiny.
+- The workspace indicator is centred and easier to read: round dots, the current workspace drawn as
+  a filled dot with a ring around it, a workspace that has windows filled in, and empty ones dimmed.
+
+### Fixed
+- Window titles and executable paths are now read with much larger buffers, so very long titles and
+  deeply nested installs (`process` / `title` rules) are no longer silently truncated.
+- The focus border is rounded again, at both its outer edge and its inner hole, instead of a square
+  ring around a rounded opening.
+- The focus border no longer sits on top of a right-click (context) menu: it is hidden while a popup
+  menu is open and brought back once the menu closes.
+- The focus border no longer flickers while a tiled window is being dragged or resized: it is hidden
+  for the duration of the drag and restored once the window snaps to its new tile.
+- Resizing a tile by dragging an edge no longer makes the whole layout jump: while the edge is being
+  dragged the neighbouring tiles follow the cursor proportionally, and the adaptive refit (minimum
+  sizes, narrowed master tile) is applied once when the drag ends.
+
 ## [0.3.0] - 2026-10-18
 
 ### Added
@@ -91,7 +130,8 @@ First working prototype.
 - Tray icon with menu, autostart, single-instance guard, first-run dialog.
 - `config.toml`: gap, animations, hotkeys, per-application rules (float / workspace).
 
-[Unreleased]: https://github.com/ponslookspain/tile-rs/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/ponslookspain/tile-rs/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/ponslookspain/tile-rs/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/ponslookspain/tile-rs/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/ponslookspain/tile-rs/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/ponslookspain/tile-rs/releases/tag/v0.1.0
