@@ -76,7 +76,7 @@ Prerequisites: everything you want in the release is merged into `main` and CI i
 7. The **Release workflow** (`.github/workflows/release.yml`) now: verifies that the tag matches
    `Cargo.toml`, runs the tests, builds `tile-rs-vX.Y.Z-windows-x64.zip` (exe, README, LICENSE,
    CHANGELOG, configuration reference) plus its `.sha256`, builds the Windows installer
-   `tile-rs-X.Y.Z-setup.exe` (Inno Setup, see `installer/tile-rs.iss`), and publishes a GitHub
+   `tile-rs-X.Y.Z-setup.exe` (Inno Setup, see `installer/tile-rs.iss`) plus its `.sha256`, and publishes a GitHub
    Release whose notes come from the changelog.
 8. **Verify**: download the installer from the release page and run it on a clean profile (it
    installs, opens the launcher and starts tile-rs); also check the portable zip and its SHA-256
@@ -116,3 +116,25 @@ Windows SDK (for `signtool.exe`); the GitHub `windows-latest` runner has it.
 Release binaries are built by GitHub Actions from the tagged commit; the zip's SHA-256 is
 published next to it. The executable is **not code-signed** until a certificate is configured as
 above (Windows SmartScreen shows a warning on the first start until then).
+
+## Updates in installed applications
+
+The manager checks the latest stable GitHub Release 15 seconds after startup and then every six
+hours. A tray notification opens the launcher. In **Updates**, users can check manually, read
+release notes, and explicitly install an available update. Publishing source commits alone does
+not notify users: push a version tag and let the release workflow publish its installer and
+`tile-rs-X.Y.Z-setup.exe.sha256` together. Drafts and prereleases are excluded.
+
+Downloads are limited to the repository's HTTPS release assets. The installer size and SHA-256
+are checked before a helper starts it. The helper waits for the launcher and manager to close,
+updates the current executable's folder, then starts tile-rs again. Existing user configuration
+is preserved. Windows may request elevation for a protected installation directory. Cancelling
+or failing installation shows an error and attempts to restart the existing executable.
+
+The update button uses the Windows installer, including for copies originally extracted from a
+portable ZIP; the updated folder becomes a registered Windows installation. Keep using manual
+ZIP downloads if an unregistered portable copy is required. An older release without an installer
+checksum cannot be installed through this updater. Versions shipped before this update feature
+must first be upgraded manually. SHA-256 detects corruption; configure code signing above for
+publisher identity verification. The first release containing this updater must be tested on
+Windows with two real release versions (notification, check, install, restart and config retention).

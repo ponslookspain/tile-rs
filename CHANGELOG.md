@@ -6,6 +6,25 @@ follows [Semantic Versioning](https://semver.org) (see [docs/RELEASING.md](docs/
 
 ## [Unreleased]
 
+### Changed
+- Cap animation work at a configurable 60 FPS by default; cache display refresh queries and
+  avoid monitor-list copies, redundant border paints and divider-window recreation.
+- Upload snapshot pixels directly from a shared CPU DIB, avoiding a second full-screen CPU
+  buffer; reuse preview vectors and remove per-frame GDI brush allocation.
+- Coalesce deferred motion events between lifecycle barriers and bound replay work so callback
+  bursts yield to frame scheduling. Bound retained motion keys and profiling samples.
+- Reuse dependency caches across CI/release jobs, lock dependency resolution in build scripts,
+  and reuse the packaged executable when building the release installer.
+
+### Fixed
+- Avoid desktop rescans for unrelated hidden/created/destroyed windows; bound reconciliation
+  retries when clients repeatedly reject an unchanged position and stop extending debounce
+  deadlines indefinitely during sustained event bursts.
+- Run tray update checks off the manager thread, suppress duplicate requests, reject incomplete
+  or unsuccessful HTTP responses, and compare prerelease versions correctly.
+- Save launcher/layout settings and migration backups through complete sibling files before
+  replacement, preserving the previous file when writing or replacement fails.
+
 ## [0.5.0] - 2026-10-18
 
 ### Added

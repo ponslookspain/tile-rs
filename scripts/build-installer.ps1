@@ -3,13 +3,26 @@
   Builds the release, copies it to dist\ and (if Inno Setup 6 is installed) builds the installer.
   Install Inno Setup from https://jrsoftware.org/isdl.php to get dist\tile-rs-<version>-setup.exe.
 #>
+param([switch]$SkipBuild)
+
 $ErrorActionPreference = 'Stop'
 Set-Location (Split-Path -Parent $PSScriptRoot)
 
-cargo build --release
-if ($LASTEXITCODE -ne 0) { throw 'cargo build --release failed' }
+if (-not $SkipBuild) {
+    cargo build --locked --release
+    if ($LASTEXITCODE -ne 0) { throw 'cargo build --release failed' }
+}
+if (-not (Test-Path 'target\release\tile-rs.exe')) {
+    throw 'target\release\tile-rs.exe not found; run without -SkipBuild first'
+}
 
 $version = (Select-String -Path Cargo.toml -Pattern '^version = "(.+)"').Matches[0].Groups[1].Value
+if ($SkipBuild) {
+    $builtVersion = (Get-Item 'target\release\tile-rs.exe').VersionInfo.ProductVersion
+    if ($builtVersion -ne $version) {
+        throw "Existing binary version '$builtVersion' does not match Cargo.toml '$version'; rebuild first"
+    }
+}
 New-Item -ItemType Directory -Force dist | Out-Null
 Copy-Item 'target\release\tile-rs.exe' 'dist\tile-rs.exe' -Force
 Write-Host "dist\tile-rs.exe updated (v$version)"

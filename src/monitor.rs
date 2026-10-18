@@ -137,32 +137,53 @@ pub fn refresh() {
 
 /// The cached monitor list, read once if it is still empty.
 pub fn list() -> Vec<Monitor> {
+    with_cached(|list| list.to_vec())
+}
+
+/// Do not call Win32 or client callbacks while borrowing this cache.
+fn with_cached<T>(read: impl FnOnce(&[Monitor]) -> T) -> T {
     let empty = CACHE.with(|c| c.borrow().is_empty());
     if empty {
         refresh();
     }
-    CACHE.with(|c| c.borrow().clone())
+    CACHE.with(|c| read(&c.borrow()))
+}
+
+pub fn count() -> usize {
+    with_cached(|list| list.len())
+}
+
+/// A stale monitor index falls back to the last real monitor without cloning device strings.
+pub fn work(mi: usize) -> RECT {
+    with_cached(|list| {
+        list.get(mi.min(list.len().saturating_sub(1)))
+            .map(|m| m.work)
+            .unwrap_or_default()
+    })
 }
 
 /// The work area (taskbar excluded) of the primary monitor.
 pub fn primary_work() -> RECT {
-    let list = list();
-    let i = primary_index(&list);
-    list.get(i).map(|m| m.work).unwrap_or_default()
+    with_cached(|list| {
+        list.get(primary_index(list))
+            .map(|m| m.work)
+            .unwrap_or_default()
+    })
 }
 
 /// The index of the monitor under `pt` (nearest).
 pub fn at(pt: POINT) -> usize {
-    nearest(&list(), pt)
+    with_cached(|list| nearest(list, pt))
 }
 
 /// The index of the monitor a window is on (nearest).
 pub fn of_window(hwnd: HWND) -> usize {
     let handle = unsafe { MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST) };
-    let list = list();
-    list.iter()
-        .position(|m| m.handle == handle)
-        .unwrap_or_default()
+    with_cached(|list| {
+        list.iter()
+            .position(|m| m.handle == handle)
+            .unwrap_or_default()
+    })
 }
 
 #[cfg(test)]

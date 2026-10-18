@@ -27,6 +27,7 @@ These keys go at the top of the file, before any `[section]`.
 | `animations` | `true` | Smooth movement of windows when the layout changes. |
 | `snapshot_animations` | `true` | Stretch frozen window images during mouse resize and eligible layout/workspace transitions. Enables draggable gaps in Spiral and Master/stack when `inner_gap > 0`: actual windows keep their sizes until release; Escape cancels. Hardware Direct2D rendering with GDI fallback. Overlapping, occluded or oversized captures disable gap dragging; native window edges remain available. Also available in the launcher. See [window motion](WINDOW-MOTION.md). |
 | `animation_ms` | `140` | Duration of the animation, `0`–`1000` ms. `0` turns animations off. Short moves take proportionally less time. |
+| `animation_fps_limit` | `60` | Maximum animation frame rate, `15`–`240` FPS, also bounded by the monitor refresh rate. Set `30` on slower PCs; `144` permits smoother motion on a high refresh rate screen. Edit in the config and reload it from the tray. |
 | `easing` | `"out_cubic"` | Animation curve: `linear`, `out_quad`, `out_cubic`, `out_quart`, `in_out_cubic`. |
 | `resize_step` | `40` | Pixels per key press of the grow/shrink hotkeys, `1`–`500`. A held key uses smaller, instant steps. |
 | `fullscreen_windows` | `"minimize"` | What to do with a window that runs fullscreen or borderless fullscreen (a game, a video player): `"minimize"` hides it while its workspace is not shown and restores it when you switch back; `"ignore"` leaves it completely alone. |

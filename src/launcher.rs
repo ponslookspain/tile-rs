@@ -2,13 +2,16 @@
 //! cannot block tile-rs' Win32 loop, WinEvent hooks, tray messages, or animation timers.
 
 use std::process::Command;
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
 use crate::config;
 use windows::core::{w, PCWSTR};
-use windows::Win32::Foundation::{CloseHandle, GetLastError, ERROR_ALREADY_EXISTS};
-use windows::Win32::System::Threading::CreateMutexW;
+use windows::Win32::Foundation::{CloseHandle, GetLastError, ERROR_ALREADY_EXISTS, WAIT_OBJECT_0};
+use windows::Win32::System::Threading::{
+    CreateEventW, CreateMutexW, SetEvent, WaitForSingleObject,
+};
 use windows::Win32::UI::HiDpi::{
     SetProcessDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
 };
@@ -27,6 +30,14 @@ pub fn create() -> bool {
 
 /// Start the UI process, or bring the existing launcher to the foreground.
 pub fn show() {
+    show_page(false);
+}
+
+pub fn show_updates() {
+    show_page(true);
+}
+
+fn show_page(updates: bool) {
     let exe = match std::env::current_exe() {
         Ok(path) => path,
         Err(err) => {
@@ -37,7 +48,12 @@ pub fn show() {
             return;
         }
     };
-    if let Err(err) = Command::new(exe).arg("--launcher-ui").spawn() {
+    let mut command = Command::new(exe);
+    command.arg("--launcher-ui");
+    if updates {
+        command.arg("--updates");
+    }
+    if let Err(err) = command.spawn() {
         crate::notify("tile-rs", &format!("Cannot open settings: {err}"));
     }
 }
@@ -104,9 +120,11 @@ pub fn run() {
     };
     populate(&ui, &cfg);
 
-    ui.on_check_updates(|| {
-        thread::spawn(crate::update::check_and_notify);
-    });
+    ui.set_app_version(env!("CARGO_PKG_VERSION").into());
+    if std::env::args().any(|arg| arg == "--updates") {
+        ui.set_page(6);
+    }
+    wire_updates(&ui);
     ui.on_open_github(|| {
         crate::tray::open("https://github.com/ponslookspain/tile-rs", "");
     });
@@ -136,8 +154,33 @@ pub fn run() {
         slint::quit_event_loop().ok();
     });
 
+    // Named event routes update notifications into an already open single-instance UI.
+    let updates_event =
+        unsafe { CreateEventW(None, false, false, w!("Local\\tile-rs-launcher-updates")) }.ok();
+    let routing_timer = slint::Timer::default();
+    if let Some(event) = updates_event {
+        let weak = ui.as_weak();
+        routing_timer.start(
+            slint::TimerMode::Repeated,
+            Duration::from_millis(250),
+            move || {
+                if unsafe { WaitForSingleObject(event, 0) } == WAIT_OBJECT_0 {
+                    if let Some(ui) = weak.upgrade() {
+                        ui.set_page(6);
+                        ui.invoke_check_updates();
+                    }
+                }
+            },
+        );
+    }
     if let Err(err) = ui.run() {
         crate::log(format!("launcher event loop failed: {err}"));
+    }
+    routing_timer.stop();
+    if let Some(event) = updates_event {
+        unsafe {
+            let _ = CloseHandle(event);
+        }
     }
     if !mutex.is_invalid() {
         unsafe {
@@ -147,6 +190,16 @@ pub fn run() {
 }
 
 fn activate_existing() {
+    if std::env::args().any(|arg| arg == "--updates") {
+        if let Ok(event) =
+            unsafe { CreateEventW(None, false, false, w!("Local\\tile-rs-launcher-updates")) }
+        {
+            unsafe {
+                let _ = SetEvent(event);
+                let _ = CloseHandle(event);
+            }
+        }
+    }
     // A second tray click can arrive before Slint has registered the top-level window.
     for _ in 0..20 {
         let hwnd = unsafe { FindWindowW(PCWSTR::null(), LAUNCHER_TITLE) }.unwrap_or_default();
@@ -206,6 +259,94 @@ fn populate(ui: &MainWindow, cfg: &config::Config) {
     ui.set_media_windows(i32::from(cfg.media_windows == MediaWindows::Tile));
     ui.set_hotkeys(hotkeys_text().into());
     ui.set_status(format!("Настройки загружены · версия {}", env!("CARGO_PKG_VERSION")).into());
+}
+
+/// UI state stays on Slint's thread; only network and installer work run on workers.
+fn wire_updates(ui: &MainWindow) {
+    let release = Arc::new(Mutex::new(None::<crate::update::Release>));
+    ui.on_check_updates({
+        let weak = ui.as_weak();
+        let release = release.clone();
+        move || {
+            let Some(ui) = weak.upgrade() else { return; };
+            if matches!(ui.get_update_state(), 1 | 4) { return; }
+            ui.set_update_state(1);
+            ui.set_update_message("Получаем информацию о последнем релизе…".into());
+            let weak = ui.as_weak();
+            let release = release.clone();
+            if let Err(err) = thread::Builder::new().name("launcher-update-check".into()).spawn(move || {
+                let result = crate::update::check_latest();
+                let _ = weak.upgrade_in_event_loop(move |ui| match result {
+                    Ok(Some(found)) => {
+                        ui.set_update_state(2);
+                        ui.set_update_version(found.version.clone().into());
+                        ui.set_release_notes(found.notes.clone().into());
+                        ui.set_update_message("После загрузки откроется установщик, затем tile-rs перезапустится. Сохраните изменения настроек перед установкой.".into());
+                        *release.lock().unwrap() = Some(found);
+                    }
+                    Ok(None) => {
+                        ui.set_update_state(3);
+                        ui.set_update_message("Обновлений нет. Можно продолжать работу.".into());
+                        ui.set_release_notes("".into());
+                        *release.lock().unwrap() = None;
+                    }
+                    Err(err) => {
+                        ui.set_update_state(5);
+                        ui.set_update_message(format!("Проверка не удалась: {err}. Нажмите Check update, чтобы повторить.").into());
+                    }
+                });
+            }) {
+                ui.set_update_state(5);
+                ui.set_update_message(format!("Не удалось запустить проверку: {err}").into());
+            }
+        }
+    });
+    ui.on_install_update({
+        let weak = ui.as_weak();
+        let release = release.clone();
+        move || {
+            let Some(ui) = weak.upgrade() else { return; };
+            if ui.get_update_state() != 2 { return; }
+            let Some(found) = release.lock().unwrap().clone() else { return; };
+            ui.set_update_state(4);
+            ui.set_update_progress(0);
+            ui.set_update_message("Загружаем установщик и проверяем SHA-256…".into());
+            let weak = ui.as_weak();
+            let worker_ui = weak.clone();
+            if let Err(err) = thread::Builder::new().name("launcher-update-install".into()).spawn(move || {
+                let progress_ui = worker_ui.clone();
+                let result = crate::update::install(&found, move |percent| {
+                    let _ = progress_ui.upgrade_in_event_loop(move |ui| ui.set_update_progress(i32::from(percent)));
+                });
+                let _ = worker_ui.upgrade_in_event_loop(move |ui| match result {
+                    Ok(()) => { let _ = slint::quit_event_loop(); }
+                    Err(err) => {
+                        ui.set_update_state(5);
+                        ui.set_update_message(format!("Установка не началась: {err}. Повторите проверку или откройте релизы.").into());
+                    }
+                });
+            }) {
+                ui.set_update_state(5);
+                ui.set_update_message(format!("Не удалось запустить загрузку: {err}").into());
+            }
+        }
+    });
+    ui.on_open_release({
+        let release = release.clone();
+        move || {
+            let url = release
+                .lock()
+                .unwrap()
+                .as_ref()
+                .map(|r| r.url.clone())
+                .unwrap_or_else(|| {
+                    "https://github.com/ponslookspain/tile-rs/releases/latest".into()
+                });
+            crate::tray::open(&url, "");
+        }
+    });
+    // Populate the update badge as soon as the launcher opens without blocking its event loop.
+    ui.invoke_check_updates();
 }
 
 fn easing_name(easing: crate::geometry::Easing) -> &'static str {
@@ -330,7 +471,7 @@ fn save(ui: &MainWindow) {
         ui.set_status(format!("Проверьте настройки: {err}").into());
         return;
     }
-    if let Err(err) = std::fs::write(&path, updated) {
+    if let Err(err) = config::save_atomic(&path, &updated) {
         ui.set_status(format!("Не удалось сохранить настройки: {err}").into());
         return;
     }

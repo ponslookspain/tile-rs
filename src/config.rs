@@ -2,7 +2,9 @@
 
 use std::cell::RefCell;
 use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::io::Write;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{OnceLock, RwLock};
 
 use serde::Deserialize;
@@ -95,8 +97,7 @@ impl IndicatorSize {
     }
 }
 
-/// The tiling layout. Only `Spiral` is implemented so far; the others are placeholders (they are
-/// shown in the launcher as "coming soon" and fall back to the spiral).
+/// The supported tiling layouts.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub enum Layout {
     /// Spiral / dwindle (the default).
@@ -150,6 +151,7 @@ struct RawConfig {
     animations: Option<bool>,
     snapshot_animations: Option<bool>,
     animation_ms: Option<u32>,
+    animation_fps_limit: Option<u32>,
     easing: Option<String>,
     fullscreen_windows: Option<String>,
     media_windows: Option<String>,
@@ -172,7 +174,7 @@ struct RawConfig {
 
 #[derive(Clone, Default, Debug)]
 pub struct Config {
-    /// The tiling layout (`spiral` for now).
+    /// The selected tiling layout.
     pub layout: Layout,
     /// Gap between neighbouring windows, in pixels.
     pub inner_gap: i32,
@@ -181,6 +183,7 @@ pub struct Config {
     pub animations: bool,
     pub snapshot_animations: bool,
     pub animation_ms: u32,
+    pub animation_fps_limit: u32,
     /// Easing curve of the animations.
     pub easing: Easing,
     /// How to handle windows that run fullscreen / borderless fullscreen.
@@ -229,8 +232,7 @@ pub fn default_config() -> String {
         r##"# tile-rs configuration.
 # After editing: save the file, then tray icon -> "Reload config".
 
-# Tiling layout. "spiral" (dwindle) is the only one for now; master_stack, grid and columns
-# are planned.
+# Tiling layout: spiral (dwindle), master_stack, grid or columns.
 layout = "spiral"
 
 # Gap between neighbouring windows (inner) and around the screen edges (outer), in pixels.
@@ -242,6 +244,7 @@ outer_gap = 10
 animations = true
 snapshot_animations = true # frozen images during resizing and layout transitions
 animation_ms = 140
+animation_fps_limit = 60 # 15..240; lower values reduce animation work on slower PCs
 
 # Easing of the window animations: linear, out_quad, out_cubic (default), out_quart, in_out_cubic.
 easing = "out_cubic"
@@ -410,7 +413,7 @@ pub fn migrate(text: &str) -> Option<String> {
     // new top-level settings go before the first [table]
     let mut top: Vec<String> = Vec::new();
     if !has("layout") {
-        top.push("# Tiling layout: spiral (the only one for now).".into());
+        top.push("# Tiling layout: spiral, master_stack, grid or columns.".into());
         top.push("layout = \"spiral\"".into());
     }
     if !has("inner_gap") && !has("gap") {
@@ -429,6 +432,9 @@ pub fn migrate(text: &str) -> Option<String> {
     }
     if !has("animation_ms") {
         top.push("animation_ms = 140".into());
+    }
+    if !has("animation_fps_limit") {
+        top.push("animation_fps_limit = 60".into());
     }
     if !has("snapshot_animations") {
         top.push("snapshot_animations = true".into());
@@ -558,8 +564,58 @@ pub fn migrate_file() -> bool {
     if parse(&new).is_err() {
         return false;
     }
-    let _ = std::fs::write(p.with_extension("toml.bak"), &text);
-    std::fs::write(&p, new).is_ok()
+    if save_atomic(&p.with_extension("toml.bak"), &text).is_err() {
+        return false;
+    }
+    save_atomic(&p, &new).is_ok()
+}
+
+/// Write a complete sibling file before replacing the destination. A failed write or rename
+/// leaves the previous config intact; temporary files are removed on every error path.
+pub fn save_atomic(path: &Path, text: &str) -> std::io::Result<()> {
+    static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
+    struct Temporary(PathBuf);
+    impl Drop for Temporary {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.0);
+        }
+    }
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    let name = path.file_name().ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "config path has no filename",
+        )
+    })?;
+    for _ in 0..16 {
+        let mut temporary_name = name.to_os_string();
+        temporary_name.push(format!(
+            ".{}.{}.tmp",
+            std::process::id(),
+            NEXT_TEMP.fetch_add(1, Ordering::Relaxed)
+        ));
+        let temporary_path = parent.join(temporary_name);
+        let mut file = match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temporary_path)
+        {
+            Ok(file) => file,
+            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(err) => return Err(err),
+        };
+        let temporary = Temporary(temporary_path);
+        let written = file
+            .write_all(text.as_bytes())
+            .and_then(|()| file.sync_all());
+        drop(file);
+        written?;
+        return std::fs::rename(&temporary.0, path);
+    }
+    Err(std::io::Error::new(
+        std::io::ErrorKind::AlreadyExists,
+        "could not create a temporary config file",
+    ))
 }
 
 fn parse_action(name: &str) -> Option<Action> {
@@ -774,6 +830,12 @@ pub fn parse(text: &str) -> Result<Config, String> {
         ));
     }
     let animation_ms = raw.animation_ms.unwrap_or(140);
+    let animation_fps_limit = raw.animation_fps_limit.unwrap_or(60);
+    if !(15..=240).contains(&animation_fps_limit) {
+        return Err(format!(
+            "animation_fps_limit = {animation_fps_limit}: must be between 15 and 240"
+        ));
+    }
     if animation_ms > 1000 {
         return Err(format!(
             "animation_ms = {animation_ms}: must be between 0 and 1000"
@@ -869,6 +931,7 @@ pub fn parse(text: &str) -> Result<Config, String> {
         animations,
         snapshot_animations,
         animation_ms,
+        animation_fps_limit,
         easing,
         fullscreen_windows,
         media_windows,
@@ -930,7 +993,7 @@ pub fn set(c: Config) {
     SNAPSHOT.with(|s| *s.borrow_mut() = None);
 }
 
-/// The configured tiling layout (only `Spiral` is implemented).
+/// The configured tiling layout.
 pub fn layout() -> Layout {
     with_cfg(|c| c.layout)
 }
@@ -952,6 +1015,10 @@ pub fn animation() -> (bool, u32) {
 
 pub fn snapshot_animations() -> bool {
     with_cfg(|c| c.snapshot_animations)
+}
+
+pub fn animation_fps_limit() -> u32 {
+    with_cfg(|c| c.animation_fps_limit)
 }
 
 /// Easing curve of the animations.
@@ -1018,6 +1085,56 @@ pub fn rules() -> Vec<Rule> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn atomic_save_replaces_complete_config_and_preserves_it_on_rename_failure() {
+        use std::os::windows::fs::OpenOptionsExt;
+        let directory = std::env::temp_dir().join(format!(
+            "tile-rs-atomic-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir(&directory).unwrap();
+        let path = directory.join("config.toml");
+        save_atomic(&path, "inner_gap = 10\n").unwrap();
+        save_atomic(&path, "inner_gap = 20\n").unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "inner_gap = 20\n");
+        // Deny delete/rename while allowing reads: Windows must reject replacement.
+        let locked = std::fs::OpenOptions::new()
+            .read(true)
+            .share_mode(1)
+            .open(&path)
+            .unwrap();
+        assert!(save_atomic(&path, "broken replacement").is_err());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "inner_gap = 20\n");
+        assert_eq!(
+            std::fs::read_dir(&directory).unwrap().count(),
+            1,
+            "temporary file leaked"
+        );
+        drop(locked);
+        std::fs::remove_file(path).unwrap();
+        std::fs::remove_dir(directory).unwrap();
+    }
+
+    #[test]
+    fn fps_limit_defaults_validate_and_survive_migration() {
+        assert_eq!(parse("").unwrap().animation_fps_limit, 60);
+        assert_eq!(
+            parse("animation_fps_limit = 30")
+                .unwrap()
+                .animation_fps_limit,
+            30
+        );
+        for invalid in [0, 14, 241] {
+            assert!(parse(&format!("animation_fps_limit = {invalid}")).is_err());
+        }
+        let migrated = migrate("animation_fps_limit = 144\n").unwrap();
+        assert_eq!(parse(&migrated).unwrap().animation_fps_limit, 144);
+    }
 
     #[test]
     fn default_config_parses() {
@@ -1145,7 +1262,7 @@ mod tests {
         assert!(migrate(&once).is_none(), "second run must change nothing");
         // a key the user commented out or turned off is not re-added
         let custom = "layout = \"spiral\"\ngap = 5\nanimations = false\n# animation_ms = 99\neasing = \"linear\"\nfullscreen_windows = \"ignore\"\nmedia_windows = \"tile\"\nresize_step = 10\nborder = false\n# border_color = \"#112233\"\nborder_width = 3\nmin_tile_width = 400\nmin_tile_height = 300\nmax_tiles = 6\nauto_overflow = false\nworkspace_indicator = false\nworkspace_indicator_size = \"small\"\nfocus_follows_mouse = true\n\n[hotkeys]\n# grow_width = \"alt+plus\"\n# shrink_width = \"alt+minus\"\nminimize = \"alt+shift+m\"\ntoggle_float = \"alt+shift+f\"\nclose = \"alt+shift+q\"\ncycle_layout = \"ctrl+alt+l\"\nquit = \"ctrl+alt+q\"\nworkspace_next = \"alt+shift+period\"\nworkspace_prev = \"alt+shift+comma\"\nmove_to_next_workspace = \"ctrl+alt+period\"\nmove_to_prev_workspace = \"ctrl+alt+comma\"\n";
-        let custom = format!("snapshot_animations = false\n{custom}");
+        let custom = format!("animation_fps_limit = 30\nsnapshot_animations = false\n{custom}");
         assert!(migrate(&custom).is_none());
         assert!(!parse(&custom).unwrap().snapshot_animations);
         // the freshly generated default never needs migrating

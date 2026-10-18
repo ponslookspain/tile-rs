@@ -7,8 +7,8 @@ use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, POINT, WPARAM
 use windows::Win32::Graphics::Gdi::{CreateBitmap, DeleteObject, HGDIOBJ};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::Shell::{
-    ShellExecuteW, Shell_NotifyIconW, NIF_ICON, NIF_MESSAGE, NIF_TIP, NIM_ADD, NIM_DELETE,
-    NIM_MODIFY, NOTIFYICONDATAW,
+    ShellExecuteW, Shell_NotifyIconW, NIF_ICON, NIF_INFO, NIF_MESSAGE, NIF_TIP, NIIF_INFO, NIM_ADD,
+    NIM_DELETE, NIM_MODIFY, NIN_BALLOONUSERCLICK, NOTIFYICONDATAW,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     AppendMenuW, CreateIconIndirect, CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyIcon,
@@ -146,6 +146,39 @@ pub fn update() {
             let _ = Shell_NotifyIconW(NIM_MODIFY, &d);
             let _ = DestroyIcon(icon);
         }
+    }
+}
+
+/// Show a non-modal release notification using the manager's existing tray icon.
+pub fn notify_update(version: &str) {
+    let raw = TRAY_HWND.load(Ordering::Relaxed);
+    if raw == 0 {
+        return;
+    }
+    let mut data = NOTIFYICONDATAW {
+        cbSize: std::mem::size_of::<NOTIFYICONDATAW>() as u32,
+        hWnd: HWND(raw as *mut _),
+        uID: TRAY_UID,
+        uFlags: NIF_INFO,
+        dwInfoFlags: NIIF_INFO,
+        ..Default::default()
+    };
+    for (dest, ch) in data
+        .szInfoTitle
+        .iter_mut()
+        .take(63)
+        .zip("tile-rs: доступно обновление".encode_utf16())
+    {
+        *dest = ch;
+    }
+    let message = format!(
+        "Версия {version} готова. Нажмите, чтобы открыть Check update и установить обновление."
+    );
+    for (dest, ch) in data.szInfo.iter_mut().take(255).zip(message.encode_utf16()) {
+        *dest = ch;
+    }
+    unsafe {
+        let _ = Shell_NotifyIconW(NIM_MODIFY, &data);
     }
 }
 
@@ -372,6 +405,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
     }
     if msg == WM_TRAY {
         match lparam.0 as u32 {
+            NIN_BALLOONUSERCLICK => crate::launcher::show_updates(),
             WM_RBUTTONUP => show_menu(hwnd),
             WM_LBUTTONDBLCLK => crate::dispatch(Action::Pause),
             _ => {}

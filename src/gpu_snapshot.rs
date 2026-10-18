@@ -1,12 +1,10 @@
 //! Upload a frozen desktop image once, then scale its tiles on a hardware Direct2D target.
 //! No capture sessions or foreign-process code injection are involved.
 use std::collections::HashSet;
-use std::mem::size_of;
 use windows::Win32::Foundation::{HWND, RECT};
 use windows::Win32::Graphics::Direct2D::Common::*;
 use windows::Win32::Graphics::Direct2D::*;
 use windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_B8G8R8A8_UNORM;
-use windows::Win32::Graphics::Gdi::*;
 
 pub struct Renderer {
     target: ID2D1HwndRenderTarget,
@@ -14,14 +12,13 @@ pub struct Renderer {
 }
 
 impl Renderer {
-    pub unsafe fn new(
-        hwnd: HWND,
-        dc: HDC,
-        bitmap: HBITMAP,
-        old: HGDIOBJ,
-        width: u32,
-        height: u32,
-    ) -> Option<Self> {
+    pub unsafe fn new(hwnd: HWND, pixels: &[u8], width: u32, height: u32) -> Option<Self> {
+        let len = (width as usize)
+            .checked_mul(height as usize)?
+            .checked_mul(4)?;
+        if width == 0 || height == 0 || pixels.len() != len {
+            return None;
+        }
         let factory: ID2D1Factory =
             D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, None).ok()?;
         let format = D2D1_PIXEL_FORMAT {
@@ -44,39 +41,6 @@ impl Renderer {
                 },
             )
             .ok()?;
-        let len = (width as usize)
-            .checked_mul(height as usize)?
-            .checked_mul(4)?;
-        let mut pixels = Vec::new();
-        pixels.try_reserve_exact(len).ok()?;
-        pixels.resize(len, 0u8);
-        let mut info = BITMAPINFO {
-            bmiHeader: BITMAPINFOHEADER {
-                biSize: size_of::<BITMAPINFOHEADER>() as u32,
-                biWidth: width as i32,
-                biHeight: -(height as i32),
-                biPlanes: 1,
-                biBitCount: 32,
-                biCompression: BI_RGB.0,
-                ..Default::default()
-            },
-            ..Default::default()
-        };
-        // GetDIBits requires that the source bitmap is temporarily deselected from its DC.
-        SelectObject(dc, old);
-        let rows = GetDIBits(
-            dc,
-            bitmap,
-            0,
-            height,
-            Some(pixels.as_mut_ptr().cast()),
-            &mut info,
-            DIB_RGB_COLORS,
-        );
-        SelectObject(dc, HGDIOBJ(bitmap.0));
-        if rows != height as i32 {
-            return None;
-        }
         let bitmap = target
             .CreateBitmap(
                 D2D_SIZE_U { width, height },

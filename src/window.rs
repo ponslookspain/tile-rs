@@ -119,15 +119,18 @@ const BROWSER_PROCESSES: &[&str] = &[
 
 /// True if `title` names a photo / video file: a `.extension` whose extension is a media one. Only
 /// the run of letters/digits right after the dot counts, so "index.ts" or a word merely containing
-/// the letters is not mistaken for a media file. Allocation-free (one lower-case copy of the title).
+/// the letters is not mistaken for a media file. No title-sized lower-case allocation is needed.
 fn title_has_media_ext(title: &str) -> bool {
-    let t = title.to_ascii_lowercase();
-    for (i, _) in t.match_indices('.') {
-        let rest = &t[i + 1..];
+    for (i, _) in title.match_indices('.') {
+        let rest = &title[i + 1..];
         let end = rest
             .find(|c: char| !c.is_ascii_alphanumeric())
             .unwrap_or(rest.len());
-        if end > 0 && MEDIA_EXTS.contains(&&rest[..end]) {
+        if end > 0
+            && MEDIA_EXTS
+                .iter()
+                .any(|extension| rest[..end].eq_ignore_ascii_case(extension))
+        {
             return true;
         }
     }
@@ -560,6 +563,18 @@ pub fn classify(hwnd: HWND, rules: &[Rule]) -> Verdict {
 
 unsafe extern "system" fn enum_proc(hwnd: HWND, lparam: LPARAM) -> BOOL {
     let c = &mut *(lparam.0 as *mut Collector);
+    // Runtime reconciliation needs no diagnostic strings for windows that cannot be
+    // managed. Preserve detailed classification for the user's `list` command.
+    if !c.keep_skipped {
+        let ex = GetWindowLongW(hwnd, GWL_EXSTYLE) as u32;
+        if !IsWindowVisible(hwnd).as_bool()
+            || IsIconic(hwnd).as_bool()
+            || ex & (WS_EX_TOOLWINDOW.0 | WS_EX_NOACTIVATE.0) != 0
+            || GetWindow(hwnd, GW_OWNER).is_ok_and(|owner| !owner.is_invalid())
+        {
+            return BOOL(1);
+        }
+    }
     match classify(hwnd, &c.rules) {
         Verdict::Ignore => {}
         Verdict::Tileable(w) => {

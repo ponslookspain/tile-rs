@@ -14,6 +14,21 @@ use windows::Win32::UI::WindowsAndMessaging::*;
 
 const MAX_PIXELS: i64 = 16_000_000; // At most ~64 MB per captured monitor.
 
+fn dib_info(width: i32, height: i32) -> BITMAPINFO {
+    BITMAPINFO {
+        bmiHeader: BITMAPINFOHEADER {
+            biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
+            biWidth: width,
+            biHeight: -height,
+            biPlanes: 1,
+            biBitCount: 32,
+            biCompression: BI_RGB.0,
+            ..Default::default()
+        },
+        ..Default::default()
+    }
+}
+
 struct Timeline {
     start: Instant,
     ms: u32,
@@ -27,11 +42,15 @@ struct Scene {
     dc: HDC,
     bitmap: HBITMAP,
     old_bitmap: HGDIOBJ,
+    /// Top-down BGRA storage owned by `bitmap`; never accessed after DeleteObject.
+    pixels: *const u8,
     sources: Vec<(isize, RECT)>,
     tiles: RefCell<Vec<(isize, RECT)>>,
     timeline: RefCell<Option<Timeline>>,
     hwnd: Cell<HWND>,
     opacity: Cell<u8>,
+    applied_opacity: Cell<u8>,
+    shown: Cell<bool>,
     frames: Cell<u32>,
     paint_us: Cell<u64>,
     gpu: RefCell<Option<crate::gpu_snapshot::Renderer>>,
@@ -98,9 +117,9 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
         }
         let mut client = RECT::default();
         let _ = GetClientRect(hwnd, &mut client);
-        let brush = CreateSolidBrush(COLORREF(0x001B1713));
+        let brush = HBRUSH(GetStockObject(DC_BRUSH).0);
+        SetDCBrushColor(dc, COLORREF(0x001B1713));
         FillRect(dc, &client, brush);
-        let _ = DeleteObject(HGDIOBJ(brush.0));
         SetStretchBltMode(dc, COLORONCOLOR);
         for (h, dest) in scene.tiles.borrow().iter() {
             if let Some((_, src)) = scene.sources.iter().find(|(source, _)| source == h) {
@@ -284,6 +303,7 @@ pub fn reveal(mi: usize) -> bool {
 /// Capture only currently visible pixels. No application IPC, disk I/O, or background capture.
 /// Unsupported/oversized surfaces fall back to the ordinary placement path.
 pub fn prepare(mi: usize, area: RECT, sources: &[(isize, RECT)]) -> bool {
+    let _capture = crate::diagnostics::Timer::new("snapshot_prepare");
     cancel(mi);
     let width = area.right - area.left;
     let height = area.bottom - area.top;
@@ -346,8 +366,11 @@ pub fn prepare(mi: usize, area: RECT, sources: &[(isize, RECT)]) -> bool {
             return false;
         }
         let dc = CreateCompatibleDC(Some(screen));
-        let bitmap = CreateCompatibleBitmap(screen, width, height);
-        if dc.is_invalid() || bitmap.is_invalid() {
+        let info = dib_info(width, height);
+        let mut pixels = std::ptr::null_mut();
+        let bitmap = CreateDIBSection(Some(screen), &info, DIB_RGB_COLORS, &mut pixels, None, 0)
+            .unwrap_or_default();
+        if dc.is_invalid() || bitmap.is_invalid() || pixels.is_null() {
             if !dc.is_invalid() {
                 let _ = DeleteDC(dc);
             }
@@ -358,6 +381,12 @@ pub fn prepare(mi: usize, area: RECT, sources: &[(isize, RECT)]) -> bool {
             return false;
         }
         let old_bitmap = SelectObject(dc, HGDIOBJ(bitmap.0));
+        if old_bitmap.is_invalid() || old_bitmap.0 as isize == -1 {
+            let _ = DeleteObject(HGDIOBJ(bitmap.0));
+            let _ = DeleteDC(dc);
+            let _ = ReleaseDC(None, screen);
+            return false;
+        }
         let captured = BitBlt(
             dc,
             0,
@@ -369,18 +398,22 @@ pub fn prepare(mi: usize, area: RECT, sources: &[(isize, RECT)]) -> bool {
             area.top,
             SRCCOPY,
         )
-        .is_ok();
+        .is_ok()
+            && GdiFlush().as_bool();
         let _ = ReleaseDC(None, screen);
         let scene = Box::new(Scene {
             area,
             dc,
             bitmap,
             old_bitmap,
+            pixels: pixels.cast(),
             sources: sources.to_vec(),
             tiles: RefCell::new(sources.to_vec()),
             timeline: RefCell::new(None),
             hwnd: Cell::new(HWND::default()),
             opacity: Cell::new(255),
+            applied_opacity: Cell::new(255),
+            shown: Cell::new(false),
             frames: Cell::new(0),
             paint_us: Cell::new(0),
             gpu: RefCell::new(None),
@@ -437,11 +470,17 @@ fn render(scene: &Scene) -> bool {
             }
         }
         if !scene.gpu_attempted.replace(true) {
+            let _upload = crate::diagnostics::Timer::new("snapshot_upload");
             *scene.gpu.borrow_mut() = crate::gpu_snapshot::Renderer::new(
                 hwnd,
-                scene.dc,
-                scene.bitmap,
-                scene.old_bitmap,
+                // prepare() validates the dimensions, allocates a 32bpp DIB and
+                // flushes GDI before exposing its backing storage to Direct2D.
+                std::slice::from_raw_parts(
+                    scene.pixels,
+                    ((scene.area.right - scene.area.left) as usize)
+                        * ((scene.area.bottom - scene.area.top) as usize)
+                        * 4,
+                ),
                 (scene.area.right - scene.area.left) as u32,
                 (scene.area.bottom - scene.area.top) as u32,
             );
@@ -456,22 +495,32 @@ fn render(scene: &Scene) -> bool {
                 ));
             }
         }
-        let _ = SetWindowPos(
-            hwnd,
-            Some(HWND_TOPMOST),
-            0,
-            0,
-            0,
-            0,
-            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
-        );
+        if !scene.shown.get() {
+            let _ = SetWindowPos(
+                hwnd,
+                Some(HWND_TOPMOST),
+                0,
+                0,
+                0,
+                0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+            );
+        }
         let _ = InvalidateRect(Some(hwnd), None, false);
-        if SetLayeredWindowAttributes(hwnd, COLORREF(0), scene.opacity.get(), LWA_ALPHA).is_err() {
-            return false;
+        if scene.applied_opacity.get() != scene.opacity.get() {
+            if SetLayeredWindowAttributes(hwnd, COLORREF(0), scene.opacity.get(), LWA_ALPHA)
+                .is_err()
+            {
+                return false;
+            }
+            scene.applied_opacity.set(scene.opacity.get());
         }
         // These are our own windows; painting cannot block on a foreign application's UI thread.
         let _ = UpdateWindow(hwnd);
-        let _ = ShowWindow(hwnd, SW_SHOWNA);
+        if !scene.shown.get() {
+            let _ = ShowWindow(hwnd, SW_SHOWNA);
+            scene.shown.set(true);
+        }
     }
     scene.frames.set(scene.frames.get().saturating_add(1));
     if let Some(started) = started {
@@ -491,7 +540,8 @@ pub fn preview(mi: usize, tiles: &[(isize, RECT)]) -> bool {
         let Some(scene) = scenes.get(&mi) else {
             return false;
         };
-        *scene.tiles.borrow_mut() = tiles.to_vec();
+        scene.tiles.borrow_mut().clear();
+        scene.tiles.borrow_mut().extend_from_slice(tiles);
         render(scene)
     })
 }
@@ -538,7 +588,7 @@ pub fn tick() -> bool {
                 {
                     finished.push(*mi);
                 } else {
-                    *scene.tiles.borrow_mut() = timeline.to.clone();
+                    scene.tiles.borrow_mut().clone_from(&timeline.to);
                     scene.progress.set(1.0);
                     if !render(scene) {
                         finished.push(*mi);
@@ -551,17 +601,17 @@ pub fn tick() -> bool {
             if timeline.fade_out {
                 scene.opacity.set(((1.0 - eased) * 255.0).round() as u8);
             }
-            *scene.tiles.borrow_mut() = timeline
-                .to
-                .iter()
-                .filter_map(|(h, to)| {
+            {
+                let mut tiles = scene.tiles.borrow_mut();
+                tiles.clear();
+                tiles.extend(timeline.to.iter().filter_map(|(h, to)| {
                     timeline
                         .from
                         .iter()
                         .find(|(source, _)| source == h)
                         .map(|(_, from)| (*h, crate::geometry::lerp_rect(from, to, eased)))
-                })
-                .collect();
+                }));
+            }
             if !render(scene) {
                 finished.push(*mi);
             }
@@ -578,6 +628,33 @@ pub fn tick() -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn dib_storage_matches_top_down_bgra_upload_and_gdi_fallback() {
+        unsafe {
+            let dc = CreateCompatibleDC(None);
+            assert!(!dc.is_invalid());
+            let mut bits = std::ptr::null_mut();
+            let bitmap =
+                CreateDIBSection(None, &dib_info(2, 2), DIB_RGB_COLORS, &mut bits, None, 0)
+                    .unwrap();
+            let old = SelectObject(dc, HGDIOBJ(bitmap.0));
+            let top = SetPixelV(dc, 0, 0, COLORREF(0x0000ff)).as_bool();
+            let bottom = SetPixelV(dc, 1, 1, COLORREF(0xff0000)).as_bool();
+            let flushed = GdiFlush().as_bool();
+            let pixels = std::slice::from_raw_parts(bits.cast::<u8>(), 16).to_vec();
+            let gdi_top = GetPixel(dc, 0, 0);
+            let gdi_bottom = GetPixel(dc, 1, 1);
+            SelectObject(dc, old);
+            let deleted_bitmap = DeleteObject(HGDIOBJ(bitmap.0)).as_bool();
+            let deleted_dc = DeleteDC(dc).as_bool();
+            assert!(top && bottom && flushed && deleted_bitmap && deleted_dc);
+            assert_eq!(&pixels[..3], &[0, 0, 255]);
+            assert_eq!(&pixels[12..15], &[255, 0, 0]);
+            assert_eq!(gdi_top, COLORREF(0x0000ff));
+            assert_eq!(gdi_bottom, COLORREF(0xff0000));
+        }
+    }
 
     #[test]
     fn overlapping_sources_fall_back_instead_of_capturing_the_wrong_window() {

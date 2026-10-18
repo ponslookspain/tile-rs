@@ -39,7 +39,15 @@ costs; this implementation does not promise that every application repaints with
   its content changes behind the snapshot. Neighbouring applications retain their sizes until
   release. No process is suspended and no foreign window receives `WM_SETREDRAW`.
 - Commit neighbour geometry through `DeferWindowPos`. Individual bounded placements recover from
-  batch failure. Verify settled geometry and observe application minimum sizes afterwards.
+  batch failure. Both batches and individual placements use `SWP_ASYNCWINDOWPOS`; restoring or
+  minimizing foreign windows uses `ShowWindowAsync`. A busy application must not hold the manager's
+  input loop and capture watchdogs inside a synchronous window-position call. API success means
+  acceptance, not completion: verify geometry afterwards and defer minimum-size observations for
+  at least the verification interval (90 ms), so the previous large frame is not learned immediately
+  as a permanent minimum. Applications that remain unresponsive can still delay their own geometry.
+- The focus border follows observed visible bounds rather than posted animation targets.
+  Location-change events update it even when the event matches the manager's expected geometry;
+  animation ticks and delayed verification also resynchronize it after placement.
 - Resize hotkeys and tile swaps do not capture the screen: single resize taps use ordinary
   geometry animation, while held keys commit all affected windows together immediately.
   General layout reconciliation only reuses an existing mouse-resize scene; it does not
@@ -56,6 +64,7 @@ costs; this implementation does not promise that every application repaints with
 | Motion lifecycle | A parked window's old animation brings it back | Cancel the monitor's old queue; validate workspace and drag ownership before every frame |
 | Retargeting | Pointer events restart an unchanged animation | Keep an identical target and its original start time |
 | Geometry transactions | One member rejects a batch, or stale DWM bounds look like a huge border | Bounded fallback and verification; validate border offsets |
+| Busy applications | Extreme resizing leaves a client slow to process position messages | Post placements and show-state changes asynchronously; verify after settling instead of blocking mouse cleanup |
 | Resize preview | A neighbour is destroyed or a new window appears during drag | Cancel the stale scene and defer whole-layout reconciliation until the gesture ends |
 | Event ownership | A global quiet period hides another window's genuine movement | Compare the most recent expected frame independently for each HWND |
 | Callback reentrancy | Foreign window calls deliver another WinEvent while state is borrowed | Queue ordered events and replay after the transaction |
@@ -76,17 +85,22 @@ often applies while a new window initially overlaps the existing layout. Protect
 appear black and should use the ordinary mode. HDR colour fidelity is not guaranteed by the SDR
 screen capture path.
 
-GPU copies and the temporary pixel upload buffer consume memory in addition to the CPU bitmap
-budget above. Scheduling uses refresh-derived timers, not a guarantee of display-vsync alignment.
+The CPU snapshot is a top-down 32-bit DIB. Direct2D uploads from that storage directly, without
+an additional full-screen CPU staging copy. GPU copies and render targets still consume memory
+in addition to the CPU bitmap budget above. Scheduling uses cached refresh-derived timers,
+capped by `animation_fps_limit` (60 by default), not a guarantee of display-vsync alignment.
 Application-enforced minimum sizes are still handled most fully by the spiral layout; the other
 layouts retain their existing constraints. The native selected window still performs its own
-layout work. A future custom divider gesture could eliminate that work too.
+layout work; dragging the custom gap avoids repeatedly resizing those application windows.
 
 ## Verification
 
 Automated checks cover geometry/configuration, hidden-workspace/pause/drag guards, unchanged
 animation targets, independent expected geometry, destroyed-window cleanup, queued reentrant
-destroy events, timer fallback and capture rejection. The autostart registry test is unrelated
+destroy events, timer fallback and capture rejection. A hidden test window deliberately stops
+pumping messages for 900 ms: individual and batch placement must each return within 450 ms,
+must not learn its old large size as a minimum, and must apply the final position when it resumes.
+The autostart registry test is unrelated
 and is excluded from the focused motion test run:
 
 ```powershell
@@ -108,5 +122,7 @@ Manual visual verification is still required. It has not been replaced by the un
    resizing; verify keyboard resizing still responds immediately while held.
 
 Set `TILE_RS_PROFILE=1` before starting tile-rs to record layout/batch times, cumulative real-window
-placement counts, selected snapshot renderer, scene frame counts and average rendering time in
-the existing log. These are instrumentation, not a claim that desktop performance was measured.
+placement counts, queue/coalescing counters, capture/upload durations, selected snapshot renderer,
+scene frame counts and average rendering time in the existing log. Animation percentiles retain
+at most the latest 4096 samples per metric. These are instrumentation, not a claim that desktop
+performance was measured. See the [performance audit](PERFORMANCE-AUDIT.md) for remaining work.

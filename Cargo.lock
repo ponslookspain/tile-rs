@@ -4350,6 +4350,7 @@ name = "tile-rs"
 version = "0.5.0"
 dependencies = [
  "serde",
+ "serde_json",
  "slint",
  "slint-build",
  "toml 0.8.23",

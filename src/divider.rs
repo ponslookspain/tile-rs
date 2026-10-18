@@ -83,9 +83,23 @@ pub struct Resize {
     pub regions: Vec<RECT>,
     pub minimums: Vec<(i32, i32)>,
     pub origin: POINT,
+    pub last_pointer_axis: i32,
 }
 
 impl Resize {
+    /// Ignore motion parallel to the separator and repeated timer samples.
+    pub fn pointer_changed(&mut self, point: POINT) -> bool {
+        let axis = if self.handle.vertical {
+            point.x
+        } else {
+            point.y
+        };
+        if axis == self.last_pointer_axis {
+            return false;
+        }
+        self.last_pointer_axis = axis;
+        true
+    }
     /// Always calculate from the gesture's original geometry, never from previous frames.
     pub fn target(&self, point: POINT) -> (Vec<f32>, Vec<RECT>, Vec<RECT>) {
         let j = self.handle.split;
@@ -200,18 +214,10 @@ pub fn sync(handles: Vec<Handle>) {
         return;
     }
     // Remove handles from TLS before destroying their windows (Win32 can call us back).
-    let old = SURFACES.with(|s| std::mem::take(&mut *s.borrow_mut()));
-    for (_, hwnd) in old {
-        unsafe {
-            let _ = DestroyWindow(hwnd);
-        }
-    }
-    if handles.is_empty() {
-        return;
-    }
+    let mut old = SURFACES.with(|s| std::mem::take(&mut *s.borrow_mut()));
     unsafe {
         let instance = HINSTANCE(GetModuleHandleW(None).unwrap_or_default().0);
-        if !REGISTERED.with(|r| r.get()) {
+        if !handles.is_empty() && !REGISTERED.with(|r| r.get()) {
             let class = WNDCLASSW {
                 hInstance: instance,
                 lpszClassName: w!("tile-rs-divider"),
@@ -219,12 +225,33 @@ pub fn sync(handles: Vec<Handle>) {
                 ..Default::default()
             };
             if RegisterClassW(&class) == 0 {
+                SURFACES.with(|s| *s.borrow_mut() = old);
                 return;
             }
             REGISTERED.with(|r| r.set(true));
         }
         for handle in handles {
             let r = handle.rect;
+            if let Some(index) = old
+                .iter()
+                .position(|(h, _)| h.monitor == handle.monitor && h.split == handle.split)
+            {
+                let (previous, hwnd) = old.swap_remove(index);
+                // Publish the updated handle before SetWindowPos can dispatch messages.
+                SURFACES.with(|s| s.borrow_mut().push((handle, hwnd)));
+                if previous.rect != r {
+                    let _ = SetWindowPos(
+                        hwnd,
+                        None,
+                        r.left,
+                        r.top,
+                        r.right - r.left,
+                        r.bottom - r.top,
+                        SWP_NOACTIVATE | SWP_NOZORDER,
+                    );
+                }
+                continue;
+            }
             if let Ok(hwnd) = CreateWindowExW(
                 WS_EX_LAYERED | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_TOPMOST,
                 w!("tile-rs-divider"),
@@ -243,6 +270,9 @@ pub fn sync(handles: Vec<Handle>) {
                 SURFACES.with(|s| s.borrow_mut().push((handle, hwnd)));
                 let _ = ShowWindow(hwnd, SW_SHOWNA);
             }
+        }
+        for (_, hwnd) in old {
+            let _ = DestroyWindow(hwnd);
         }
     }
 }
@@ -349,7 +379,26 @@ mod tests {
             regions,
             minimums: vec![(100, 80); n],
             origin,
+            last_pointer_axis: if handle.vertical { origin.x } else { origin.y },
         }
+    }
+
+    #[test]
+    fn repeated_and_parallel_pointer_motion_does_not_recompute_resize() {
+        let mut resize = gesture(Layout::Spiral, 3, 0);
+        let origin = resize.origin;
+        assert!(!resize.pointer_changed(origin));
+        assert!(!resize.pointer_changed(POINT {
+            y: origin.y + 50,
+            ..origin
+        }));
+        let moved = POINT {
+            x: origin.x + 1,
+            ..origin
+        };
+        assert!(resize.pointer_changed(moved));
+        assert!(!resize.pointer_changed(moved));
+        assert!(resize.pointer_changed(origin));
     }
 
     #[test]

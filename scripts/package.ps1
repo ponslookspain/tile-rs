@@ -18,7 +18,7 @@ if (-not $version) { throw 'Could not read the version from Cargo.toml' }
 if ($version -notmatch '^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$') { throw 'Invalid package version' }
 
 if (-not $SkipBuild) {
-    cargo build --release
+    cargo build --locked --release
     if ($LASTEXITCODE -ne 0) { throw 'cargo build --release failed' }
 }
 if (-not (Test-Path target\release\tile-rs.exe)) { throw 'target\release\tile-rs.exe not found' }

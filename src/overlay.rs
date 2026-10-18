@@ -40,6 +40,8 @@ static BORDER_VISIBLE: AtomicBool = AtomicBool::new(false);
 static BORDER_COLOR: AtomicU32 = AtomicU32::new(0x00FF_FFFF);
 static BORDER_WIDTH: AtomicU32 = AtomicU32::new(2);
 static BORDER_RADIUS: AtomicU32 = AtomicU32::new(10);
+static BORDER_PAINT_WIDTH: AtomicI32 = AtomicI32::new(0);
+static BORDER_PAINT_HEIGHT: AtomicI32 = AtomicI32::new(0);
 /// Colour that is made transparent (the centre of the border window).
 const BORDER_KEY: u32 = 0x00FF_00FE;
 
@@ -160,8 +162,14 @@ pub fn show_border(rect: RECT, window: HWND, radius: i32, width: i32) {
     if w <= 0 || h <= 0 {
         return;
     }
-    BORDER_WIDTH.store(width.max(1) as u32, Ordering::Relaxed);
+    let drawing_changed = BORDER_WIDTH.swap(width.max(1) as u32, Ordering::Relaxed)
+        != width.max(1) as u32
+        || BORDER_RADIUS.load(Ordering::Relaxed) != radius.max(1) as u32
+        || BORDER_PAINT_WIDTH.load(Ordering::Relaxed) != w
+        || BORDER_PAINT_HEIGHT.load(Ordering::Relaxed) != h;
     BORDER_RADIUS.store(radius.max(1) as u32, Ordering::Relaxed);
+    BORDER_PAINT_WIDTH.store(w, Ordering::Relaxed);
+    BORDER_PAINT_HEIGHT.store(h, Ordering::Relaxed);
     unsafe {
         let hwnd = HWND(raw as *mut _);
         let _ = SetWindowPos(
@@ -173,9 +181,10 @@ pub fn show_border(rect: RECT, window: HWND, radius: i32, width: i32) {
             h,
             SWP_NOACTIVATE,
         );
-        // the frame depends on the size, so repaint on every move; it paints every pixel, so no
-        // background erase is needed
-        let _ = InvalidateRect(Some(hwnd), None, false);
+        // Pure translations reuse the existing layered bitmap.
+        if drawing_changed {
+            let _ = InvalidateRect(Some(hwnd), None, false);
+        }
         // only show it if it is not already visible (this runs on every animation frame)
         if !BORDER_VISIBLE.swap(true, Ordering::Relaxed) {
             let _ = ShowWindow(hwnd, SW_SHOWNA);
@@ -193,7 +202,19 @@ pub fn hide_border() {
     }
 }
 
+#[cfg(test)]
+pub(crate) fn border_rect() -> Option<RECT> {
+    let hwnd = HWND(BORDER.load(Ordering::Relaxed) as *mut _);
+    let mut rect = RECT::default();
+    unsafe {
+        windows::Win32::UI::WindowsAndMessaging::GetWindowRect(hwnd, &mut rect).ok()?;
+    }
+    Some(rect)
+}
+
 pub fn destroy_border() {
+    BORDER_PAINT_WIDTH.store(0, Ordering::Relaxed);
+    BORDER_PAINT_HEIGHT.store(0, Ordering::Relaxed);
     BORDER_VISIBLE.store(false, Ordering::Relaxed);
     let raw = BORDER.swap(0, Ordering::Relaxed);
     if raw != 0 {

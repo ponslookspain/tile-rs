@@ -11,7 +11,9 @@
 #![windows_subsystem = "windows"]
 
 mod config;
+mod diagnostics;
 mod divider;
+mod event_queue;
 mod geometry;
 mod gpu_snapshot;
 mod launcher;
@@ -25,13 +27,11 @@ mod window;
 
 use window::{classify, collect, is_fullscreen, visible_rect, Verdict, Win};
 
-use std::cell::RefCell;
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::cell::{Cell, RefCell};
+use std::collections::{HashMap, HashSet};
 use std::io::Write;
 use std::mem::size_of;
-use std::path::PathBuf;
 use std::sync::atomic::Ordering;
-use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
 use windows::core::{w, PCWSTR};
@@ -57,17 +57,17 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{RegisterHotKey, UnregisterHotK
 use windows::Win32::UI::WindowsAndMessaging::{
     DispatchMessageW, GetAncestor, GetCursorPos, GetForegroundWindow, GetGUIThreadInfo,
     GetShellWindow, GetWindowLongW, GetWindowRect, GetWindowThreadProcessId, IsIconic, IsWindow,
-    IsZoomed, KillTimer, MessageBoxW, MsgWaitForMultipleObjectsEx, PeekMessageW, PostMessageW,
-    PostQuitMessage, SetForegroundWindow, SetTimer, SetWindowPos, ShowWindow, TranslateMessage,
-    WindowFromPoint, EVENT_OBJECT_CLOAKED, EVENT_OBJECT_CREATE, EVENT_OBJECT_DESTROY,
-    EVENT_OBJECT_HIDE, EVENT_OBJECT_LOCATIONCHANGE, EVENT_OBJECT_SHOW, EVENT_OBJECT_UNCLOAKED,
-    EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_MENUPOPUPEND, EVENT_SYSTEM_MENUPOPUPSTART,
-    EVENT_SYSTEM_MINIMIZEEND, EVENT_SYSTEM_MINIMIZESTART, EVENT_SYSTEM_MOVESIZEEND,
-    EVENT_SYSTEM_MOVESIZESTART, GA_ROOT, GUITHREADINFO, GUI_INMOVESIZE, GWL_STYLE, IDYES,
-    MB_ICONINFORMATION, MB_ICONQUESTION, MB_OK, MB_TOPMOST, MB_YESNO, MSG, MWMO_INPUTAVAILABLE,
-    PM_REMOVE, QS_ALLINPUT, SWP_NOACTIVATE, SWP_NOOWNERZORDER, SWP_NOSIZE, SWP_NOZORDER,
-    SW_MINIMIZE, SW_RESTORE, WINEVENT_OUTOFCONTEXT, WINEVENT_SKIPOWNPROCESS, WM_CLOSE, WM_HOTKEY,
-    WM_QUIT, WM_TIMER, WS_CHILD,
+    IsWindowVisible, IsZoomed, KillTimer, MessageBoxW, MsgWaitForMultipleObjectsEx, PeekMessageW,
+    PostMessageW, PostQuitMessage, SetForegroundWindow, SetTimer, SetWindowPos, ShowWindowAsync,
+    TranslateMessage, WindowFromPoint, EVENT_OBJECT_CLOAKED, EVENT_OBJECT_CREATE,
+    EVENT_OBJECT_DESTROY, EVENT_OBJECT_HIDE, EVENT_OBJECT_LOCATIONCHANGE, EVENT_OBJECT_SHOW,
+    EVENT_OBJECT_UNCLOAKED, EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_MENUPOPUPEND,
+    EVENT_SYSTEM_MENUPOPUPSTART, EVENT_SYSTEM_MINIMIZEEND, EVENT_SYSTEM_MINIMIZESTART,
+    EVENT_SYSTEM_MOVESIZEEND, EVENT_SYSTEM_MOVESIZESTART, GA_ROOT, GUITHREADINFO, GUI_INMOVESIZE,
+    GWL_STYLE, IDYES, MB_ICONINFORMATION, MB_ICONQUESTION, MB_OK, MB_TOPMOST, MB_YESNO, MSG,
+    MWMO_INPUTAVAILABLE, PM_REMOVE, QS_ALLINPUT, SWP_ASYNCWINDOWPOS, SWP_NOACTIVATE,
+    SWP_NOOWNERZORDER, SWP_NOSIZE, SWP_NOZORDER, SW_MINIMIZE, SW_RESTORE, WINEVENT_OUTOFCONTEXT,
+    WINEVENT_SKIPOWNPROCESS, WM_CLOSE, WM_HOTKEY, WM_QUIT, WM_TIMER, WS_CHILD,
 };
 
 use config::{Action, Dir, FullscreenWindows, Layout, WS_COUNT};
@@ -85,173 +85,8 @@ const PARK_Y: i32 = -32000;
 // logging (the release build has no console, so we log to a file)
 // ---------------------------------------------------------------------------
 
-static LOG_PATH: OnceLock<PathBuf> = OnceLock::new();
-
-pub fn log_file() -> &'static PathBuf {
-    LOG_PATH.get_or_init(|| {
-        let base = std::env::var_os("LOCALAPPDATA")
-            .map(PathBuf::from)
-            .unwrap_or_else(std::env::temp_dir)
-            .join("tile-rs");
-        let _ = std::fs::create_dir_all(&base);
-        base.join("tile-rs.log")
-    })
-}
-
-/// Cap on the log file size: once it is exceeded it is truncated and restarted, so a long session
-/// cannot grow it without bound.
-const LOG_MAX_BYTES: u64 = 1 << 20;
-
-/// Keeps the log file open instead of reopening it for every line (a syscall per `log` call adds up
-/// on the re-tile path). One sink per thread; the app logs from the main thread only.
-struct LogSink {
-    file: Option<std::fs::File>,
-    written: u64,
-}
-
-thread_local! {
-    static LOG: RefCell<LogSink> = const { RefCell::new(LogSink { file: None, written: 0 }) };
-}
-
-pub fn log(msg: impl AsRef<str>) {
-    let msg = msg.as_ref();
-    LOG.with(|l| {
-        let mut sink = l.borrow_mut();
-        if sink.file.is_none() {
-            if let Ok(f) = std::fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(log_file())
-            {
-                sink.written = f.metadata().map(|m| m.len()).unwrap_or(0);
-                sink.file = Some(f);
-            }
-        }
-        if sink.file.is_none() {
-            return; // could not open the log: stay silent, like before
-        }
-        if sink.written > LOG_MAX_BYTES {
-            if let Some(f) = sink.file.as_mut() {
-                if f.set_len(0).is_ok() {
-                    sink.written = 0;
-                }
-            }
-        }
-        if let Some(f) = sink.file.as_mut() {
-            if writeln!(f, "{msg}").is_ok() {
-                sink.written += msg.len() as u64 + 1;
-            }
-        }
-    });
-}
-
-fn log_reset() {
-    let _ = std::fs::write(log_file(), "");
-    LOG.with(|l| {
-        let mut sink = l.borrow_mut();
-        sink.written = 0;
-        sink.file = None; // reopen lazily so the freshly truncated file is picked up
-    });
-}
-
-// ---------------------------------------------------------------------------
-// profiling (enabled with the TILE_RS_PROFILE environment variable)
-// ---------------------------------------------------------------------------
-
-/// Logs how long a block of code took, when profiling is on (on every exit path).
-struct Timer(&'static str, Option<Instant>);
-
-impl Timer {
-    fn new(name: &'static str) -> Self {
-        Timer(name, prof::on().then(Instant::now))
-    }
-}
-
-impl Drop for Timer {
-    fn drop(&mut self) {
-        if let Some(t) = self.1 {
-            log(format!(
-                "profile: {} {}us collect={} placements={}",
-                self.0,
-                t.elapsed().as_micros(),
-                prof::COLLECT_CALLS.load(Ordering::Relaxed),
-                prof::PLACEMENTS.load(Ordering::Relaxed)
-            ));
-        }
-    }
-}
-
-/// Per-frame stats, aggregated until the animation queue drains.
-#[derive(Default)]
-struct AnimProf {
-    start: Option<Instant>,
-    last_frame: Option<Instant>,
-    frames: u32,
-    intervals_ms: Vec<f32>,
-    setpos_us: Vec<f32>,
-}
-
-thread_local! {
-    static ANIM_PROF: RefCell<AnimProf> = RefCell::new(AnimProf::default());
-}
-
-fn anim_prof_reset() {
-    ANIM_PROF.with(|p| *p.borrow_mut() = AnimProf::default());
-}
-
-/// Records one animation frame (only called when profiling is on).
-fn anim_prof_frame(now: Instant, setpos_us: f32) {
-    ANIM_PROF.with(|p| {
-        let mut p = p.borrow_mut();
-        if p.start.is_none() {
-            p.start = Some(now);
-        }
-        if let Some(prev) = p.last_frame {
-            p.intervals_ms.push((now - prev).as_secs_f32() * 1000.0);
-        }
-        p.last_frame = Some(now);
-        p.frames += 1;
-        p.setpos_us.push(setpos_us);
-    });
-}
-
-/// Logs the summary of a finished animation and resets the stats.
-fn anim_prof_finish(now: Instant) {
-    ANIM_PROF.with(|p| {
-        let mut p = p.borrow_mut();
-        let dur = p
-            .start
-            .map(|s| (now - s).as_secs_f32() * 1000.0)
-            .unwrap_or(0.0);
-        let setpos_avg = if p.setpos_us.is_empty() {
-            0.0
-        } else {
-            p.setpos_us.iter().sum::<f32>() / p.setpos_us.len() as f32
-        };
-        let setpos_max = p.setpos_us.iter().cloned().fold(0.0_f32, f32::max);
-        log(format!(
-            "anim: frames={} dur={:.0}ms interval avg/p95/max={}ms setpos avg/max={:.2}/{:.2}ms",
-            p.frames,
-            dur,
-            stat_line(&p.intervals_ms),
-            setpos_avg / 1000.0,
-            setpos_max / 1000.0
-        ));
-        *p = AnimProf::default();
-    });
-}
-
-fn stat_line(v: &[f32]) -> String {
-    if v.is_empty() {
-        return "0/0/0".into();
-    }
-    let mut s = v.to_vec();
-    s.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-    let avg = s.iter().sum::<f32>() / s.len() as f32;
-    let p95 = s[((s.len() as f32 * 0.95) as usize).min(s.len() - 1)];
-    let max = *s.last().unwrap();
-    format!("{avg:.1}/{p95:.1}/{max:.1}")
-}
+use diagnostics::{anim_prof_finish, anim_prof_frame, anim_prof_reset, log_reset, Timer};
+pub use diagnostics::{log, log_file};
 
 /// Message box. Returns true if the user pressed Yes (only meaningful when `question`).
 pub fn msgbox(title: &str, text: &str, question: bool) -> bool {
@@ -438,10 +273,7 @@ fn raw_work_area() -> RECT {
 
 /// The work area (taskbar excluded) of monitor `mi`, minus the indicator bar.
 fn monitor_work(mi: usize) -> RECT {
-    let list = monitor::list();
-    // a stale monitor index (e.g. a monitor was unplugged) falls back to the last real monitor
-    let i = mi.min(list.len().saturating_sub(1));
-    let mut r = list.get(i).map(|m| m.work).unwrap_or_default();
+    let mut r = monitor::work(mi);
     // Each managed monitor has its own workspace indicator bar.
     if config::workspace_indicator() {
         r.top += overlay::indicator_height();
@@ -542,14 +374,14 @@ fn apply_fullscreen(s: &mut State) {
         match fullscreen_action(ws, cur, hidden, minimized) {
             FsAction::Show => {
                 unsafe {
-                    let _ = ShowWindow(hw, SW_RESTORE);
+                    let _ = ShowWindowAsync(hw, SW_RESTORE);
                 }
                 s.fs_hidden.remove(&h);
                 changed = true;
             }
             FsAction::Hide => {
                 unsafe {
-                    let _ = ShowWindow(hw, SW_MINIMIZE);
+                    let _ = ShowWindowAsync(hw, SW_MINIMIZE);
                 }
                 s.fs_hidden.insert(h);
                 changed = true;
@@ -566,7 +398,7 @@ fn restore_hidden_fullscreen(s: &mut State) {
         let hw = HWND(h as *mut _);
         if unsafe { IsWindow(Some(hw)) }.as_bool() && unsafe { IsIconic(hw) }.as_bool() {
             unsafe {
-                let _ = ShowWindow(hw, SW_RESTORE);
+                let _ = ShowWindowAsync(hw, SW_RESTORE);
             }
         }
     }
@@ -584,7 +416,9 @@ fn apply_window_pos(
     if prof::on() {
         prof::PLACEMENTS.fetch_add(1, Ordering::Relaxed);
     }
-    match unsafe { SetWindowPos(hwnd, None, x, y, width, height, flags) } {
+    // A slow client must not block this thread's input, capture cleanup and watchdogs.
+    // Success means the request was accepted; geometry is checked by the verify timer.
+    match unsafe { SetWindowPos(hwnd, None, x, y, width, height, flags | SWP_ASYNCWINDOWPOS) } {
         Ok(()) => true,
         Err(error) => {
             log(format!(
@@ -616,6 +450,20 @@ fn placement_blocked(s: &State, hwnd: HWND, target: &RECT) -> bool {
     s.placement_failures
         .get(&(hwnd.0 as isize))
         .is_some_and(|(previous, attempts)| same_rect(previous, target, 0) && *attempts >= 2)
+}
+
+/// API success does not mean an application kept the requested position. Bound retries
+/// for an unchanged target independently of Win32 error counts.
+fn allow_geometry_retry(retries: &mut HashMap<isize, (RECT, u8)>, h: isize, target: RECT) -> bool {
+    let entry = retries.entry(h).or_insert((target, 0));
+    if !same_rect(&entry.0, &target, 0) {
+        *entry = (target, 0);
+    }
+    if entry.1 >= 3 {
+        return false;
+    }
+    entry.1 += 1;
+    true
 }
 
 fn native_target(hwnd: HWND, target: RECT) -> Option<RECT> {
@@ -661,7 +509,7 @@ fn native_target(hwnd: HWND, target: RECT) -> Option<RECT> {
 fn place(hwnd: HWND, target: RECT) -> bool {
     unsafe {
         if IsZoomed(hwnd).as_bool() {
-            let _ = ShowWindow(hwnd, SW_RESTORE);
+            let _ = ShowWindowAsync(hwnd, SW_RESTORE);
         }
     }
     native_target(hwnd, target).is_some_and(|r| {
@@ -713,7 +561,7 @@ fn place_batch(s: &mut State, targets: &[(isize, RECT)]) {
                     r.top,
                     r.right - r.left,
                     r.bottom - r.top,
-                    SWP_NOACTIVATE | SWP_NOZORDER | SWP_NOOWNERZORDER,
+                    SWP_NOACTIVATE | SWP_NOZORDER | SWP_NOOWNERZORDER | SWP_ASYNCWINDOWPOS,
                 )?;
             }
             EndDeferWindowPos(batch)
@@ -798,9 +646,6 @@ fn park(hwnd: HWND) {
 // ---------------------------------------------------------------------------
 
 const DEBOUNCE_MS: u32 = 40;
-/// Fallback frame interval of the window animations, used when the monitor refresh rate cannot be
-/// read. The real interval follows the display (`anim_frame_ms`).
-const ANIM_FRAME_MS: u32 = 16;
 /// Delay of the check after a window was placed instantly (apps that move themselves).
 const VERIFY_MS: u32 = 90;
 /// Poll interval of the focus-follows-mouse feature (only runs while it is enabled).
@@ -848,6 +693,7 @@ struct State {
     mon: HashMap<isize, usize>,
     /// Failed placement count by HWND and target rectangle (bounded retries per target).
     placement_failures: HashMap<isize, (RECT, u8)>,
+    geometry_retries: HashMap<isize, (RECT, u8)>,
     /// Most recently requested frame, used to recognize our events per window.
     expected: HashMap<isize, (RECT, Instant)>,
     /// Display-device names for the monitor slots in the per-monitor arrays.
@@ -857,6 +703,7 @@ struct State {
     windows_changed: bool,
     paused: bool,
     timer: usize,
+    dirty_since: Option<Instant>,
     /// A window of another workspace got focus (taskbar / Alt+Tab): follow it.
     follow: Option<(usize, u8, isize)>,
     last_switch: Option<Instant>,
@@ -904,14 +751,25 @@ type PendingEvent = (u32, HWND, i32, i32, u32, u32);
 
 thread_local! {
     static STATE: RefCell<State> = RefCell::new(State::default());
-    static PENDING_EVENTS: RefCell<VecDeque<PendingEvent>> = const { RefCell::new(VecDeque::new()) };
+    static PENDING_EVENTS: RefCell<event_queue::DeferredQueue<PendingEvent, isize>> = RefCell::new(event_queue::DeferredQueue::default());
+    static PENDING_WAKE_POSTED: Cell<bool> = const { Cell::new(false) };
+    static DISPLAY_HZ: Cell<Option<u32>> = const { Cell::new(None) };
 }
 
 const WM_PENDING_EVENTS: u32 = 0x8000 + 42;
 
 fn replay_events() {
-    let events = PENDING_EVENTS.with(|pending| std::mem::take(&mut *pending.borrow_mut()));
-    for (event, hwnd, object, child, thread, time) in events {
+    let budget = PENDING_EVENTS.with(|pending| pending.borrow().len().min(64));
+    let started = Instant::now();
+    for _ in 0..budget {
+        if started.elapsed() >= Duration::from_millis(4) {
+            break;
+        }
+        let Some((event, hwnd, object, child, thread, time)) =
+            PENDING_EVENTS.with(|pending| pending.borrow_mut().pop_front())
+        else {
+            break;
+        };
         unsafe {
             on_event(
                 HWINEVENTHOOK(std::ptr::null_mut()),
@@ -924,9 +782,33 @@ fn replay_events() {
             );
         }
     }
+    wake_pending_events();
+}
+
+fn wake_pending_events() {
+    if PENDING_EVENTS.with(|q| q.borrow().is_empty())
+        || PENDING_WAKE_POSTED.with(|p| p.replace(true))
+    {
+        return;
+    }
+    let posted = unsafe {
+        windows::Win32::UI::WindowsAndMessaging::PostThreadMessageW(
+            windows::Win32::System::Threading::GetCurrentThreadId(),
+            WM_PENDING_EVENTS,
+            WPARAM(0),
+            LPARAM(0),
+        )
+    };
+    if posted.is_err() {
+        PENDING_WAKE_POSTED.with(|p| p.set(false));
+    }
 }
 
 impl State {
+    fn clear_placement_history(&mut self) {
+        self.placement_failures.clear();
+        self.geometry_retries.clear();
+    }
     fn animation_current(&self, h: isize) -> bool {
         !self.paused
             && self.dragging != Some(h)
@@ -940,6 +822,13 @@ impl State {
         self.expected.get(&h).is_some_and(|(target, requested)| {
             now.saturating_duration_since(*requested) < Duration::from_secs(1)
                 && same_rect(actual, target, 4)
+        })
+    }
+
+    fn placement_pending(&self, h: isize, target: &RECT, now: Instant) -> bool {
+        self.expected.get(&h).is_some_and(|(requested, time)| {
+            same_rect(requested, target, 0)
+                && now.saturating_duration_since(*time) < Duration::from_millis(VERIFY_MS.into())
         })
     }
     /// The monitor slot a window belongs to.
@@ -1167,7 +1056,7 @@ fn move_window(s: &mut State, hwnd: HWND, target: RECT, animate: bool) {
             s.min_size_reflow = true;
         }
         if s.border_on == Some(h) {
-            place_border(&target, h);
+            sync_border_to(h);
         }
         return;
     }
@@ -1178,7 +1067,7 @@ fn move_window(s: &mut State, hwnd: HWND, target: RECT, animate: bool) {
             s.min_size_reflow = true;
         }
         if s.border_on == Some(h) {
-            place_border(&target, h);
+            sync_border_to(h);
         }
         return;
     };
@@ -1219,17 +1108,22 @@ fn move_window(s: &mut State, hwnd: HWND, target: RECT, animate: bool) {
     }
 }
 
-/// After a window was placed instantly, remember its actual size if the app refused to shrink
+/// After a placement has had time to settle, remember its size if the app refused to shrink
 /// below it (an application minimum size). The layout then grows its tile instead of letting the
 /// window overlap its neighbour. Only ever grows the remembered size: once a tile has been grown
 /// to fit, the window also fits it, so forgetting the minimum would make the tile shrink again
 /// and start an endless grow/shrink loop.
 fn observe_min_size(s: &mut State, hwnd: HWND, target: &RECT) -> bool {
     let h = hwnd.0 as isize;
+    // Posted placements may still be queued. The old (larger) window is not evidence
+    // of a minimum size; learning it here can permanently pin an extreme layout.
+    if s.placement_pending(h, target, Instant::now()) {
+        return false;
+    }
     let Some(vis) = visible_rect(hwnd) else {
         return false;
     };
-    // DWM can still report the previous frame immediately after SetWindowPos.
+    // DWM can still report the previous frame after a placement request.
     // A visible frame outside the current native window is not minimum-size evidence.
     let mut native = RECT::default();
     if unsafe { GetWindowRect(hwnd, &mut native) }.is_err()
@@ -1283,30 +1177,43 @@ fn create_anim_timer() -> HANDLE {
     }
 }
 
-/// Refresh the cadence at the start of each motion burst. This is a scheduling hint, not vsync.
+/// Cache display queries until a display change; cap visual work independently of input.
 fn anim_frame_ms() -> u32 {
     use windows::Win32::Graphics::Gdi::{EnumDisplaySettingsW, DEVMODEW, ENUM_CURRENT_SETTINGS};
-    let hz = monitor::list()
-        .iter()
-        .filter_map(|mon| {
-            let device: Vec<u16> = mon.device.encode_utf16().chain(Some(0)).collect();
-            let mut mode = DEVMODEW {
-                dmSize: size_of::<DEVMODEW>() as u16,
-                ..Default::default()
-            };
-            if unsafe {
-                EnumDisplaySettingsW(PCWSTR(device.as_ptr()), ENUM_CURRENT_SETTINGS, &mut mode)
-            }
-            .as_bool()
-                && (30..=1000).contains(&mode.dmDisplayFrequency)
-            {
-                Some(mode.dmDisplayFrequency)
-            } else {
-                None
-            }
-        })
-        .max();
-    hz.map_or(ANIM_FRAME_MS, |hz| ((1000 + hz / 2) / hz).clamp(4, 33))
+    let hz = DISPLAY_HZ.with(|cache| {
+        if let Some(hz) = cache.get() {
+            return hz;
+        }
+        let hz = monitor::list()
+            .iter()
+            .filter_map(|mon| {
+                let device: Vec<u16> = mon.device.encode_utf16().chain(Some(0)).collect();
+                let mut mode = DEVMODEW {
+                    dmSize: size_of::<DEVMODEW>() as u16,
+                    ..Default::default()
+                };
+                if unsafe {
+                    EnumDisplaySettingsW(PCWSTR(device.as_ptr()), ENUM_CURRENT_SETTINGS, &mut mode)
+                }
+                .as_bool()
+                    && (30..=1000).contains(&mode.dmDisplayFrequency)
+                {
+                    Some(mode.dmDisplayFrequency)
+                } else {
+                    None
+                }
+            })
+            .max()
+            .unwrap_or(60);
+        cache.set(Some(hz));
+        hz
+    });
+    frame_interval_ms(hz, config::animation_fps_limit())
+}
+
+fn frame_interval_ms(display_hz: u32, fps_limit: u32) -> u32 {
+    let fps = display_hz.max(1).min(fps_limit.clamp(15, 240));
+    1000u32.div_ceil(fps)
 }
 
 /// (Re)arms the frame timer: the first frame fires in one frame interval, then every interval.
@@ -1367,7 +1274,6 @@ fn anim_tick() {
     }
     let profiling = prof::on();
     let easing = config::easing();
-    let border_w = config::border_width();
     STATE.with(|s| {
         let mut s = s.borrow_mut();
         if s.anims.is_empty() {
@@ -1427,10 +1333,6 @@ fn anim_tick() {
             } else {
                 keep.push(a);
             }
-            // the border overlay follows the window while it glides
-            if s.border_on == Some(ahwnd) {
-                place_border_frame(&rect, ahwnd, border_w);
-            }
         }
         s.anims = keep;
         s.min_size_reflow |= min_size_changed;
@@ -1458,6 +1360,9 @@ fn anim_tick() {
             }
         }
     });
+    // Posted requests may still be pending: follow the observed frame instead
+    // of drawing the border at the next animation target.
+    sync_border();
 }
 
 // ---------------------------------------------------------------------------
@@ -1486,10 +1391,7 @@ fn place_border(vis: &RECT, target: isize) {
     place_border_frame(vis, target, w);
 }
 
-/// Positions the border overlay around `vis` without the validity checks `place_border` makes.
-/// Used on every animation frame, where the window is known to be a tiled, non-maximized window
-/// that is gliding to its tile, so the (comparatively costly) `IsZoomed`/`IsIconic`/work-area
-/// probes are not needed.
+/// Positions the border overlay around the observed visible frame.
 fn place_border_frame(vis: &RECT, target: isize, w: i32) {
     if w <= 0 {
         overlay::hide_border();
@@ -1537,7 +1439,7 @@ fn sync_dividers() {
         {
             return Vec::new();
         }
-        (0..monitor::list().len().min(MON))
+        (0..monitor::count().min(MON))
             .flat_map(|mi| {
                 divider::handles(
                     mi,
@@ -1638,6 +1540,7 @@ fn begin_divider(handle: divider::Handle, origin: POINT) -> bool {
             regions: s.regions[mi].clone(),
             minimums,
             origin,
+            last_pointer_axis: if handle.vertical { origin.x } else { origin.y },
         });
         s.border_on = None;
         overlay::hide_border();
@@ -1670,6 +1573,10 @@ fn update_divider(point: POINT) {
         {
             return false;
         }
+        if !s.divider.as_mut().unwrap().pointer_changed(point) {
+            return true;
+        }
+        let gesture = s.divider.as_ref().unwrap();
         let (_, tiles, _) = gesture.target(point);
         if tiles == gesture.preview {
             return true;
@@ -1751,10 +1658,14 @@ fn end_divider(commit: bool) {
 fn sync_border() {
     let target = STATE.with(|s| s.borrow().border_on);
     match target {
-        Some(h) => match visible_rect(HWND(h as *mut _)) {
-            Some(vis) => place_border(&vis, h),
-            None => overlay::hide_border(),
-        },
+        Some(h) => sync_border_to(h),
+        None => overlay::hide_border(),
+    }
+}
+
+fn sync_border_to(h: isize) {
+    match visible_rect(HWND(h as *mut _)) {
+        Some(vis) => place_border(&vis, h),
         None => overlay::hide_border(),
     }
 }
@@ -1816,6 +1727,7 @@ pub fn ui_state() -> (u8, bool) {
 /// The screen work area changed (display mode, taskbar size / auto-hide): rebuild the layout.
 pub fn request_relayout() {
     end_divider(false);
+    DISPLAY_HZ.with(|cache| cache.set(None));
     snapshot::clear();
     let old_monitors = monitor::list();
     monitor::refresh();
@@ -1826,7 +1738,7 @@ pub fn request_relayout() {
     }
     STATE.with(|s| {
         let mut s = s.borrow_mut();
-        s.placement_failures.clear();
+        s.clear_placement_history();
         s.reflow = true;
         s.timer = unsafe { SetTimer(None, s.timer, DEBOUNCE_MS, None) };
     });
@@ -1959,6 +1871,7 @@ fn forget_window(s: &mut State, h: isize) -> bool {
     s.manual_float.remove(&h);
     s.min_size.remove(&h);
     s.placement_failures.remove(&h);
+    s.geometry_retries.remove(&h);
     s.expected.remove(&h);
     s.anims.retain(|a| a.hwnd != h);
     for mi in 0..MON {
@@ -2016,22 +1929,23 @@ unsafe extern "system" fn on_event(
     // Foreign window APIs can pump WinEvents while a layout borrows STATE. Preserve their order
     // and replay after that transaction instead of panicking across the Win32 callback boundary.
     if STATE.with(|s| s.try_borrow_mut().is_err()) {
-        let wake = PENDING_EVENTS.with(|pending| {
+        PENDING_EVENTS.with(|pending| {
             let mut pending = pending.borrow_mut();
-            let wake = pending.is_empty();
-            pending.push_back((event, hwnd, id_object, id_child, _thread, _time));
-            wake
-        });
-        if wake {
-            unsafe {
-                let _ = windows::Win32::UI::WindowsAndMessaging::PostThreadMessageW(
-                    windows::Win32::System::Threading::GetCurrentThreadId(),
-                    WM_PENDING_EVENTS,
-                    WPARAM(0),
-                    windows::Win32::Foundation::LPARAM(0),
+            let previous = pending.len();
+            let key = (event == EVENT_OBJECT_LOCATIONCHANGE).then_some(hwnd.0 as isize);
+            pending.push((event, hwnd, id_object, id_child, _thread, _time), key);
+            if prof::on() {
+                prof::EVENTS_QUEUED.fetch_add(1, Ordering::Relaxed);
+                prof::EVENT_QUEUE_PEAK.fetch_max(
+                    pending.len().min(u32::MAX as usize) as u32,
+                    Ordering::Relaxed,
                 );
+                if pending.len() == previous {
+                    prof::EVENTS_COALESCED.fetch_add(1, Ordering::Relaxed);
+                }
             }
-        }
+        });
+        wake_pending_events();
         return;
     }
     let h = hwnd.0 as isize;
@@ -2041,13 +1955,12 @@ unsafe extern "system" fn on_event(
             return false;
         };
         match event {
-            EVENT_OBJECT_CREATE
-            | EVENT_OBJECT_SHOW
+            EVENT_OBJECT_DESTROY
             | EVENT_OBJECT_HIDE
-            | EVENT_OBJECT_DESTROY
             | EVENT_OBJECT_CLOAKED
+            | EVENT_SYSTEM_MINIMIZESTART => gesture.windows.contains(&h),
+            EVENT_OBJECT_SHOW
             | EVENT_OBJECT_UNCLOAKED
-            | EVENT_SYSTEM_MINIMIZESTART
             | EVENT_SYSTEM_MINIMIZEEND
             | EVENT_SYSTEM_MOVESIZESTART
             | EVENT_SYSTEM_FOREGROUND
@@ -2096,6 +2009,7 @@ unsafe extern "system" fn on_event(
                         if k < s.rects[mi].len() {
                             s.dragging = Some(h);
                             s.placement_failures.remove(&h);
+                            s.geometry_retries.remove(&h);
                             s.drag_started = Some(Instant::now());
                             if s.drag_timer != 0 {
                                 let _ = KillTimer(None, s.drag_timer);
@@ -2142,6 +2056,7 @@ unsafe extern "system" fn on_event(
                 if s.dragging == Some(h) {
                     s.dragging = None;
                     s.placement_failures.remove(&h);
+                    s.geometry_retries.remove(&h);
                     s.drag_started = None;
                     if s.drag_timer != 0 {
                         let _ = KillTimer(None, s.drag_timer);
@@ -2228,16 +2143,26 @@ unsafe extern "system" fn on_event(
                 if s.paused {
                     return;
                 }
-                // the border overlay follows the window it frames
+                let actual = visible_rect(hwnd);
+                // Even our own accepted placement can settle after the last animation
+                // tick. Update the border before suppressing layout reconciliation.
                 if s.border_on == Some(h) {
-                    if let Some(vis) = visible_rect(hwnd) {
-                        place_border(&vis, h);
+                    match actual {
+                        Some(vis) => place_border(&vis, h),
+                        None => overlay::hide_border(),
                     }
+                }
+                if s.dragging.is_none()
+                    && actual
+                        .as_ref()
+                        .is_some_and(|r| s.expected_frame(h, r, Instant::now()))
+                {
+                    return;
                 }
                 if let Some(d) = s.dragging {
                     // during a drag only the dragged window matters: is it being resized?
                     if d == h {
-                        if let Some(vis) = visible_rect(hwnd) {
+                        if let Some(vis) = actual {
                             let (w, hh) = (vis.right - vis.left, vis.bottom - vis.top);
                             if !s.resizing
                                 && ((w - s.drag_size.0).abs() > RESIZE_PX
@@ -2265,14 +2190,27 @@ unsafe extern "system" fn on_event(
                     return;
                 }
                 // a window moved/resized outside of a drag (and not because of us)
-                let own_event = visible_rect(hwnd)
-                    .is_some_and(|actual| s.expected_frame(h, &actual, Instant::now()));
                 let parked =
                     s.ws.get(&h).is_some_and(|ws| *ws != s.cur[s.mi(h)]) && is_parked(hwnd);
-                if own_event || parked {
+                if parked {
                     return;
                 }
                 if s.last[s.mi(h)].contains(&h) {
+                    let mi = s.mi(h);
+                    let exhausted = s
+                        .geometry_retries
+                        .get(&h)
+                        .is_some_and(|(target, attempts)| {
+                            *attempts >= 3
+                                && s.last[mi]
+                                    .iter()
+                                    .position(|window| *window == h)
+                                    .and_then(|i| s.rects[mi].get(i))
+                                    .is_some_and(|r| same_rect(r, target, 0))
+                        });
+                    if exhausted {
+                        return;
+                    }
                     s.enforce = true; // a tiled window moved on its own: pull it back
                     dirty = true;
                 } else if s.fs_ws.contains_key(&h) || h == GetForegroundWindow().0 as isize {
@@ -2326,6 +2264,9 @@ unsafe extern "system" fn on_event(
                     }
                 }
             }
+            EVENT_OBJECT_CREATE if !IsWindowVisible(hwnd).as_bool() => {}
+            EVENT_OBJECT_HIDE | EVENT_OBJECT_CLOAKED | EVENT_SYSTEM_MINIMIZESTART
+                if !s.ws.contains_key(&h) && !s.fs_ws.contains_key(&h) => {}
             EVENT_OBJECT_CREATE
             | EVENT_OBJECT_HIDE
             | EVENT_OBJECT_CLOAKED
@@ -2335,8 +2276,7 @@ unsafe extern "system" fn on_event(
                 s.windows_changed = true;
                 dirty = true;
             }
-            EVENT_OBJECT_DESTROY => {
-                let _ = forget_window(&mut s, h);
+            EVENT_OBJECT_DESTROY if forget_window(&mut s, h) => {
                 s.windows_changed = true;
                 dirty = true;
             }
@@ -2346,7 +2286,13 @@ unsafe extern "system" fn on_event(
         // collapse into a single re-tile (SetTimer resets the countdown), but events we ignore no
         // longer schedule a full re-collect of every window.
         if dirty {
-            s.timer = SetTimer(None, s.timer, DEBOUNCE_MS, None);
+            let now = Instant::now();
+            let since = *s.dirty_since.get_or_insert(now);
+            // Stop moving the deadline after a sustained burst. A noisy client
+            // cannot keep resetting another window's reconciliation indefinitely.
+            if s.timer == 0 || now.saturating_duration_since(since) < Duration::from_millis(120) {
+                s.timer = SetTimer(None, s.timer, DEBOUNCE_MS, None);
+            }
         }
     });
     if reposition {
@@ -2592,6 +2538,15 @@ fn enforce_layout() -> bool {
                 if placement_blocked(&s, hw, r) {
                     continue; // a previous bounded retry also failed for this exact target
                 }
+                if s.placement_pending(*h, r, Instant::now()) {
+                    s.enforce = true;
+                    s.timer = unsafe { SetTimer(None, s.timer, VERIFY_MS, None) };
+                    continue;
+                }
+                if observe_min_size(&mut s, hw, r) {
+                    s.reflow = true;
+                    s.timer = unsafe { SetTimer(None, s.timer, DEBOUNCE_MS, None) };
+                }
                 if off_target(hw, r) {
                     // an app with a minimum size cannot shrink to a small tile: retrying every time
                     // only makes it flicker, so leave it as it is (it overflows its tile instead)
@@ -2601,6 +2556,9 @@ fn enforce_layout() -> bool {
                         if bigger {
                             continue;
                         }
+                    }
+                    if !allow_geometry_retry(&mut s.geometry_retries, *h, *r) {
+                        continue;
                     }
                     move_window(&mut s, hw, *r, true);
                     moved += 1;
@@ -2854,7 +2812,7 @@ fn retile() {
             s.timer = unsafe { SetTimer(None, s.timer, DEBOUNCE_MS, None) };
         } else if changed && s.anims.is_empty() && !s.paused {
             // Verify instant placements too; this catches clients that adjust their own
-            // geometry after the synchronous SetWindowPos call has returned.
+            // geometry after the asynchronous placement request was posted.
             s.enforce = true;
             s.timer = unsafe { SetTimer(None, s.timer, VERIFY_MS, None) };
         }
@@ -3005,7 +2963,7 @@ fn switch_ws(mi: usize, n: u8, focus: Option<isize>) {
     if !changed {
         return;
     }
-    STATE.with(|s| s.borrow_mut().placement_failures.clear());
+    STATE.with(|s| s.borrow_mut().clear_placement_history());
     retile();
     match focus {
         Some(h) => focus_hwnd(h),
@@ -3191,7 +3149,7 @@ pub fn reload_config() {
         s.anims.clear();
         cancel_anim_timer(&mut s);
     });
-    STATE.with(|s| s.borrow_mut().placement_failures.clear());
+    STATE.with(|s| s.borrow_mut().clear_placement_history());
     match config::load() {
         Ok(c) => {
             overlay::set_indicator_size(c.workspace_indicator_size);
@@ -3233,7 +3191,7 @@ fn minimize_focused() {
         s.fs_hidden.remove(&h);
     });
     unsafe {
-        let _ = ShowWindow(fg, SW_MINIMIZE);
+        let _ = ShowWindowAsync(fg, SW_MINIMIZE);
     }
     log("minimized the focused window");
 }
@@ -3288,7 +3246,7 @@ fn cycle_layout() {
     let path = config::config_path();
     let text = std::fs::read_to_string(&path).unwrap_or_default();
     let new = config::edit_top(&text, &[("layout", format!("\"{}\"", next.name()))]);
-    if let Err(e) = std::fs::write(&path, new) {
+    if let Err(e) = config::save_atomic(&path, &new) {
         log(format!("could not save the layout to config.toml: {e}"));
         return;
     }
@@ -3317,7 +3275,7 @@ pub fn dispatch(a: Action) {
             // also resets the sizes of every workspace to equal halves
             STATE.with(|s| {
                 let mut s = s.borrow_mut();
-                s.placement_failures.clear();
+                s.clear_placement_history();
                 for mi in 0..MON {
                     s.ratios[mi].clear();
                 }
@@ -3512,6 +3470,7 @@ fn handle_debounce_timer(wparam: usize) {
     let (follow, reflow, enforce, live) = STATE.with(|s| {
         let mut s = s.borrow_mut();
         s.timer = 0;
+        s.dirty_since = None;
         let reflow = std::mem::take(&mut s.reflow);
         let enforce = std::mem::take(&mut s.enforce);
         let live = std::mem::take(&mut s.live);
@@ -3536,6 +3495,7 @@ fn handle_debounce_timer(wparam: usize) {
         }
         None => retile(),
     }
+    sync_border();
     sync_dividers();
 }
 
@@ -3549,7 +3509,17 @@ fn start(interactive: bool) {
         let _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
     }
     // single instance
-    let _mutex = unsafe { CreateMutexW(None, true, w!("Local\\tile-rs-single-instance")) };
+    let _mutex = match unsafe { CreateMutexW(None, true, w!("Local\\tile-rs-single-instance")) } {
+        Ok(handle) => handle,
+        Err(error) => {
+            log(format!("could not acquire manager singleton: {error}"));
+            notify(
+                "tile-rs",
+                "Could not acquire the single-instance lock. See tile-rs.log.",
+            );
+            return;
+        }
+    };
     if unsafe { GetLastError() } == ERROR_ALREADY_EXISTS {
         log("(a second instance tried to start and exited)");
         if interactive {
@@ -3630,12 +3600,13 @@ fn start(interactive: bool) {
     let failed = register_hotkeys();
     tray::create();
     launcher::create();
+    update::start_background_checks();
     if !overlay::create_border() {
         log("could not create the border overlay window");
     }
     overlay::set_border_color(config::border_color_value());
     overlay::set_indicator_click(switch_ws_on_monitor);
-    overlay::create_indicator(monitor::list().len());
+    overlay::create_indicator(monitor::count());
     let anim_timer = create_anim_timer();
     STATE.with(|s| s.borrow_mut().anim_timer = anim_timer);
     apply_focus_follows_timer();
@@ -3678,16 +3649,23 @@ fn start(interactive: bool) {
                 log("MsgWaitForMultipleObjectsEx failed; stopping the message loop");
                 break;
             }
-            if r == WAIT_OBJECT_0 {
+            if !handles.is_empty() && r == WAIT_OBJECT_0 {
                 anim_tick();
             }
             let mut quit = false;
-            while PeekMessageW(&mut msg, None, 0, 0, PM_REMOVE).as_bool() {
+            let drain_started = Instant::now();
+            let mut drained = 0;
+            while drained < 64
+                && drain_started.elapsed() < Duration::from_millis(4)
+                && PeekMessageW(&mut msg, None, 0, 0, PM_REMOVE).as_bool()
+            {
+                drained += 1;
                 if msg.message == WM_QUIT {
                     quit = true;
                     break;
                 }
                 if msg.message == WM_PENDING_EVENTS {
+                    PENDING_WAKE_POSTED.with(|p| p.set(false));
                     replay_events();
                     continue;
                 }
@@ -3715,6 +3693,9 @@ fn start(interactive: bool) {
                 }
                 let _ = TranslateMessage(&msg);
                 DispatchMessageW(&msg);
+                if drained >= 64 || drain_started.elapsed() >= Duration::from_millis(4) {
+                    break;
+                }
             }
             if quit {
                 break;
@@ -3856,7 +3837,7 @@ fn main() {
                         w.pid, w.class, w.title, r
                     );
                 }
-                for mi in 0..monitor::list().len().min(MON) {
+                for mi in 0..monitor::count().min(MON) {
                     let area = monitor_work(mi);
                     let _ = writeln!(
                         out,
@@ -3910,6 +3891,60 @@ mod tests {
     use super::*;
 
     #[test]
+    fn repeated_client_repositioning_has_a_budget_per_target_and_window() {
+        let mut retries = HashMap::new();
+        let target = RECT {
+            left: 10,
+            top: 10,
+            right: 500,
+            bottom: 500,
+        };
+        for _ in 0..3 {
+            assert!(allow_geometry_retry(&mut retries, 1, target));
+        }
+        assert!(!allow_geometry_retry(&mut retries, 1, target));
+        assert!(allow_geometry_retry(&mut retries, 2, target));
+        assert!(allow_geometry_retry(
+            &mut retries,
+            1,
+            RECT {
+                right: 600,
+                ..target
+            }
+        ));
+    }
+
+    #[test]
+    fn frame_rate_limits_bound_visual_work_without_busy_polling() {
+        assert_eq!(frame_interval_ms(240, 60), 17);
+        assert_eq!(frame_interval_ms(144, 30), 34);
+        assert_eq!(frame_interval_ms(60, 240), 17);
+        assert_eq!(frame_interval_ms(240, 240), 5);
+        assert_eq!(frame_interval_ms(0, 60), 1000);
+    }
+
+    #[test]
+    fn unknown_destroy_does_not_schedule_a_desktop_scan() {
+        STATE.with(|state| *state.borrow_mut() = State::default());
+        unsafe {
+            on_event(
+                HWINEVENTHOOK(std::ptr::null_mut()),
+                EVENT_OBJECT_DESTROY,
+                HWND(987654usize as *mut _),
+                0,
+                0,
+                0,
+                0,
+            );
+        }
+        STATE.with(|state| {
+            let s = state.borrow();
+            assert!(!s.windows_changed);
+            assert_eq!(s.timer, 0);
+        });
+    }
+
+    #[test]
     fn rejected_height_does_not_lock_width_and_vice_versa() {
         assert_eq!(rejected_minimum((0, 0), (2200, 600), (2200, 650)), (0, 650));
         assert_eq!(rejected_minimum((0, 0), (400, 1100), (480, 1100)), (480, 0));
@@ -3921,6 +3956,113 @@ mod tests {
             rejected_minimum((480, 650), (400, 600), (500, 700)),
             (500, 700)
         );
+    }
+
+    #[test]
+    fn pending_placement_cannot_be_learned_as_a_minimum_size() {
+        let mut state = State::default();
+        let target = RECT {
+            left: 10,
+            top: 10,
+            right: 310,
+            bottom: 210,
+        };
+        let now = Instant::now();
+        state.expected.insert(11, (target, now));
+        assert!(state.placement_pending(11, &target, now));
+        assert!(!state.placement_pending(12, &target, now));
+        assert!(!state.placement_pending(
+            11,
+            &RECT {
+                right: 410,
+                ..target
+            },
+            now
+        ));
+        assert!(!state.placement_pending(
+            11,
+            &target,
+            now + Duration::from_millis(VERIFY_MS.into())
+        ));
+    }
+
+    #[test]
+    fn stalled_window_does_not_block_individual_or_batch_placement() {
+        use std::sync::mpsc;
+        use windows::Win32::UI::WindowsAndMessaging::{CreateWindowExW, DestroyWindow, WS_POPUP};
+
+        // This hidden window deliberately stops pumping messages. It models a client
+        // busy with an expensive resize, without touching any of the user's windows.
+        let (ready_tx, ready_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let owner = std::thread::spawn(move || unsafe {
+            let hwnd = CreateWindowExW(
+                Default::default(),
+                w!("STATIC"),
+                w!("tile-rs placement regression"),
+                WS_POPUP,
+                0,
+                0,
+                1000,
+                800,
+                None,
+                None,
+                None,
+                None,
+            )
+            .unwrap();
+            ready_tx.send(hwnd.0 as isize).unwrap();
+            release_rx.recv().unwrap();
+            let mut msg = MSG::default();
+            while PeekMessageW(&mut msg, None, 0, 0, PM_REMOVE).as_bool() {
+                DispatchMessageW(&msg);
+            }
+            let mut actual = RECT::default();
+            GetWindowRect(hwnd, &mut actual).unwrap();
+            DestroyWindow(hwnd).unwrap();
+            actual
+        });
+        let h = ready_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        // Always release the client, even if a regression makes placement synchronous.
+        let release = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(900));
+            release_tx.send(()).unwrap();
+        });
+        let hwnd = HWND(h as *mut _);
+        let started = Instant::now();
+        let accepted = apply_window_pos(
+            hwnd,
+            10,
+            10,
+            200,
+            200,
+            SWP_NOZORDER | SWP_NOACTIVATE,
+            "test",
+        );
+        let individual_elapsed = started.elapsed();
+        let target = RECT {
+            left: 30,
+            top: 40,
+            right: 330,
+            bottom: 240,
+        };
+        let mut state = State::default();
+        let started = Instant::now();
+        place_batch(&mut state, &[(h, target)]);
+        let batch_elapsed = started.elapsed();
+        let actual = owner.join().unwrap();
+        release.join().unwrap();
+        assert!(accepted);
+        assert!(
+            individual_elapsed < Duration::from_millis(450),
+            "individual placement blocked: {individual_elapsed:?}"
+        );
+        assert!(
+            batch_elapsed < Duration::from_millis(450),
+            "batch placement blocked: {batch_elapsed:?}"
+        );
+        assert_eq!(actual, target);
+        assert!(!state.min_size.contains_key(&h));
     }
 
     #[test]
@@ -3961,6 +4103,7 @@ mod tests {
                 (480, 320),
             ],
             origin,
+            last_pointer_axis: origin.x,
         };
         let (_, enlarged, _) = gesture.target(POINT {
             x: origin.x + 200,
@@ -4054,6 +4197,68 @@ mod tests {
         };
         assert!(!state.expected_frame(11, &resized, now));
         assert!(!state.expected_frame(11, &target, now + Duration::from_secs(2)));
+    }
+
+    #[test]
+    fn expected_location_event_still_corrects_a_stale_border() {
+        use windows::Win32::UI::WindowsAndMessaging::{CreateWindowExW, DestroyWindow, WS_POPUP};
+        config::set(config::parse("border_width = 2").unwrap());
+        unsafe {
+            // Keep both test windows outside the desktop.
+            let hwnd = CreateWindowExW(
+                Default::default(),
+                w!("STATIC"),
+                w!("tile-rs border regression"),
+                WS_POPUP,
+                -20000,
+                -20000,
+                300,
+                200,
+                None,
+                None,
+                None,
+                None,
+            )
+            .unwrap();
+            let actual = visible_rect(hwnd).unwrap();
+            let h = hwnd.0 as isize;
+            assert!(overlay::create_border());
+            let stale = RECT {
+                left: actual.left - 30,
+                ..actual
+            };
+            place_border(&stale, h);
+            let before = overlay::border_rect().unwrap();
+            STATE.with(|state| {
+                let mut s = state.borrow_mut();
+                *s = State::default();
+                s.border_on = Some(h);
+                s.expected.insert(h, (actual, Instant::now()));
+            });
+            on_event(
+                HWINEVENTHOOK::default(),
+                EVENT_OBJECT_LOCATIONCHANGE,
+                hwnd,
+                0,
+                0,
+                0,
+                0,
+            );
+            let after = overlay::border_rect().unwrap();
+            let reconciled = STATE.with(|state| state.borrow().enforce);
+            overlay::destroy_border();
+            DestroyWindow(hwnd).unwrap();
+            STATE.with(|state| *state.borrow_mut() = State::default());
+            assert_ne!(before.left, after.left);
+            assert_eq!(after.left, actual.left - 2);
+            assert_eq!(after.top, actual.top - 2);
+            assert_eq!(after.right, actual.right + 2);
+            assert_eq!(after.bottom, actual.bottom + 2);
+            assert!(
+                !reconciled,
+                "own placements must still skip layout reconciliation"
+            );
+        }
     }
 
     #[test]
