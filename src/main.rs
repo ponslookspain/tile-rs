@@ -44,8 +44,9 @@ use windows::Win32::System::Registry::{
     RegDeleteKeyValueW, RegGetValueW, RegSetKeyValueW, HKEY_CURRENT_USER, REG_SZ, RRF_RT_REG_SZ,
 };
 use windows::Win32::System::Threading::{
-    CancelWaitableTimer, CreateMutexW, CreateWaitableTimerExW, CreateWaitableTimerW,
-    SetWaitableTimer, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, INFINITE, TIMER_ALL_ACCESS,
+    AttachThreadInput, CancelWaitableTimer, CreateMutexW, CreateWaitableTimerExW,
+    CreateWaitableTimerW, SetWaitableTimer, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, INFINITE,
+    TIMER_ALL_ACCESS,
 };
 use windows::Win32::UI::Accessibility::{SetWinEventHook, HWINEVENTHOOK};
 use windows::Win32::UI::HiDpi::{
@@ -53,18 +54,18 @@ use windows::Win32::UI::HiDpi::{
 };
 use windows::Win32::UI::Input::KeyboardAndMouse::{RegisterHotKey, UnregisterHotKey, MOD_NOREPEAT};
 use windows::Win32::UI::WindowsAndMessaging::{
-    DispatchMessageW, GetCursorPos, GetForegroundWindow, GetShellWindow, GetWindowLongW,
-    GetWindowRect, IsIconic, IsWindow, IsZoomed, KillTimer, MessageBoxW,
-    MsgWaitForMultipleObjectsEx, PeekMessageW, PostMessageW, PostQuitMessage, SetForegroundWindow,
-    SetTimer, SetWindowPos, ShowWindow, TranslateMessage, EVENT_OBJECT_CLOAKED,
-    EVENT_OBJECT_CREATE, EVENT_OBJECT_DESTROY, EVENT_OBJECT_HIDE, EVENT_OBJECT_LOCATIONCHANGE,
-    EVENT_OBJECT_SHOW, EVENT_OBJECT_UNCLOAKED, EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_MENUPOPUPEND,
-    EVENT_SYSTEM_MENUPOPUPSTART, EVENT_SYSTEM_MINIMIZEEND, EVENT_SYSTEM_MINIMIZESTART,
-    EVENT_SYSTEM_MOVESIZEEND, EVENT_SYSTEM_MOVESIZESTART, GWL_STYLE, IDYES, MB_ICONINFORMATION,
-    MB_ICONQUESTION, MB_OK, MB_TOPMOST, MB_YESNO, MSG, MWMO_INPUTAVAILABLE, PM_REMOVE, QS_ALLINPUT,
-    SWP_NOACTIVATE, SWP_NOOWNERZORDER, SWP_NOSIZE, SWP_NOZORDER, SW_MINIMIZE, SW_RESTORE,
-    WINEVENT_OUTOFCONTEXT, WINEVENT_SKIPOWNPROCESS, WM_CLOSE, WM_HOTKEY, WM_QUIT, WM_TIMER,
-    WS_CHILD,
+    DispatchMessageW, GetAncestor, GetCursorPos, GetForegroundWindow, GetShellWindow,
+    GetWindowLongW, GetWindowRect, GetWindowThreadProcessId, IsIconic, IsWindow, IsZoomed,
+    KillTimer, MessageBoxW, MsgWaitForMultipleObjectsEx, PeekMessageW, PostMessageW,
+    PostQuitMessage, SetForegroundWindow, SetTimer, SetWindowPos, ShowWindow, TranslateMessage,
+    WindowFromPoint, EVENT_OBJECT_CLOAKED, EVENT_OBJECT_CREATE, EVENT_OBJECT_DESTROY,
+    EVENT_OBJECT_HIDE, EVENT_OBJECT_LOCATIONCHANGE, EVENT_OBJECT_SHOW, EVENT_OBJECT_UNCLOAKED,
+    EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_MENUPOPUPEND, EVENT_SYSTEM_MENUPOPUPSTART,
+    EVENT_SYSTEM_MINIMIZEEND, EVENT_SYSTEM_MINIMIZESTART, EVENT_SYSTEM_MOVESIZEEND,
+    EVENT_SYSTEM_MOVESIZESTART, GA_ROOT, GWL_STYLE, IDYES, MB_ICONINFORMATION, MB_ICONQUESTION,
+    MB_OK, MB_TOPMOST, MB_YESNO, MSG, MWMO_INPUTAVAILABLE, PM_REMOVE, QS_ALLINPUT, SWP_NOACTIVATE,
+    SWP_NOOWNERZORDER, SWP_NOSIZE, SWP_NOZORDER, SW_MINIMIZE, SW_RESTORE, WINEVENT_OUTOFCONTEXT,
+    WINEVENT_SKIPOWNPROCESS, WM_CLOSE, WM_HOTKEY, WM_QUIT, WM_TIMER, WS_CHILD,
 };
 
 use config::{Action, Dir, FullscreenWindows, Layout, WS_COUNT};
@@ -615,6 +616,8 @@ const ANIM_FRAME_MS: u32 = 16;
 const LIVE_MS: u32 = 30;
 /// Delay of the check after a window was placed instantly (apps that move themselves).
 const VERIFY_MS: u32 = 90;
+/// Poll interval of the focus-follows-mouse feature (only runs while it is enabled).
+const FFM_MS: u32 = 100;
 
 #[derive(Default)]
 struct State {
@@ -633,6 +636,10 @@ struct State {
     fs_hidden: HashSet<isize>,
     /// Windows the user floated with `toggle_float` (never tiled this session).
     manual_float: HashSet<isize>,
+    /// Timer polling the pointer for `focus_follows_mouse` (0 = disabled).
+    ffm_timer: usize,
+    /// Last window the pointer selected for focus-follows-mouse (avoids re-focusing it).
+    ffm_last: Option<isize>,
     /// Current workspace (0-based).
     cur: u8,
     /// Windows of the current workspace in the layout that was applied last time;
@@ -2017,6 +2024,7 @@ pub fn reload_config() {
             clear_border(); // the colour (or the on/off switch) may have changed
             refresh_border();
             sync_indicator();
+            apply_focus_follows_timer();
             log("config reloaded");
             if !failed.is_empty() {
                 notify(
@@ -2143,9 +2151,95 @@ pub fn dispatch(a: Action) {
     }
 }
 
-/// Handles the debounce / live / verify timer (a classic `SetTimer` message).
+/// Starts or stops the focus-follows-mouse poll to match the current setting (on start-up and after
+/// every config reload).
+fn apply_focus_follows_timer() {
+    let want = config::focus_follows_mouse();
+    STATE.with(|s| {
+        let mut s = s.borrow_mut();
+        let on = s.ffm_timer != 0;
+        if want && !on {
+            s.ffm_timer = unsafe { SetTimer(None, 0, FFM_MS, None) };
+        } else if !want && on {
+            unsafe {
+                let _ = KillTimer(None, s.ffm_timer);
+            }
+            s.ffm_timer = 0;
+        }
+        if !want {
+            s.ffm_last = None;
+        }
+    });
+}
+
+/// Focus-follows-mouse poll: focus the tiled window under the pointer, if it is not focused yet.
+/// Runs on its own timer, only while the `focus_follows_mouse` setting is enabled.
+fn focus_follows_tick() {
+    let mut pt = POINT::default();
+    if unsafe { GetCursorPos(&mut pt) }.is_err() {
+        return;
+    }
+    let under = unsafe { WindowFromPoint(pt) };
+    if under.is_invalid() {
+        return;
+    }
+    let root = unsafe { GetAncestor(under, GA_ROOT) };
+    if root.is_invalid() {
+        return;
+    }
+    let h = root.0 as isize;
+    let (is_tiled, dragging, last) = STATE.with(|s| {
+        let s = s.borrow();
+        (
+            s.ws.get(&h).is_some_and(|w| *w == s.cur) && !s.manual_float.contains(&h),
+            s.dragging.is_some(),
+            s.ffm_last,
+        )
+    });
+    if dragging {
+        return;
+    }
+    if !is_tiled {
+        // the pointer is off the tiled area (desktop, taskbar, a floating window): let the next
+        // tile the pointer enters take focus again
+        if last.is_some() {
+            STATE.with(|s| s.borrow_mut().ffm_last = None);
+        }
+        return;
+    }
+    if last == Some(h) {
+        return;
+    }
+    let fg = unsafe { GetForegroundWindow() };
+    if fg != root {
+        // SetForegroundWindow is refused unless our process may set the foreground; attaching to
+        // the current foreground thread lifts that restriction (the usual FFM trick).
+        unsafe {
+            let fg_thread = GetWindowThreadProcessId(fg, None);
+            let target_thread = GetWindowThreadProcessId(root, None);
+            let attach = fg_thread != 0 && target_thread != 0 && fg_thread != target_thread;
+            if attach {
+                let _ = AttachThreadInput(fg_thread, target_thread, true);
+            }
+            let _ = SetForegroundWindow(root);
+            if attach {
+                let _ = AttachThreadInput(fg_thread, target_thread, false);
+            }
+        }
+    }
+    STATE.with(|s| s.borrow_mut().ffm_last = Some(h));
+}
+
+/// Handles the thread timers: the debounce / live / verify timer and the focus-follows-mouse poll.
 fn handle_debounce_timer(wparam: usize) {
-    let timer = STATE.with(|s| s.borrow().timer);
+    let (timer, ffm) = STATE.with(|s| {
+        let s = s.borrow();
+        (s.timer, s.ffm_timer)
+    });
+    if ffm != 0 && wparam == ffm {
+        focus_follows_tick();
+        return;
+    }
     if wparam != timer {
         return;
     }
@@ -2256,6 +2350,10 @@ fn start(interactive: bool) {
     overlay::create_indicator();
     let anim_timer = create_anim_timer();
     STATE.with(|s| s.borrow_mut().anim_timer = anim_timer);
+    apply_focus_follows_timer();
+    if config::focus_follows_mouse() {
+        log("focus follows the mouse pointer");
+    }
     log("tile-rs running");
     if !failed.is_empty() {
         notify(
@@ -2331,6 +2429,12 @@ fn start(interactive: bool) {
     launcher::destroy();
     overlay::destroy_indicator();
     overlay::destroy_border();
+    let ffm_timer = STATE.with(|s| s.borrow().ffm_timer);
+    if ffm_timer != 0 {
+        unsafe {
+            let _ = KillTimer(None, ffm_timer);
+        }
+    }
     unsafe {
         let _ = CloseHandle(anim_timer);
     }

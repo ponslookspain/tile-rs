@@ -133,6 +133,7 @@ struct RawConfig {
     max_tiles: Option<u32>,
     auto_overflow: Option<bool>,
     workspace_indicator: Option<bool>,
+    focus_follows_mouse: Option<bool>,
     #[serde(default)]
     hotkeys: BTreeMap<String, OneOrMany>,
     #[serde(default)]
@@ -170,6 +171,8 @@ pub struct Config {
     pub auto_overflow: bool,
     /// Show the small workspace indicator.
     pub workspace_indicator: bool,
+    /// Focus the window under the mouse pointer when it moves over a tiled window.
+    pub focus_follows_mouse: bool,
     /// (action, "alt+shift+h")
     pub bindings: Vec<(Action, String)>,
     pub rules: Vec<Rule>,
@@ -224,6 +227,9 @@ max_tiles = 0
 auto_overflow = true
 # Small indicator at the top of the screen showing the workspaces (dots).
 workspace_indicator = true
+
+# Move focus to the window under the mouse pointer when it moves onto a tiled window.
+focus_follows_mouse = false
 
 # Windows that run fullscreen or borderless fullscreen (games, video players): "minimize" hides
 # them while their workspace is not shown and restores them when you switch back; "ignore" leaves
@@ -403,6 +409,10 @@ pub fn migrate(text: &str) -> Option<String> {
     }
     if !has("workspace_indicator") {
         top.push("workspace_indicator = true".into());
+    }
+    if !has("focus_follows_mouse") {
+        top.push("# Focus the window under the mouse pointer when it moves onto it.".into());
+        top.push("focus_follows_mouse = false".into());
     }
     if !has("fullscreen_windows") {
         top.push(
@@ -720,6 +730,7 @@ pub fn parse(text: &str) -> Result<Config, String> {
     }
     let auto_overflow = raw.auto_overflow.unwrap_or(true);
     let workspace_indicator = raw.workspace_indicator.unwrap_or(true);
+    let focus_follows_mouse = raw.focus_follows_mouse.unwrap_or(false);
     let mut bindings = Vec::new();
     for (name, v) in raw.hotkeys {
         let action =
@@ -775,6 +786,7 @@ pub fn parse(text: &str) -> Result<Config, String> {
         max_tiles,
         auto_overflow,
         workspace_indicator,
+        focus_follows_mouse,
         bindings,
         rules: raw.rules,
     })
@@ -887,6 +899,11 @@ pub fn workspace_indicator() -> bool {
     with_cfg(|c| c.workspace_indicator)
 }
 
+/// Whether moving the pointer over a tiled window focuses it.
+pub fn focus_follows_mouse() -> bool {
+    with_cfg(|c| c.focus_follows_mouse)
+}
+
 /// Just the rules (cheaper than cloning the whole config on hot paths).
 pub fn rules() -> Vec<Rule> {
     with_cfg(|c| c.rules.clone())
@@ -914,6 +931,7 @@ mod tests {
         assert_eq!(c.max_tiles, 0);
         assert!(c.auto_overflow);
         assert!(c.workspace_indicator);
+        assert!(!c.focus_follows_mouse);
         assert!(c
             .bindings
             .iter()
@@ -1010,7 +1028,7 @@ mod tests {
         let once = migrate(OLD_CONFIG).unwrap();
         assert!(migrate(&once).is_none(), "second run must change nothing");
         // a key the user commented out or turned off is not re-added
-        let custom = "layout = \"spiral\"\ngap = 5\nanimations = false\n# animation_ms = 99\neasing = \"linear\"\nfullscreen_windows = \"ignore\"\nmedia_windows = \"tile\"\nresize_step = 10\nborder = false\n# border_color = \"#112233\"\nborder_width = 3\nmin_tile_width = 400\nmin_tile_height = 300\nmax_tiles = 6\nauto_overflow = false\nworkspace_indicator = false\n\n[hotkeys]\n# grow_width = \"alt+plus\"\n# shrink_width = \"alt+minus\"\nminimize = \"alt+shift+m\"\ntoggle_float = \"alt+shift+f\"\nclose = \"alt+shift+q\"\ncycle_layout = \"ctrl+alt+l\"\nquit = \"ctrl+alt+q\"\n";
+        let custom = "layout = \"spiral\"\ngap = 5\nanimations = false\n# animation_ms = 99\neasing = \"linear\"\nfullscreen_windows = \"ignore\"\nmedia_windows = \"tile\"\nresize_step = 10\nborder = false\n# border_color = \"#112233\"\nborder_width = 3\nmin_tile_width = 400\nmin_tile_height = 300\nmax_tiles = 6\nauto_overflow = false\nworkspace_indicator = false\nfocus_follows_mouse = true\n\n[hotkeys]\n# grow_width = \"alt+plus\"\n# shrink_width = \"alt+minus\"\nminimize = \"alt+shift+m\"\ntoggle_float = \"alt+shift+f\"\nclose = \"alt+shift+q\"\ncycle_layout = \"ctrl+alt+l\"\nquit = \"ctrl+alt+q\"\n";
         assert!(migrate(custom).is_none());
         // the freshly generated default never needs migrating
         assert!(migrate(&default_config()).is_none());

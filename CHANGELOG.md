@@ -7,6 +7,8 @@ follows [Semantic Versioning](https://semver.org) (see [docs/RELEASING.md](docs/
 ## [Unreleased]
 
 ### Added
+- A `focus_follows_mouse` setting (default `false`) that moves focus to the tiled window under the
+  mouse pointer when the pointer moves onto it. It runs on a timer only while enabled.
 - A `toggle_float` action (default `Alt+Shift+F`) that floats the focused window in place, or tiles
   it again if it is already floating. The choice lasts for the session (a config reload keeps it).
 - A `cycle_layout` action (`Ctrl+Alt+L`) that switches to the next layout and saves it, so the
