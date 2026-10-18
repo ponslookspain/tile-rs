@@ -2,7 +2,7 @@
 //! why, and which ones run fullscreen.
 
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::mem::size_of;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -34,6 +34,9 @@ pub const FULLSCREEN_REASON: &str = "fullscreen (game / borderless)";
 
 /// Skip reason for a photo / video window left floating by the `media_windows` setting.
 pub const MEDIA_REASON: &str = "media (photo/video): floating";
+
+/// Skip reason for a window the user chose to float manually (`toggle_float`).
+pub const MANUAL_REASON: &str = "floating (by toggle_float)";
 
 /// Window classes that are never tiled (shell UI, overlays, our own overlays).
 const SKIP_CLASSES: &[&str] = &[
@@ -353,6 +356,8 @@ pub struct Collector {
     /// keeping the skip reasons is only worth it for the `list` command.
     keep_skipped: bool,
     rules: Vec<Rule>,
+    /// Windows the user floated with `toggle_float`: never tiled this session.
+    manual_float: HashSet<isize>,
 }
 
 thread_local! {
@@ -480,7 +485,15 @@ unsafe extern "system" fn enum_proc(hwnd: HWND, lparam: LPARAM) -> BOOL {
     let c = &mut *(lparam.0 as *mut Collector);
     match classify(hwnd, &c.rules) {
         Verdict::Ignore => {}
-        Verdict::Tileable(w) => c.tileable.push(w),
+        Verdict::Tileable(w) => {
+            if c.manual_float.contains(&(w.hwnd.0 as isize)) {
+                if c.keep_skipped {
+                    c.skipped.push((w, MANUAL_REASON));
+                }
+            } else {
+                c.tileable.push(w);
+            }
+        }
         Verdict::Fullscreen(w) => c.fullscreen.push(w),
         Verdict::Skipped(w, r) => {
             if c.keep_skipped {
@@ -493,7 +506,8 @@ unsafe extern "system" fn enum_proc(hwnd: HWND, lparam: LPARAM) -> BOOL {
 
 /// Walks every top-level window and classifies it. `keep_skipped` only matters for the `list`
 /// command; the tiling hot path passes `false` so the skip entries (and their strings) are dropped.
-pub fn collect(keep_skipped: bool) -> Collector {
+/// `manual_float` holds the windows the user floated with `toggle_float` (never tiled).
+pub fn collect(keep_skipped: bool, manual_float: &HashSet<isize>) -> Collector {
     if prof::on() {
         prof::COLLECT_CALLS.fetch_add(1, Ordering::Relaxed);
     }
@@ -503,6 +517,7 @@ pub fn collect(keep_skipped: bool) -> Collector {
         skipped: vec![],
         keep_skipped,
         rules: config::rules(),
+        manual_float: manual_float.clone(),
     };
     unsafe {
         let _ = EnumWindows(Some(enum_proc), LPARAM(&mut c as *mut _ as isize));

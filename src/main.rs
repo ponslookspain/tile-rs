@@ -631,6 +631,8 @@ struct State {
     fs_ws: HashMap<isize, u8>,
     /// Fullscreen windows we minimized because their workspace is not shown (to restore later).
     fs_hidden: HashSet<isize>,
+    /// Windows the user floated with `toggle_float` (never tiled this session).
+    manual_float: HashSet<isize>,
     /// Current workspace (0-based).
     cur: u8,
     /// Windows of the current workspace in the layout that was applied last time;
@@ -1063,6 +1065,7 @@ pub fn action_name(a: Action) -> String {
             if width { "width" } else { "height" }
         ),
         Action::Minimize => "minimize".into(),
+        Action::ToggleFloat => "toggle_float".into(),
         Action::Close => "close".into(),
         Action::Pause => "pause".into(),
         Action::Quit => "quit".into(),
@@ -1687,7 +1690,8 @@ fn fast_add(s: &mut State, hwnd: HWND) -> bool {
 
 fn retile() {
     let _t = Timer::new("retile");
-    let c = collect(false);
+    let manual = STATE.with(|s| s.borrow().manual_float.clone());
+    let c = collect(false, &manual);
     STATE.with(|s| {
         let mut s = s.borrow_mut();
         if s.paused {
@@ -1715,6 +1719,8 @@ fn retile() {
         // forget windows that are gone (their observed minimum size goes with them)
         s.min_size
             .retain(|h, _| unsafe { IsWindow(Some(HWND(*h as *mut _))) }.as_bool());
+        s.manual_float
+            .retain(|h| unsafe { IsWindow(Some(HWND(*h as *mut _))) }.as_bool());
         // forget windows that are gone; new windows join the current workspace, the workspace a
         // config rule asks for, or - if the current workspace is full - the next workspace
         s.ws.retain(|h, _| present.contains(h));
@@ -1928,7 +1934,8 @@ fn move_to_ws(n: u8) {
 
 /// Windows left parked off-screen (e.g. after a crash) are brought back into view.
 fn recover_parked() {
-    let c = collect(false);
+    let manual = STATE.with(|s| s.borrow().manual_float.clone());
+    let c = collect(false, &manual);
     for w in &c.tileable {
         if is_parked(w.hwnd) {
             unsafe {
@@ -2056,6 +2063,32 @@ fn close_focused() {
     log("closed the focused window");
 }
 
+/// Hotkey: float the focused window (leave it where it is) or, if it is already floating, tile it
+/// again. The choice lasts for this session; a config reload does not clear it.
+fn toggle_float() {
+    let fg = unsafe { GetForegroundWindow() };
+    if fg.is_invalid() {
+        return;
+    }
+    let h = fg.0 as isize;
+    let floating = STATE.with(|s| {
+        let mut s = s.borrow_mut();
+        if s.manual_float.remove(&h) {
+            false
+        } else {
+            s.manual_float.insert(h);
+            true
+        }
+    });
+    retile();
+    refresh_border();
+    if floating {
+        log("floating the focused window");
+    } else {
+        log("tiling the focused window again");
+    }
+}
+
 /// Hotkey: switch to the next layout (spiral -> master-stack -> grid -> columns -> spiral) and
 /// remember it in `config.toml`, so the choice survives a restart like the launcher's picker.
 fn cycle_layout() {
@@ -2084,6 +2117,7 @@ pub fn dispatch(a: Action) {
         Action::MoveTo(n) => move_to_ws(n),
         Action::Resize { width, grow } => resize_focused(width, grow),
         Action::Minimize => minimize_focused(),
+        Action::ToggleFloat => toggle_float(),
         Action::Close => close_focused(),
         Action::Pause => toggle_pause(),
         Action::Quit => unsafe { PostQuitMessage(0) },
@@ -2353,7 +2387,7 @@ fn main() {
                 config::set(c);
             }
             let mut out = console_out();
-            let c = collect(true);
+            let c = collect(true, &HashSet::new());
             if cmd.as_deref() == Some("list") {
                 let _ = writeln!(out, "TILEABLE ({}):", c.tileable.len());
                 for w in &c.tileable {

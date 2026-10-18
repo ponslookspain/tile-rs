@@ -71,6 +71,7 @@ you which one and carries on with the rest.
 | `grow_width`, `shrink_width` | Make the focused window wider / narrower. Repeats while the key is held. |
 | `grow_height`, `shrink_height` | Make the focused window taller / shorter. Repeats while the key is held. |
 | `minimize` | Minimize the focused window (a fullscreen game or a normal tiled window). |
+| `toggle_float` | Float the focused window in place, or tile it again. Lasts for the session. |
 | `close` | Close the focused window (like Alt+F4). |
 | `pause` | Pause / resume tiling. While paused only `pause`, `quit`, `reload_config` and `edit_config` keep their keys. |
 | `quit` | Quit; all windows are brought back to the current workspace. |
@@ -91,6 +92,7 @@ An unknown action name is an error (it is reported on reload, with the name).
 | `move_to_workspace_N` | `alt+shift+N` |
 | `grow_width` / `shrink_width` | `alt+plus`, `alt+numpad_add` / `alt+minus`, `alt+numpad_subtract` |
 | `minimize` | `alt+shift+m` |
+| `toggle_float` | `alt+shift+f` |
 | `close` | `alt+shift+q` |
 | `cycle_layout` | `ctrl+alt+l` |
 | `pause` | `ctrl+alt+p`, `alt+shift+p` |
@@ -99,8 +101,8 @@ An unknown action name is an error (it is reported on reload, with the name).
 No default keys: `grow_height`, `shrink_height`, `retile`, `reload_config`, `edit_config`
 (present as commented examples in the generated file).
 
-An older `config.toml` is updated in place on start-up: missing `close`, `cycle_layout` and `quit`
-bindings are added (a commented-out or removed one is left alone).
+An older `config.toml` is updated in place on start-up: missing `toggle_float`, `close`,
+`cycle_layout` and `quit` bindings are added (a commented-out or removed one is left alone).
 
 ## Window rules
 

@@ -7,6 +7,8 @@ follows [Semantic Versioning](https://semver.org) (see [docs/RELEASING.md](docs/
 ## [Unreleased]
 
 ### Added
+- A `toggle_float` action (default `Alt+Shift+F`) that floats the focused window in place, or tiles
+  it again if it is already floating. The choice lasts for the session (a config reload keeps it).
 - A `cycle_layout` action (`Ctrl+Alt+L`) that switches to the next layout and saves it, so the
   layout can be changed without opening the settings launcher.
 - Three layouts beside the spiral: `master_stack` (a master column on the left, the rest stacked on

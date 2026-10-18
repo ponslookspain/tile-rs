@@ -108,6 +108,7 @@ it immediately.
 | `Alt+Shift+1` … `Alt+Shift+9` | move the focused window to workspace 1…9 and follow it there |
 | `Alt+=` / `Alt+-` (also `Alt+Num+` / `Alt+Num-`) | make the focused window wider / narrower (hold to repeat) |
 | `Alt+Shift+M` | minimize the focused window |
+| `Alt+Shift+F` | float the focused window in place, or tile it again |
 | `Alt+Shift+Q` | close the focused window (like Alt+F4) |
 | `Ctrl+Alt+L` | switch to the next layout (spiral, master-stack, grid, columns) |
 | `Ctrl+Alt+P` or `Alt+Shift+P` | pause / resume tiling |
