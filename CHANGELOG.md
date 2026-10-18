@@ -7,6 +7,8 @@ follows [Semantic Versioning](https://semver.org) (see [docs/RELEASING.md](docs/
 ## [Unreleased]
 
 ### Added
+- A `cycle_layout` action (`Ctrl+Alt+L`) that switches to the next layout and saves it, so the
+  layout can be changed without opening the settings launcher.
 - Three layouts beside the spiral: `master_stack` (a master column on the left, the rest stacked on
   the right), `grid` and `columns`. The `layout` setting and the settings-launcher picker now work
   (before they fell back to the spiral with a "not implemented" warning). Spiral and master-stack

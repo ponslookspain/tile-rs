@@ -67,7 +67,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
     WS_CHILD,
 };
 
-use config::{Action, Dir, FullscreenWindows, WS_COUNT};
+use config::{Action, Dir, FullscreenWindows, Layout, WS_COUNT};
 use geometry::{
     anim_duration, apply_resize_for, ease, effective_step, fullscreen_action, lerp_rect, neighbour,
     place as layout_tiles, place_fitted, same_rect, split_for_layout, FsAction, MAX_RATIO,
@@ -1067,6 +1067,7 @@ pub fn action_name(a: Action) -> String {
         Action::Pause => "pause".into(),
         Action::Quit => "quit".into(),
         Action::Retile => "retile".into(),
+        Action::CycleLayout => "cycle_layout".into(),
         Action::ReloadConfig => "reload_config".into(),
         Action::EditConfig => "edit_config".into(),
     }
@@ -2055,6 +2056,26 @@ fn close_focused() {
     log("closed the focused window");
 }
 
+/// Hotkey: switch to the next layout (spiral -> master-stack -> grid -> columns -> spiral) and
+/// remember it in `config.toml`, so the choice survives a restart like the launcher's picker.
+fn cycle_layout() {
+    let next = match config::layout() {
+        Layout::Spiral => Layout::MasterStack,
+        Layout::MasterStack => Layout::Grid,
+        Layout::Grid => Layout::Columns,
+        Layout::Columns => Layout::Spiral,
+    };
+    let path = config::config_path();
+    let text = std::fs::read_to_string(&path).unwrap_or_default();
+    let new = config::edit_top(&text, &[("layout", format!("\"{}\"", next.name()))]);
+    if let Err(e) = std::fs::write(&path, new) {
+        log(format!("could not save the layout to config.toml: {e}"));
+        return;
+    }
+    reload_config();
+    notify("tile-rs", &format!("Layout: {}", next.name()));
+}
+
 pub fn dispatch(a: Action) {
     match a {
         Action::Focus(d) => focus_or_swap(d, false),
@@ -2076,6 +2097,7 @@ pub fn dispatch(a: Action) {
             });
             retile();
         }
+        Action::CycleLayout => cycle_layout(),
         Action::ReloadConfig => reload_config(),
         Action::EditConfig => {
             config::ensure_default();

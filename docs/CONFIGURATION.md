@@ -75,6 +75,7 @@ you which one and carries on with the rest.
 | `pause` | Pause / resume tiling. While paused only `pause`, `quit`, `reload_config` and `edit_config` keep their keys. |
 | `quit` | Quit; all windows are brought back to the current workspace. |
 | `retile` | Re-apply the layout and reset all sizes to equal halves. |
+| `cycle_layout` | Switch to the next tiling layout (spiral → master-stack → grid → columns → spiral) and save it. |
 | `reload_config` | Re-read `config.toml`. |
 | `edit_config` | Open `config.toml` in Notepad. |
 
@@ -91,14 +92,15 @@ An unknown action name is an error (it is reported on reload, with the name).
 | `grow_width` / `shrink_width` | `alt+plus`, `alt+numpad_add` / `alt+minus`, `alt+numpad_subtract` |
 | `minimize` | `alt+shift+m` |
 | `close` | `alt+shift+q` |
+| `cycle_layout` | `ctrl+alt+l` |
 | `pause` | `ctrl+alt+p`, `alt+shift+p` |
 | `quit` | `ctrl+alt+q` |
 
 No default keys: `grow_height`, `shrink_height`, `retile`, `reload_config`, `edit_config`
 (present as commented examples in the generated file).
 
-An older `config.toml` is updated in place on start-up: missing `close` and `quit` bindings are
-added (a commented-out or removed one is left alone).
+An older `config.toml` is updated in place on start-up: missing `close`, `cycle_layout` and `quit`
+bindings are added (a commented-out or removed one is left alone).
 
 ## Window rules
 

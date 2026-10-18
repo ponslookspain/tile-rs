@@ -41,6 +41,8 @@ pub enum Action {
     Pause,
     Quit,
     Retile,
+    /// Switch to the next tiling layout (spiral -> master-stack -> grid -> columns -> spiral).
+    CycleLayout,
     ReloadConfig,
     EditConfig,
 }
@@ -249,6 +251,7 @@ shrink_width  = ["alt+minus", "alt+numpad_subtract"]
 # shrink_height = "alt+shift+minus"
 minimize      = "alt+shift+m"
 close         = "alt+shift+q"
+cycle_layout  = "ctrl+alt+l"
 pause         = ["ctrl+alt+p", "alt+shift+p"]
 quit          = "ctrl+alt+q"
 # Optional (also available from the tray menu):
@@ -324,6 +327,9 @@ pub fn migrate(text: &str) -> Option<String> {
     }
     if !has("close") {
         hot.push(r#"close         = "alt+shift+q""#.into());
+    }
+    if !has("cycle_layout") {
+        hot.push(r#"cycle_layout  = "ctrl+alt+l""#.into());
     }
     if !has("quit") {
         hot.push(r#"quit          = "ctrl+alt+q""#.into());
@@ -524,6 +530,7 @@ fn parse_action(name: &str) -> Option<Action> {
         "pause" => Some(Action::Pause),
         "quit" => Some(Action::Quit),
         "retile" => Some(Action::Retile),
+        "cycle_layout" => Some(Action::CycleLayout),
         "reload_config" => Some(Action::ReloadConfig),
         "edit_config" => Some(Action::EditConfig),
         _ => None,
@@ -908,6 +915,10 @@ mod tests {
             .bindings
             .iter()
             .any(|(a, s)| *a == Action::Close && s == "alt+shift+q"));
+        assert!(c
+            .bindings
+            .iter()
+            .any(|(a, s)| *a == Action::CycleLayout && s == "ctrl+alt+l"));
         assert!(c.bindings.iter().any(|(a, s)| {
             *a == Action::Resize {
                 width: true,
@@ -920,8 +931,8 @@ mod tests {
                 grow: false,
             } && s == "alt+minus"
         }));
-        // 16 direction bindings + 18 workspace bindings + 4 resize + pause x2 + close + quit
-        assert!(c.bindings.len() >= 16 + 18 + 4 + 4);
+        // 16 direction + 18 workspace + 4 resize + pause x2 + close + cycle_layout + quit
+        assert!(c.bindings.len() >= 16 + 18 + 4 + 5);
         assert_eq!(c.rules.len(), 1);
         assert!(c
             .bindings
@@ -988,7 +999,7 @@ mod tests {
         let once = migrate(OLD_CONFIG).unwrap();
         assert!(migrate(&once).is_none(), "second run must change nothing");
         // a key the user commented out or turned off is not re-added
-        let custom = "layout = \"spiral\"\ngap = 5\nanimations = false\n# animation_ms = 99\neasing = \"linear\"\nfullscreen_windows = \"ignore\"\nmedia_windows = \"tile\"\nresize_step = 10\nborder = false\n# border_color = \"#112233\"\nborder_width = 3\nmin_tile_width = 400\nmin_tile_height = 300\nmax_tiles = 6\nauto_overflow = false\nworkspace_indicator = false\n\n[hotkeys]\n# grow_width = \"alt+plus\"\n# shrink_width = \"alt+minus\"\nminimize = \"alt+shift+m\"\nclose = \"alt+shift+q\"\nquit = \"ctrl+alt+q\"\n";
+        let custom = "layout = \"spiral\"\ngap = 5\nanimations = false\n# animation_ms = 99\neasing = \"linear\"\nfullscreen_windows = \"ignore\"\nmedia_windows = \"tile\"\nresize_step = 10\nborder = false\n# border_color = \"#112233\"\nborder_width = 3\nmin_tile_width = 400\nmin_tile_height = 300\nmax_tiles = 6\nauto_overflow = false\nworkspace_indicator = false\n\n[hotkeys]\n# grow_width = \"alt+plus\"\n# shrink_width = \"alt+minus\"\nminimize = \"alt+shift+m\"\nclose = \"alt+shift+q\"\ncycle_layout = \"ctrl+alt+l\"\nquit = \"ctrl+alt+q\"\n";
         assert!(migrate(custom).is_none());
         // the freshly generated default never needs migrating
         assert!(migrate(&default_config()).is_none());
