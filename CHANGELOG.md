@@ -30,6 +30,9 @@ follows [Semantic Versioning](https://semver.org) (see [docs/RELEASING.md](docs/
   `Ctrl+Alt+Q` quits tile-rs even on an old config (a commented-out or removed one is left alone).
 
 ### Fixed
+- Windows of elevated (administrator) processes are no longer tiled while tile-rs itself runs
+  without rights: a non-elevated tile-rs cannot move them, so they used to sit frozen in a tile.
+  They are shown as skipped in `tile-rs.exe list` with the reason "elevated".
 - The focus border now appears at once when you click a tile. A workspace-indicator hover timer
   that was never stopped kept firing every 15 ms (and collided with the re-tile debounce timer),
   which made focus updates lag more and more the longer tile-rs ran.

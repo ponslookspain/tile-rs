@@ -137,8 +137,9 @@ A rule needs at least one of `process`, `class`, `title`, and all given fields m
 Use `tile-rs.exe list` to see what the windows on your screen are called.
 
 Windows that are never tiled regardless of rules: invisible or minimized windows, dialogs
-(owned windows), tool windows, windows that cannot be resized, the taskbar and desktop, and
-windows you have maximized yourself.
+(owned windows), tool windows, windows that cannot be resized, the taskbar and desktop, windows
+you have maximized yourself, and the windows of elevated (administrator) processes while tile-rs
+itself is not running as administrator.
 
 ## Example: a compact personal config
 
