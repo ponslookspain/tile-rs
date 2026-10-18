@@ -33,6 +33,10 @@ jobs:
 
       - name: Package
         shell: pwsh
+        env:
+          TILE_RS_SIGN_CERT_PFX_BASE64: ${{ secrets.WINDOWS_CERT_PFX_BASE64 }}
+          TILE_RS_SIGN_CERT_PASSWORD: ${{ secrets.WINDOWS_CERT_PASSWORD }}
+          TILE_RS_SIGN_THUMBPRINT: ${{ secrets.WINDOWS_CERT_THUMBPRINT }}
         run: ./scripts/package.ps1
 
       - name: Install Inno Setup
@@ -40,6 +44,10 @@ jobs:
 
       - name: Build the Windows installer
         shell: pwsh
+        env:
+          TILE_RS_SIGN_CERT_PFX_BASE64: ${{ secrets.WINDOWS_CERT_PFX_BASE64 }}
+          TILE_RS_SIGN_CERT_PASSWORD: ${{ secrets.WINDOWS_CERT_PASSWORD }}
+          TILE_RS_SIGN_THUMBPRINT: ${{ secrets.WINDOWS_CERT_THUMBPRINT }}
         run: ./scripts/build-installer.ps1
 
       - name: Release notes from CHANGELOG.md

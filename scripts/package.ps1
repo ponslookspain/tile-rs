@@ -31,6 +31,10 @@ Copy-Item target\release\tile-rs.exe $stage
 Copy-Item README.md, README.ru.md, LICENSE, CHANGELOG.md $stage
 Copy-Item docs\CONFIGURATION.md $stage
 
+# code-sign the exe before zipping (a no-op unless signing is configured)
+& (Join-Path $PSScriptRoot 'sign.ps1') -Path (Join-Path $stage 'tile-rs.exe')
+if ($LASTEXITCODE -ne 0) { throw 'code signing failed' }
+
 $zip = "release\$name.zip"
 Compress-Archive -Path "$stage\*" -DestinationPath $zip
 $hash = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLower()
