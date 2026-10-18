@@ -447,7 +447,8 @@ fn monitor_work(mi: usize) -> RECT {
     // a stale monitor index (e.g. a monitor was unplugged) falls back to the last real monitor
     let i = mi.min(list.len().saturating_sub(1));
     let mut r = list.get(i).map(|m| m.work).unwrap_or_default();
-    if config::workspace_indicator() {
+    // the indicator bar sits on the primary screen only (until one is drawn per monitor)
+    if config::workspace_indicator() && monitor::primary_index(&list) == i {
         r.top += overlay::INDICATOR_H;
     }
     r
@@ -481,6 +482,7 @@ fn reconcile_fullscreen(s: &mut State, wins: &[Win]) {
             .rule_ws
             .unwrap_or_else(|| next_free_workspace(s, mi, s.cur[mi]));
         s.fs_ws.insert(h, ws);
+        s.fs_mon.insert(h, mi);
         if ws != s.cur[mi] && follow.is_none() {
             follow = Some((mi, ws, h));
         }
@@ -489,6 +491,7 @@ fn reconcile_fullscreen(s: &mut State, wins: &[Win]) {
         s.follow = follow;
     }
     let fs_ws = &s.fs_ws;
+    s.fs_mon.retain(|h, _| fs_ws.contains_key(h));
     s.fs_hidden.retain(|h| fs_ws.contains_key(h));
 }
 
@@ -520,7 +523,12 @@ fn apply_fullscreen(s: &mut State) {
         if !unsafe { IsWindow(Some(hw)) }.as_bool() {
             continue;
         }
-        let cur = s.cur[monitor::of_window(hw).min(MON - 1)];
+        let mi = s
+            .fs_mon
+            .get(&h)
+            .copied()
+            .unwrap_or_else(|| monitor::of_window(hw).min(MON - 1));
+        let cur = s.cur[mi];
         let hidden = s.fs_hidden.contains(&h);
         let minimized = unsafe { IsIconic(hw) }.as_bool();
         match fullscreen_action(ws, cur, hidden, minimized) {
@@ -656,6 +664,9 @@ struct State {
     min_size: HashMap<isize, (i32, i32)>,
     /// Workspace (0-based) of every known fullscreen window (they are never tiled).
     fs_ws: HashMap<isize, u8>,
+    /// Monitor of every known fullscreen window. Recorded while the window is visible (a minimized
+    /// window's `MonitorFromWindow` is not reliable), so show/hide decisions use the right screen.
+    fs_mon: HashMap<isize, usize>,
     /// Fullscreen windows we minimized because their workspace is not shown (to restore later).
     fs_hidden: HashSet<isize>,
     /// Windows the user floated with `toggle_float` (never tiled this session).
@@ -2033,13 +2044,18 @@ fn switch_ws(mi: usize, n: u8, focus: Option<isize>) {
 /// first tiled one.
 fn focus_workspace(mi: usize, n: u8) {
     let fs = STATE.with(|s| {
-        s.borrow()
-            .fs_ws
+        let s = s.borrow();
+        s.fs_ws
             .iter()
             .find(|(h, w)| {
+                let hw = HWND(**h as *mut _);
                 **w == n
-                    && monitor::of_window(HWND(**h as *mut _)).min(MON - 1) == mi
-                    && !unsafe { IsIconic(HWND(**h as *mut _)) }.as_bool()
+                    && s.fs_mon
+                        .get(*h)
+                        .copied()
+                        .unwrap_or_else(|| monitor::of_window(hw).min(MON - 1))
+                        == mi
+                    && !unsafe { IsIconic(hw) }.as_bool()
             })
             .map(|(h, _)| *h)
     });
@@ -2131,7 +2147,11 @@ fn bring_everything_back() {
             .fs_ws
             .keys()
             .map(|h| {
-                let mi = monitor::of_window(HWND(*h as *mut _)).min(MON - 1);
+                let mi = s
+                    .fs_mon
+                    .get(h)
+                    .copied()
+                    .unwrap_or_else(|| monitor::of_window(HWND(*h as *mut _)).min(MON - 1));
                 (*h, s.cur[mi])
             })
             .collect();
