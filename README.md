@@ -25,7 +25,10 @@ everything lives in one small `.exe` with a tray icon and a plain-text config.
   (exclusive or borderless fullscreen) is never tiled. It is minimized when you switch to another
   workspace and restored when you switch back, so it stays fullscreen but does not block your other
   workspaces.
-- **9 workspaces**, per-app rules (always float, open on workspace N), focus and swap by keyboard.
+- **Multiple monitors**: every screen keeps its own layout and current workspace, and a window
+  tiles on the screen it is on (move it to another screen and it re-homes there).
+- **9 workspaces per monitor**, per-app rules (always float, open on workspace N), focus and swap by
+  keyboard.
 - **Tray icon** with pause/resume, reload config, edit config, "Start with Windows", quit.
 - **Coloured border** around the focused window, drawn by tile-rs itself so it shows for every
   window (including consoles like Windows PowerShell).

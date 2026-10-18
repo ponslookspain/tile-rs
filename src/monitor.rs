@@ -146,7 +146,6 @@ pub fn at(pt: POINT) -> usize {
 }
 
 /// The index of the monitor a window is on (nearest).
-#[allow(dead_code)]
 pub fn of_window(hwnd: HWND) -> usize {
     let handle = unsafe { MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST) };
     let list = list();

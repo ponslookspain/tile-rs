@@ -7,6 +7,10 @@ follows [Semantic Versioning](https://semver.org) (see [docs/RELEASING.md](docs/
 ## [Unreleased]
 
 ### Added
+- Multi-monitor tiling: every screen keeps its own layout and current workspace, and a window is
+  tiled on the screen it is on (move it to another screen and it re-homes there). Workspace hotkeys
+  and the workspace actions apply to the screen under the pointer (or the screen of the focused
+  window). The workspace indicator still shows the primary screen only for now.
 - A "Check for updates" item in the tray menu and in the settings launcher. It asks the GitHub
   releases API for the latest tag and reports whether a newer version is available. It runs only
   when you ask for it; there is no background network access.
