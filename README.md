@@ -5,13 +5,14 @@ arranged automatically in a spiral, you move and resize them with the keyboard o
 everything lives in one small `.exe` with a tray icon and a plain-text config.
 
 [Русская версия](README.ru.md) · [Configuration reference](docs/CONFIGURATION.md) ·
-[Changelog](CHANGELOG.md) · [Releasing & versioning](docs/RELEASING.md)
+[Development & testing](docs/DEVELOPMENT.md) · [Changelog](CHANGELOG.md) ·
+[Releasing & versioning](docs/RELEASING.md)
 
 ## Features
 
-- **Settings launcher**: a small window (tray menu -> *Settings...*, or on first start) with every
-  option in one place - layout, gaps, animations, border, workspaces and hotkeys - plus a
-  "check for updates" link. No config file editing needed.
+- **Settings launcher**: a clear two-column window (tray menu -> *Settings...*, or on first start)
+  for layouts, gaps, animations, borders, workspace behavior and hotkeys, with update checking and
+  a direct GitHub link. Application-specific rules remain in `config.toml`.
 - **Four layouts** (settings launcher, tray or the `layout` setting): **spiral** (dwindle, the
   default - window 1 takes the left part, window 2 the top-right, and so on), **master-stack** (a
   master column on the left, the rest stacked on the right), **grid** and **columns**. Close or open
@@ -34,7 +35,8 @@ everything lives in one small `.exe` with a tray icon and a plain-text config.
   window (including consoles like Windows PowerShell).
 - **Adapts to your screen**: tiles never get narrower than `min_tile_width`/`min_tile_height` (the
   master tile narrows to make room), and once a workspace is full a new window opens on the next
-  workspace. A small row of dots at the top shows the workspaces (and can be clicked to switch).
+  workspace. Numbered workspace buttons at the top of each monitor show current and occupied
+  workspaces and can be clicked to switch.
 - Everything configurable in `config.toml`: hotkeys, gap, animation, rules.
 
 ## Requirements
@@ -171,7 +173,7 @@ min_tile_width = 480     # tiles never get narrower; the master tile narrows to 
 min_tile_height = 320
 max_tiles = 0            # tiles per workspace; 0 = automatic from the screen size
 auto_overflow = true     # a new window goes to the next workspace when this one is full
-workspace_indicator = true  # clickable dots at the top; click one to switch workspaces
+workspace_indicator = true  # numbered buttons at the top; click one to switch workspaces
 focus_follows_mouse = false  # focus the tiled window under the pointer when it moves onto it
 
 [hotkeys]
@@ -212,7 +214,9 @@ back when you switch), so they still show up in the taskbar and in `Alt+Tab`.
 
 ## Limitations
 
-- Only the primary monitor is managed (multi-monitor support is planned).
+- Each connected monitor has its own layout and workspace. Workspace hotkeys target the monitor
+  under the pointer, or the focused window's monitor. Its numbered workspace switcher appears at
+  the top of each monitor.
 - With `grid` and `columns` the tiles are fixed (even) sizes: only the spiral and master-stack can
   be resized by dragging an edge.
 - Do not run it together with another window manager (GlazeWM, Komorebi, ...).
@@ -222,6 +226,8 @@ back when you switch), so they still show up in the taskbar and in `Alt+Tab`.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md). Versions follow [Semantic Versioning](https://semver.org);
 how versions are numbered and released is described in [docs/RELEASING.md](docs/RELEASING.md).
+Current multi-monitor implementation status and manual verification steps are tracked in
+[docs/MULTIMONITOR-STATUS.md](docs/MULTIMONITOR-STATUS.md).
 
 ## License
 

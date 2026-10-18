@@ -37,8 +37,8 @@ These keys go at the top of the file, before any `[section]`.
 | `min_tile_height` | `320` | Comfortable minimum tile height. |
 | `max_tiles` | `0` | Maximum tiles per workspace; `0` = chosen automatically from the screen size. |
 | `auto_overflow` | `true` | When a workspace is full, open a new window on the next workspace and switch to it. |
-| `workspace_indicator` | `true` | Small row of workspace dots at the top of the screen. Hover a dot to highlight it and click it to switch to that workspace. |
-| `focus_follows_mouse` | `false` | Move focus to the tiled window under the mouse pointer when the pointer moves onto it. |
+| `workspace_indicator` | `true` | Numbered workspace buttons at the top of each monitor. The current workspace and workspaces with windows have distinct states; click a number to switch that monitor. |
+| `focus_follows_mouse` | `false` | Move focus to the tiled window under the mouse pointer when the pointer moves onto it. This option is also available in the settings launcher. |
 
 ## Hotkeys
 

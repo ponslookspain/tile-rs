@@ -9,6 +9,15 @@
 /dist/
 /release/
 
+# Local assistant configuration and session state. Project skills can be shared intentionally.
+/.claude/
+/.omc/*
+!/.omc/skills/
+!/.omc/skills/**
+
+# Personal planning drafts stay out of release/source archives.
+/docs/PLAN-*.md
+
 # Editor / OS
 .vscode/
 .idea/

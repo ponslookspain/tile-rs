@@ -140,7 +140,6 @@ pub fn primary_work() -> RECT {
 }
 
 /// The index of the monitor under `pt` (nearest).
-#[allow(dead_code)]
 pub fn at(pt: POINT) -> usize {
     nearest(&list(), pt)
 }

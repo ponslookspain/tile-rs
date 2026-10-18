@@ -432,23 +432,14 @@ fn raw_work_area() -> RECT {
     monitor::primary_work()
 }
 
-/// The area the windows are tiled in: the work area minus the indicator bar at the top.
-fn work_area() -> RECT {
-    let mut r = raw_work_area();
-    if config::workspace_indicator() {
-        r.top += overlay::INDICATOR_H;
-    }
-    r
-}
-
 /// The work area (taskbar excluded) of monitor `mi`, minus the indicator bar.
 fn monitor_work(mi: usize) -> RECT {
     let list = monitor::list();
     // a stale monitor index (e.g. a monitor was unplugged) falls back to the last real monitor
     let i = mi.min(list.len().saturating_sub(1));
     let mut r = list.get(i).map(|m| m.work).unwrap_or_default();
-    // the indicator bar sits on the primary screen only (until one is drawn per monitor)
-    if config::workspace_indicator() && monitor::primary_index(&list) == i {
+    // Each managed monitor has its own workspace indicator bar.
+    if config::workspace_indicator() {
         r.top += overlay::INDICATOR_H;
     }
     r
@@ -474,6 +465,11 @@ fn reconcile_fullscreen(s: &mut State, wins: &[Win]) {
     for w in wins {
         let h = w.hwnd.0 as isize;
         if s.fs_ws.contains_key(&h) {
+            // A fullscreen window can be moved to another monitor while it remains fullscreen.
+            // Refresh its owner while visible; when minimized, keep the last known monitor.
+            if !unsafe { IsIconic(w.hwnd) }.as_bool() {
+                s.fs_mon.insert(h, monitor::of_window(w.hwnd).min(MON - 1));
+            }
             continue;
         }
         let mi = monitor::of_window(w.hwnd).min(MON - 1);
@@ -499,7 +495,15 @@ fn reconcile_fullscreen(s: &mut State, wins: &[Win]) {
 /// fullscreen game, so it does not land on top of the current work.
 fn next_free_workspace(s: &State, mi: usize, cur: u8) -> u8 {
     let used = |ws: u8| {
-        s.ws.iter().any(|(h, w)| *w == ws && s.mi(*h) == mi) || s.fs_ws.values().any(|w| *w == ws)
+        s.ws.iter().any(|(h, w)| *w == ws && s.mi(*h) == mi)
+            || s.fs_ws.iter().any(|(h, w)| {
+                *w == ws
+                    && s.fs_mon
+                        .get(h)
+                        .copied()
+                        .unwrap_or_else(|| monitor::of_window(HWND(*h as *mut _)).min(MON - 1))
+                        == mi
+            })
     };
     for i in 1..=WS_COUNT {
         let ws = (cur + i) % WS_COUNT;
@@ -753,10 +757,7 @@ fn active_mon(s: &State) -> usize {
     }
     let mut pt = POINT::default();
     if unsafe { GetCursorPos(&mut pt) }.is_ok() {
-        let list = monitor::list();
-        if !list.is_empty() {
-            return monitor::nearest(&list, pt).min(MON - 1);
-        }
+        return monitor::at(pt).min(MON - 1);
     }
     0
 }
@@ -1080,32 +1081,44 @@ fn clear_border() {
     overlay::hide_border();
 }
 
-/// Updates the workspace indicator (a small bar of dots at the top of the work area; the tiling
-/// area leaves room for it, so it never overlaps a window).
+/// Updates each monitor's workspace indicator; the tiling area leaves room for its own bar.
 fn sync_indicator() {
     if !config::workspace_indicator() {
         overlay::hide_indicator();
         return;
     }
-    let (cur, mask) = STATE.with(|s| {
-        let s = s.borrow();
-        let mut mask = 0u32;
-        for w in s.ws.values().chain(s.fs_ws.values()) {
-            mask |= 1u32 << (*w as u32).min(31);
-        }
-        let p = monitor::primary_index(&monitor::list()).min(MON - 1);
-        (s.cur[p], mask)
-    });
-    let wa = raw_work_area();
+    let mons = monitor::list();
     let (w, h) = overlay::indicator_size();
-    let x = wa.left + (wa.right - wa.left - w) / 2;
-    let rect = RECT {
-        left: x,
-        top: wa.top,
-        right: x + w,
-        bottom: wa.top + h,
-    };
-    overlay::show_indicator(rect, cur, mask, config::border_color_value());
+    STATE.with(|s| {
+        let s = s.borrow();
+        for (mi, mon) in mons.iter().enumerate().take(MON) {
+            let x = mon.work.left + (mon.work.right - mon.work.left - w) / 2;
+            let rect = RECT {
+                left: x,
+                top: mon.work.top,
+                right: x + w,
+                bottom: mon.work.top + h,
+            };
+            let mut mask = 0u32;
+            for (window, ws) in &s.ws {
+                if s.mi(*window) == mi {
+                    mask |= 1u32 << (*ws as u32).min(31);
+                }
+            }
+            for (window, ws) in &s.fs_ws {
+                let fs_mi = s
+                    .fs_mon
+                    .get(window)
+                    .copied()
+                    .unwrap_or_else(|| monitor::of_window(HWND(*window as *mut _)))
+                    .min(MON - 1);
+                if fs_mi == mi {
+                    mask |= 1u32 << (*ws as u32).min(31);
+                }
+            }
+            overlay::show_indicator(mi, rect, s.cur[mi], mask, config::border_color_value());
+        }
+    });
 }
 
 /// (current workspace 0-based, paused) - for the tray.
@@ -1119,6 +1132,9 @@ pub fn ui_state() -> (u8, bool) {
 /// The screen work area changed (display mode, taskbar size / auto-hide): rebuild the layout.
 pub fn request_relayout() {
     monitor::refresh();
+    if config::workspace_indicator() {
+        let _ = overlay::sync_indicator_count(monitor::list().len());
+    }
     STATE.with(|s| {
         let mut s = s.borrow_mut();
         s.reflow = true;
@@ -1983,7 +1999,12 @@ fn focus_or_swap(dir: Dir, swap: bool) {
     }
 }
 
-/// Switch the workspace of the monitor the user is on.
+/// Switch the workspace of the monitor whose indicator was clicked.
+fn switch_ws_on_monitor(mi: usize, n: u8) {
+    switch_ws(mi, n, None);
+}
+
+/// Switch the workspace on the active monitor (keyboard action).
 fn switch_ws_active(n: u8) {
     let mi = STATE.with(|s| active_mon(&s.borrow()));
     switch_ws(mi, n, None);
@@ -2020,7 +2041,7 @@ fn move_ws_relative(step: i8) {
 fn switch_ws(mi: usize, n: u8, focus: Option<isize>) {
     let changed = STATE.with(|s| {
         let mut s = s.borrow_mut();
-        if s.paused || n == s.cur[mi] || n >= WS_COUNT {
+        if mi >= MON || s.paused || n == s.cur[mi] || n >= WS_COUNT {
             return false;
         }
         s.cur[mi] = n;
@@ -2538,8 +2559,8 @@ fn start(interactive: bool) {
         log("could not create the border overlay window");
     }
     overlay::set_border_color(config::border_color_value());
-    overlay::set_indicator_click(switch_ws_active);
-    overlay::create_indicator();
+    overlay::set_indicator_click(switch_ws_on_monitor);
+    overlay::create_indicator(monitor::list().len());
     let anim_timer = create_anim_timer();
     STATE.with(|s| s.borrow_mut().anim_timer = anim_timer);
     apply_focus_follows_timer();
@@ -2686,8 +2707,28 @@ fn main() {
             let c = collect(true, &HashSet::new());
             if cmd.as_deref() == Some("list") {
                 let _ = writeln!(out, "TILEABLE ({}):", c.tileable.len());
+                let mut grouped = vec![Vec::new(); MON];
                 for w in &c.tileable {
-                    let _ = writeln!(out, "  [{:>6}] {:<28} {}", w.pid, w.class, w.title);
+                    grouped[monitor::of_window(w.hwnd).min(MON - 1)].push(w);
+                }
+                for (mi, wins) in grouped.iter().enumerate() {
+                    if wins.is_empty() {
+                        continue;
+                    }
+                    let area = monitor_work(mi);
+                    let _ = writeln!(
+                        out,
+                        "\nMONITOR {} ({}x{} at {}, {}) - {} tileable:",
+                        mi + 1,
+                        area.right - area.left,
+                        area.bottom - area.top,
+                        area.left,
+                        area.top,
+                        wins.len()
+                    );
+                    for w in wins {
+                        let _ = writeln!(out, "  [{:>6}] {:<28} {}", w.pid, w.class, w.title);
+                    }
                 }
                 if !c.fullscreen.is_empty() {
                     let _ = writeln!(out, "\nFULLSCREEN ({}):", c.fullscreen.len());
@@ -2710,29 +2751,42 @@ fn main() {
                         w.pid, w.class, w.title, r
                     );
                 }
-                let a = work_area();
-                let _ = writeln!(
-                    out,
-                    "\nWork area: {}x{} at ({}, {})",
-                    a.right - a.left,
-                    a.bottom - a.top,
-                    a.left,
-                    a.top
-                );
-            } else {
-                let (rects, _) =
-                    layout_tiles(config::layout(), work_area(), c.tileable.len(), &[], gaps());
-                for (w, r) in c.tileable.iter().zip(rects) {
+                for mi in 0..monitor::list().len().min(MON) {
+                    let area = monitor_work(mi);
                     let _ = writeln!(
                         out,
-                        "{} -> {}x{} at ({}, {})",
-                        w.title,
-                        r.right - r.left,
-                        r.bottom - r.top,
-                        r.left,
-                        r.top
+                        "WORK AREA monitor {}: {}x{} at ({}, {})",
+                        mi + 1,
+                        area.right - area.left,
+                        area.bottom - area.top,
+                        area.left,
+                        area.top
                     );
-                    place(w.hwnd, r);
+                }
+            } else {
+                let mut grouped = vec![Vec::new(); MON];
+                for w in &c.tileable {
+                    grouped[monitor::of_window(w.hwnd).min(MON - 1)].push(w);
+                }
+                for (mi, wins) in grouped.iter().enumerate() {
+                    if wins.is_empty() {
+                        continue;
+                    }
+                    let (rects, _) =
+                        layout_tiles(config::layout(), monitor_work(mi), wins.len(), &[], gaps());
+                    for (w, r) in wins.iter().zip(rects) {
+                        let _ = writeln!(
+                            out,
+                            "{}: {} -> {}x{} at ({}, {})",
+                            mi + 1,
+                            w.title,
+                            r.right - r.left,
+                            r.bottom - r.top,
+                            r.left,
+                            r.top
+                        );
+                        place(w.hwnd, r);
+                    }
                 }
             }
         }

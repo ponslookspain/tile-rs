@@ -7,12 +7,18 @@ follows [Semantic Versioning](https://semver.org) (see [docs/RELEASING.md](docs/
 ## [Unreleased]
 
 ### Added
+- Windows x64 releases statically include the MSVC runtime, so users do not need to install the
+  Visual C++ Redistributable separately.
+- The settings launcher now uses a clearer two-column layout, dark contrast, direct GitHub access,
+  and exposes the existing `focus_follows_mouse` option. The workspace switcher uses larger,
+  numbered targets with clearer current/occupied states.
 - Multi-monitor tiling: every screen keeps its own layout and current workspace, and a window is
   tiled on the screen it is on (move it to another screen and it re-homes there). Workspace hotkeys
   and the workspace actions apply to the screen under the pointer (or the screen of the focused
   window). Fullscreen windows are tracked per screen, so switching one screen's workspace does not
-  hide a game running on another. The workspace indicator still shows the primary screen only for
-  now (and the top gap it reserves applies to that screen only).
+  hide a game running on another. Each monitor also has its own clickable workspace indicator and
+  reserves the indicator bar from its tiling area. The `list` command groups windows by monitor,
+  and the one-shot `tile` command lays out windows on each monitor.
 - A "Check for updates" item in the tray menu and in the settings launcher. It asks the GitHub
   releases API for the latest tag and reports whether a newer version is available. It runs only
   when you ask for it; there is no background network access.
@@ -39,6 +45,10 @@ follows [Semantic Versioning](https://semver.org) (see [docs/RELEASING.md](docs/
   `Ctrl+Alt+Q` quits tile-rs even on an old config (a commented-out or removed one is left alone).
 
 ### Fixed
+- Packaging now preserves other files in `release/`, and the release workflow uploads only assets
+  matching the tag version.
+- Fullscreen windows moved between monitors update their monitor assignment, and workspace
+  selection safely ignores a stale monitor callback during display hot-plug.
 - Windows of elevated (administrator) processes are no longer tiled while tile-rs itself runs
   without rights: a non-elevated tile-rs cannot move them, so they used to sit frozen in a tile.
   They are shown as skipped in `tile-rs.exe list` with the reason "elevated".

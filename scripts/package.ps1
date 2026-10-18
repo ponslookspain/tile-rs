@@ -24,7 +24,8 @@ if (-not (Test-Path target\release\tile-rs.exe)) { throw 'target\release\tile-rs
 
 $name  = "tile-rs-v$version-windows-x64"
 $stage = Join-Path 'release' $name
-if (Test-Path release) { Remove-Item release -Recurse -Force }
+New-Item -ItemType Directory -Force -Path 'release' | Out-Null
+if (Test-Path $stage) { Remove-Item -LiteralPath $stage -Recurse -Force }
 New-Item -ItemType Directory -Path $stage | Out-Null
 
 Copy-Item target\release\tile-rs.exe $stage
@@ -36,7 +37,7 @@ Copy-Item docs\CONFIGURATION.md $stage
 if ($LASTEXITCODE -ne 0) { throw 'code signing failed' }
 
 $zip = "release\$name.zip"
-Compress-Archive -Path "$stage\*" -DestinationPath $zip
+Compress-Archive -Path "$stage\*" -DestinationPath $zip -Force
 $hash = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLower()
 "$hash  $name.zip" | Set-Content "$zip.sha256" -Encoding ascii
 Remove-Item $stage -Recurse -Force
