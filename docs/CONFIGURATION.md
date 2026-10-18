@@ -25,6 +25,7 @@ These keys go at the top of the file, before any `[section]`.
 | `inner_gap` | `10` | Pixels between neighbouring windows. `0`–`200`. |
 | `outer_gap` | `10` | Pixels around the screen edges. `0`–`200`. The old `gap` still sets both. |
 | `animations` | `true` | Smooth movement of windows when the layout changes. |
+| `snapshot_animations` | `true` | Stretch frozen window images during mouse resize and eligible layout/workspace transitions. Enables draggable gaps in Spiral and Master/stack when `inner_gap > 0`: actual windows keep their sizes until release; Escape cancels. Hardware Direct2D rendering with GDI fallback. Overlapping, occluded or oversized captures disable gap dragging; native window edges remain available. Also available in the launcher. See [window motion](WINDOW-MOTION.md). |
 | `animation_ms` | `140` | Duration of the animation, `0`–`1000` ms. `0` turns animations off. Short moves take proportionally less time. |
 | `easing` | `"out_cubic"` | Animation curve: `linear`, `out_quad`, `out_cubic`, `out_quart`, `in_out_cubic`. |
 | `resize_step` | `40` | Pixels per key press of the grow/shrink hotkeys, `1`–`500`. A held key uses smaller, instant steps. |
@@ -37,8 +38,8 @@ These keys go at the top of the file, before any `[section]`.
 | `min_tile_height` | `320` | Comfortable minimum tile height. |
 | `max_tiles` | `0` | Maximum tiles per workspace; `0` = chosen automatically from the screen size. |
 | `auto_overflow` | `true` | When a workspace is full, open a new window on the next workspace and switch to it. |
-| `workspace_indicator` | `true` | Numbered workspace buttons at the top of each monitor. The current workspace and workspaces with windows have distinct states; click a number to switch that monitor. |
-| `workspace_indicator_size` | `"medium"` | Size of the workspace buttons and their click targets: `"small"`, `"medium"`, or `"large"`. This can also be changed in the launcher. |
+| `workspace_indicator` | `true` | Minimal workspace dots at the top of each monitor. The active dot is blue with an outline, occupied workspaces glow blue, and empty dots are dim. Click a dot to switch that monitor. |
+| `workspace_indicator_size` | `"medium"` | Visual dot and click target size: `"small"`, `"medium"`, or `"large"`. This can also be changed in the launcher. |
 | `focus_follows_mouse` | `false` | Move focus to the tiled window under the mouse pointer when the pointer moves onto it. This option is also available in the settings launcher. |
 
 ## Hotkeys

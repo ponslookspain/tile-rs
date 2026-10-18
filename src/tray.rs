@@ -22,6 +22,8 @@ use windows::Win32::UI::WindowsAndMessaging::{
 use crate::config::{self, Action};
 
 const WM_TRAY: u32 = WM_APP + 1;
+const WM_LAUNCHER_RELOAD: u32 = WM_APP + 2;
+const WM_LAUNCHER_QUIT: u32 = WM_APP + 3;
 const TRAY_UID: u32 = 1;
 
 static TRAY_HWND: AtomicIsize = AtomicIsize::new(0);
@@ -144,6 +146,28 @@ pub fn update() {
             let _ = Shell_NotifyIconW(NIM_MODIFY, &d);
             let _ = DestroyIcon(icon);
         }
+    }
+}
+
+/// Ask the running manager process to reload the config after the launcher saved it.
+pub fn request_manager_reload() -> bool {
+    post_manager_message(WM_LAUNCHER_RELOAD)
+}
+
+/// Ask the running manager process to quit from the launcher.
+pub fn request_manager_quit() -> bool {
+    post_manager_message(WM_LAUNCHER_QUIT)
+}
+
+fn post_manager_message(message: u32) -> bool {
+    unsafe {
+        let Ok(hwnd) = windows::Win32::UI::WindowsAndMessaging::FindWindowW(
+            w!("tile-rs-tray"),
+            PCWSTR::null(),
+        ) else {
+            return false;
+        };
+        !hwnd.0.is_null() && PostMessageW(Some(hwnd), message, WPARAM(0), LPARAM(0)).is_ok()
     }
 }
 
@@ -338,6 +362,14 @@ fn show_hotkeys() {
 }
 
 unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+    if msg == WM_LAUNCHER_RELOAD {
+        crate::reload_config();
+        return LRESULT(0);
+    }
+    if msg == WM_LAUNCHER_QUIT {
+        crate::dispatch_quit();
+        return LRESULT(0);
+    }
     if msg == WM_TRAY {
         match lparam.0 as u32 {
             WM_RBUTTONUP => show_menu(hwnd),

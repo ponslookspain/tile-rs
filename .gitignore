@@ -1,5 +1,6 @@
 # Build output
 /target/
+**/target/
 
 # Local run artifacts
 *.log

@@ -6,7 +6,7 @@ use windows::core::BOOL;
 use windows::Win32::Foundation::{HWND, LPARAM, POINT, RECT};
 use windows::Win32::Graphics::Gdi::{
     EnumDisplayMonitors, GetMonitorInfoW, MonitorFromPoint, MonitorFromWindow, HDC, HMONITOR,
-    MONITORINFO, MONITOR_DEFAULTTONEAREST, MONITOR_DEFAULTTOPRIMARY,
+    MONITORINFO, MONITORINFOEXW, MONITOR_DEFAULTTONEAREST, MONITOR_DEFAULTTOPRIMARY,
 };
 
 const MONITORINFOF_PRIMARY: u32 = 0x1;
@@ -14,24 +14,36 @@ const MONITORINFOF_PRIMARY: u32 = 0x1;
 #[derive(Clone, Debug)]
 pub struct Monitor {
     pub handle: HMONITOR,
+    /// Windows display-device name, used to keep monitor-scoped state attached across
+    /// enumeration reorderings. This is a session identity, not a guaranteed hardware serial.
+    pub device: String,
     pub work: RECT,
     pub full: RECT,
     pub primary: bool,
 }
 
 fn from_handle(handle: HMONITOR) -> Option<Monitor> {
-    let mut mi = MONITORINFO {
-        cbSize: std::mem::size_of::<MONITORINFO>() as u32,
+    let mut mi = MONITORINFOEXW {
+        monitorInfo: MONITORINFO {
+            cbSize: std::mem::size_of::<MONITORINFOEXW>() as u32,
+            ..Default::default()
+        },
         ..Default::default()
     };
-    if !unsafe { GetMonitorInfoW(handle, &mut mi) }.as_bool() {
+    if !unsafe { GetMonitorInfoW(handle, &mut mi.monitorInfo) }.as_bool() {
         return None;
     }
+    let device_len = mi
+        .szDevice
+        .iter()
+        .position(|ch| *ch == 0)
+        .unwrap_or(mi.szDevice.len());
     Some(Monitor {
         handle,
-        work: mi.rcWork,
-        full: mi.rcMonitor,
-        primary: mi.dwFlags & MONITORINFOF_PRIMARY != 0,
+        device: String::from_utf16_lossy(&mi.szDevice[..device_len]),
+        work: mi.monitorInfo.rcWork,
+        full: mi.monitorInfo.rcMonitor,
+        primary: mi.monitorInfo.dwFlags & MONITORINFOF_PRIMARY != 0,
     })
 }
 
@@ -166,6 +178,7 @@ mod tests {
         };
         Monitor {
             handle: HMONITOR(std::ptr::null_mut()),
+            device: format!("monitor-{left}-{top}"),
             work: full,
             full,
             primary,

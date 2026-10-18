@@ -514,6 +514,11 @@ pub fn classify(hwnd: HWND, rules: &[Rule]) -> Verdict {
         return Verdict::Ignore;
     }
     let mut w = win_info(hwnd);
+    // The Slint settings window runs in a child tile-rs process. Keep it out of the managed
+    // window set so opening settings never resizes or moves the UI itself.
+    if w.title == "tile-rs Settings" && process_name_cached(w.pid).eq_ignore_ascii_case("tile-rs") {
+        return Verdict::Skipped(w, "tile-rs settings launcher");
+    }
     match skip_reason(hwnd, &w.title, &w.class) {
         None => {
             // a non-elevated tile-rs cannot move the windows of elevated processes, so they would

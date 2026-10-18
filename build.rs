@@ -3,6 +3,7 @@
 
 fn main() {
     println!("cargo:rerun-if-changed=assets/tile-rs.ico");
+    slint_build::compile("ui/launcher.slint").expect("compile launcher UI");
     if !std::path::Path::new("assets/tile-rs.ico").exists() {
         return;
     }

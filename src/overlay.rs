@@ -15,9 +15,8 @@ use crate::config::IndicatorSize;
 use windows::core::w;
 use windows::Win32::Foundation::{COLORREF, HINSTANCE, HWND, LPARAM, LRESULT, RECT, WPARAM};
 use windows::Win32::Graphics::Gdi::{
-    BeginPaint, CreatePen, CreateSolidBrush, DeleteObject, DrawTextW, EndPaint, FillRect,
-    GetStockObject, InvalidateRect, RoundRect, SelectObject, SetBkMode, SetTextColor,
-    BACKGROUND_MODE, DT_CENTER, DT_SINGLELINE, DT_VCENTER, HDC, HGDIOBJ, NULL_PEN, PAINTSTRUCT,
+    BeginPaint, CreatePen, CreateSolidBrush, DeleteObject, Ellipse, EndPaint, FillRect,
+    GetStockObject, InvalidateRect, RoundRect, SelectObject, HDC, HGDIOBJ, NULL_PEN, PAINTSTRUCT,
     PS_SOLID,
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
@@ -222,9 +221,11 @@ const TIMER_HOVER: usize = 1;
 
 fn indicator_metrics() -> (i32, i32, i32) {
     match INDICATOR_SCALE.load(Ordering::Relaxed) {
-        0 => (24, 12, 8),
-        2 => (44, 14, 14),
-        _ => (34, 10, 12),
+        // Visual diameter, breathing room between dots, and outer click-area padding.
+        // The 24/28/32 px pitch keeps the targets easy to hit while the dots stay discreet.
+        0 => (6, 18, 10),
+        2 => (10, 22, 14),
+        _ => (8, 20, 12),
     }
 }
 
@@ -237,7 +238,6 @@ struct Ind {
     hwnd: AtomicIsize,
     cur: AtomicU32,
     pop: AtomicU32,
-    active: AtomicU32,
     /// Dot currently under the cursor (-1 = none).
     hover: AtomicI32,
     /// Per-dot hover animation progress, 0..=HOVER_MAX.
@@ -248,7 +248,6 @@ struct Ind {
     rect: [AtomicI32; 4],
     s_cur: AtomicU32,
     s_pop: AtomicU32,
-    s_active: AtomicU32,
 }
 
 impl Ind {
@@ -257,13 +256,11 @@ impl Ind {
             hwnd: AtomicIsize::new(0),
             cur: AtomicU32::new(0),
             pop: AtomicU32::new(0),
-            active: AtomicU32::new(0x00FF_BC8D),
             hover: AtomicI32::new(-1),
             anim: [const { AtomicU32::new(0) }; DOTS as usize],
             rect: [const { AtomicI32::new(0) }; 4],
             s_cur: AtomicU32::new(u32::MAX),
             s_pop: AtomicU32::new(u32::MAX),
-            s_active: AtomicU32::new(u32::MAX),
         }
     }
 }
@@ -317,6 +314,22 @@ fn hover_tick(hwnd: HWND, ind: &Ind) -> bool {
         }
     }
     moving
+}
+
+/// Paints one opaque circle. The indicator's colour-key background keeps everything around it
+/// transparent, so concentric circles can create a simple glow and outline without layered alpha.
+unsafe fn draw_dot(hdc: HDC, cx: i32, cy: i32, diameter: i32, color: u32) {
+    let left = cx - diameter / 2;
+    let top = cy - diameter / 2;
+    let brush = CreateSolidBrush(COLORREF(color));
+    let pen = CreatePen(PS_SOLID, 1, COLORREF(color));
+    let old_brush = SelectObject(hdc, HGDIOBJ(brush.0));
+    let old_pen = SelectObject(hdc, HGDIOBJ(pen.0));
+    let _ = Ellipse(hdc, left, top, left + diameter, top + diameter);
+    SelectObject(hdc, old_brush);
+    SelectObject(hdc, old_pen);
+    let _ = DeleteObject(HGDIOBJ(brush.0));
+    let _ = DeleteObject(HGDIOBJ(pen.0));
 }
 
 /// Width and height of the indicator bar (the tiling area leaves this much room at the top).
@@ -388,67 +401,34 @@ unsafe extern "system" fn indicator_wndproc(
                 let _ = DeleteObject(HGDIOBJ(bg.0));
                 let cur = ind.cur.load(Ordering::Relaxed) as i32;
                 let pop = ind.pop.load(Ordering::Relaxed);
-                let active = ind.active.load(Ordering::Relaxed);
-                // Numbered workspace tiles have a full-height hit area and a clear current state.
                 let (dot, gap, _) = indicator_metrics();
                 let content = DOTS * dot + (DOTS - 1) * gap;
                 let x0 = (rc.right - content) / 2;
                 let cy = rc.bottom / 2;
-                let _ = SetBkMode(hdc, BACKGROUND_MODE(1)); // transparent text background
                 for (i, a) in ind.anim.iter().enumerate() {
                     let i = i as i32;
                     let grow = (a.load(Ordering::Relaxed) as i32 * HOVER_GROW) / HOVER_MAX as i32;
-                    let left = x0 + i * (dot + gap) - grow;
-                    let top = cy - dot / 2 - grow;
-                    let right = x0 + i * (dot + gap) + dot + grow;
-                    let bottom = cy + dot / 2 + grow;
+                    let cx = x0 + i * (dot + gap) + dot / 2;
                     let hovered = ind.hover.load(Ordering::Relaxed) == i;
                     let selected = i == cur;
                     let occupied = pop & (1 << i) != 0;
-                    let (fill, edge, text) = if selected {
-                        let luminance = 0.299 * (active & 0xFF) as f32
-                            + 0.587 * ((active >> 8) & 0xFF) as f32
-                            + 0.114 * ((active >> 16) & 0xFF) as f32;
-                        (
-                            active,
-                            active,
-                            if luminance > 135.0 {
-                                0x00122420
-                            } else {
-                                0x00F2F7F5
-                            },
-                        )
-                    } else if hovered {
-                        (0x00313A42, 0x005AD9C3, 0x00F2F7F5)
+                    let size = dot + grow * 2;
+                    if selected {
+                        // A bright blue outline distinguishes the current desktop even when it
+                        // has no windows; the blue center also keeps its state obvious at a glance.
+                        draw_dot(hdc, cx, cy, size + 8, 0x00623E17);
+                        draw_dot(hdc, cx, cy, size + 4, 0x00FFD69A);
+                        draw_dot(hdc, cx, cy, size, 0x00FF8F25);
                     } else if occupied {
-                        (0x00253236, 0x003D8C7C, 0x00C3E7DF)
+                        // Occupied desktops glow blue but remain distinct from the selected one.
+                        draw_dot(hdc, cx, cy, size + 6, 0x00502F16);
+                        draw_dot(hdc, cx, cy, size, 0x00E27E28);
+                    } else if hovered {
+                        draw_dot(hdc, cx, cy, size + 4, 0x005E5540);
+                        draw_dot(hdc, cx, cy, size, 0x00484239);
                     } else {
-                        (0x001B1E23, 0x0040454D, 0x00A5AAB2)
-                    };
-                    let pen = CreatePen(PS_SOLID, 1, COLORREF(edge));
-                    let brush = CreateSolidBrush(COLORREF(fill));
-                    let old_pen = SelectObject(hdc, HGDIOBJ(pen.0));
-                    let old_brush = SelectObject(hdc, HGDIOBJ(brush.0));
-                    let _ = RoundRect(hdc, left, top, right, bottom, 12, 12);
-                    SelectObject(hdc, old_brush);
-                    SelectObject(hdc, old_pen);
-                    let _ = DeleteObject(HGDIOBJ(brush.0));
-                    let _ = DeleteObject(HGDIOBJ(pen.0));
-
-                    let mut label: [u16; 2] = [(b'1' + i as u8) as u16, 0];
-                    let mut text_rect = windows::Win32::Foundation::RECT {
-                        left,
-                        top,
-                        right,
-                        bottom,
-                    };
-                    let _ = SetTextColor(hdc, COLORREF(text));
-                    let _ = DrawTextW(
-                        hdc,
-                        &mut label[..1],
-                        &mut text_rect,
-                        DT_CENTER | DT_VCENTER | DT_SINGLELINE,
-                    );
+                        draw_dot(hdc, cx, cy, size, 0x00554B42);
+                    }
                 }
                 let _ = EndPaint(hwnd, &ps);
             }
@@ -604,13 +584,12 @@ pub fn sync_indicator_count(count: usize) -> bool {
 }
 
 /// Shows the indicator at `rect`: which workspace is current and which ones have windows.
-pub fn show_indicator(mi: usize, rect: RECT, cur: u8, populated: u32, active: u32) {
+pub fn show_indicator(mi: usize, rect: RECT, cur: u8, populated: u32) {
     let Some(ind) = INDS.get(mi).filter(|_| mi < MAX_MON) else {
         return;
     };
     ind.cur.store(cur as u32, Ordering::Relaxed);
     ind.pop.store(populated, Ordering::Relaxed);
-    ind.active.store(active, Ordering::Relaxed);
     let raw = ind.hwnd.load(Ordering::Relaxed);
     if raw == 0 {
         return;
@@ -620,7 +599,6 @@ pub fn show_indicator(mi: usize, rect: RECT, cur: u8, populated: u32, active: u3
     let unchanged = unsafe { IsWindowVisible(hwnd).as_bool() }
         && ind.s_cur.load(Ordering::Relaxed) == cur as u32
         && ind.s_pop.load(Ordering::Relaxed) == populated
-        && ind.s_active.load(Ordering::Relaxed) == active
         && ind
             .rect
             .iter()
@@ -644,7 +622,6 @@ pub fn show_indicator(mi: usize, rect: RECT, cur: u8, populated: u32, active: u3
     }
     ind.s_cur.store(cur as u32, Ordering::Relaxed);
     ind.s_pop.store(populated, Ordering::Relaxed);
-    ind.s_active.store(active, Ordering::Relaxed);
     for (a, v) in ind.rect.iter().zip(r) {
         a.store(v, Ordering::Relaxed);
     }

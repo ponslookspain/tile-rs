@@ -6,12 +6,21 @@ follows [Semantic Versioning](https://semver.org) (see [docs/RELEASING.md](docs/
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-10-18
+
 ### Added
+- Draggable tile gaps in Spiral and Master/stack: frozen previews follow the pointer while actual
+  windows keep their sizes until release. Escape cancels; known minimum sizes constrain the drag.
+- Frozen-image resize and layout transitions, using hardware Direct2D with GDI fallback, plus a
+  directional fade when switching workspaces. The launcher exposes `snapshot_animations`.
+- The settings launcher is now a Slint UI in a separate process, so its GUI event loop cannot block
+  window tracking or tiling. Existing launcher actions remain available, and saved settings are
+  validated before the running manager is asked to reload them.
 - Windows x64 releases statically include the MSVC runtime, so users do not need to install the
   Visual C++ Redistributable separately.
 - The settings launcher now uses a clearer two-column layout, dark contrast, direct GitHub access,
-  and exposes the existing `focus_follows_mouse` option. The workspace switcher uses larger,
-  numbered targets with clearer current/occupied states, plus small, medium, and large size options.
+  and exposes the existing `focus_follows_mouse` option. The workspace switcher uses compact,
+  unnumbered dots with blue active/occupied states, plus small, medium, and large size options.
 - Multi-monitor tiling: every screen keeps its own layout and current workspace, and a window is
   tiled on the screen it is on (move it to another screen and it re-homes there). Workspace hotkeys
   and the workspace actions apply to the screen under the pointer (or the screen of the focused
@@ -46,6 +55,18 @@ follows [Semantic Versioning](https://semver.org) (see [docs/RELEASING.md](docs/
   `Ctrl+Alt+Q` quits tile-rs even on an old config (a commented-out or removed one is left alone).
 
 ### Fixed
+- Workspace transitions cover outgoing windows before switching, avoiding a new/old/new flash.
+- Minimum-size detection treats width and height independently and rejects stale DWM frames,
+  preventing a height constraint from blocking horizontal resizing in the opposite direction.
+- Resize hotkeys and swaps avoid synchronous monitor capture; held resize keys commit neighbours
+  together immediately instead of accumulating snapshot animations.
+- Cancel stale motion on workspace switches and pause, preserve an unchanged animation target,
+  recognize geometry events per window, and queue reentrant WinEvents until the layout releases
+  its state. Final window placements use a batch with bounded individual fallback.
+- Window tracking now drops destroyed HWND state immediately, migrates windows deliberately when
+  dragged between monitors, preserves workspace state when monitor enumeration changes, verifies
+  settled placements, bounds retries for rejected target geometry, recovers a lost move-size end
+  event, and records Win32 placement/hook failures for diagnosis.
 - Packaging now preserves other files in `release/`, and the release workflow uploads only assets
   matching the tag version.
 - Fullscreen windows moved between monitors update their monitor assignment, and workspace
@@ -193,7 +214,8 @@ First working prototype.
 - Tray icon with menu, autostart, single-instance guard, first-run dialog.
 - `config.toml`: gap, animations, hotkeys, per-application rules (float / workspace).
 
-[Unreleased]: https://github.com/ponslookspain/tile-rs/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/ponslookspain/tile-rs/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/ponslookspain/tile-rs/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/ponslookspain/tile-rs/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/ponslookspain/tile-rs/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/ponslookspain/tile-rs/compare/v0.1.0...v0.2.0

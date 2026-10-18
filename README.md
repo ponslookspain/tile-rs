@@ -10,7 +10,7 @@ everything lives in one small `.exe` with a tray icon and a plain-text config.
 
 ## Features
 
-- **Settings launcher**: a clear two-column window (tray menu -> *Settings...*, or on first start)
+- **Settings launcher**: a Slint window in its own process (tray menu -> *Settings...*, or on first start)
   for layouts, gaps, animations, borders, workspace behavior and hotkeys, with update checking and
   a direct GitHub link. Application-specific rules remain in `config.toml`.
 - **Four layouts** (settings launcher, tray or the `layout` setting): **spiral** (dwindle, the
@@ -21,6 +21,11 @@ everything lives in one small `.exe` with a tray icon and a plain-text config.
   windows glide aside with a short animation.
 - **Resize like a normal window**: drag any edge or corner and the neighbours follow live. Or use
   `Alt +` / `Alt -` (hold to repeat).
+- **Frozen-image resize**: eligible workspaces display scaled snapshots during resizing, then apply
+  the neighbours' real sizes together. Direct2D accelerates the images; ordinary placement remains
+  the fallback. Configure `snapshot_animations` in settings; [details and limitations](docs/WINDOW-MOTION.md).
+- **Draggable tile gaps** in Spiral and Master/stack: preview a resize without changing application
+  sizes until release. Hover inside a gap and drag; press Escape to cancel.
 - **Drag a window onto another tile** to swap them; drop it anywhere else and it snaps back.
 - **Fullscreen games and videos**: a window that covers a whole screen without a title bar
   (exclusive or borderless fullscreen) is never tiled. It is minimized when you switch to another
@@ -35,8 +40,8 @@ everything lives in one small `.exe` with a tray icon and a plain-text config.
   window (including consoles like Windows PowerShell).
 - **Adapts to your screen**: tiles never get narrower than `min_tile_width`/`min_tile_height` (the
   master tile narrows to make room), and once a workspace is full a new window opens on the next
-  workspace. Numbered workspace buttons at the top of each monitor show current and occupied
-  workspaces and can be clicked to switch.
+  workspace. Minimal clickable dots at the top of each monitor show current and occupied
+  workspaces: the active dot is blue with an outline, occupied dots glow blue, and empty dots are dim.
 - Everything configurable in `config.toml`: hotkeys, gap, animation, rules.
 
 ## Requirements
@@ -161,6 +166,7 @@ tile-rs again.
 inner_gap = 10           # pixels between windows
 outer_gap = 10           # pixels around the screen edges
 animations = true
+snapshot_animations = true # resize frozen images instead of repeatedly resizing neighbours
 animation_ms = 140
 easing = "out_cubic"     # animation curve: linear, out_quad, out_cubic, out_quart, in_out_cubic
 fullscreen_windows = "minimize"  # or "ignore": never touch fullscreen games
@@ -173,8 +179,8 @@ min_tile_width = 480     # tiles never get narrower; the master tile narrows to 
 min_tile_height = 320
 max_tiles = 0            # tiles per workspace; 0 = automatic from the screen size
 auto_overflow = true     # a new window goes to the next workspace when this one is full
-workspace_indicator = true  # numbered buttons at the top; click one to switch workspaces
-workspace_indicator_size = "medium" # button size: small, medium, or large
+workspace_indicator = true  # minimal dots at the top; click one to switch workspaces
+workspace_indicator_size = "medium" # dot and target size: small, medium, or large
 focus_follows_mouse = false  # focus the tiled window under the pointer when it moves onto it
 
 [hotkeys]
@@ -216,7 +222,7 @@ back when you switch), so they still show up in the taskbar and in `Alt+Tab`.
 ## Limitations
 
 - Each connected monitor has its own layout and workspace. Workspace hotkeys target the monitor
-  under the pointer, or the focused window's monitor. Its numbered workspace switcher appears at
+  under the pointer, or the focused window's monitor. Its workspace dots appear at
   the top of each monitor.
 - With `grid` and `columns` the tiles are fixed (even) sizes: only the spiral and master-stack can
   be resized by dragging an edge.
