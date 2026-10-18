@@ -149,7 +149,6 @@ struct RawConfig {
     inner_gap: Option<i32>,
     outer_gap: Option<i32>,
     animations: Option<bool>,
-    snapshot_animations: Option<bool>,
     animation_ms: Option<u32>,
     animation_fps_limit: Option<u32>,
     easing: Option<String>,
@@ -181,7 +180,6 @@ pub struct Config {
     /// Gap around the screen edges, in pixels.
     pub outer_gap: i32,
     pub animations: bool,
-    pub snapshot_animations: bool,
     pub animation_ms: u32,
     pub animation_fps_limit: u32,
     /// Easing curve of the animations.
@@ -242,7 +240,6 @@ outer_gap = 10
 # Smooth window movement when the layout changes (0..1000 ms; 0 or false = instant).
 # If windows feel laggy on your PC, set animations = false.
 animations = true
-snapshot_animations = true # frozen images during resizing and layout transitions
 animation_ms = 140
 animation_fps_limit = 60 # 15..240; lower values reduce animation work on slower PCs
 
@@ -435,9 +432,6 @@ pub fn migrate(text: &str) -> Option<String> {
     }
     if !has("animation_fps_limit") {
         top.push("animation_fps_limit = 60".into());
-    }
-    if !has("snapshot_animations") {
-        top.push("snapshot_animations = true".into());
     }
     if !has("easing") {
         top.push(
@@ -842,7 +836,6 @@ pub fn parse(text: &str) -> Result<Config, String> {
         ));
     }
     let animations = raw.animations.unwrap_or(true) && animation_ms > 0;
-    let snapshot_animations = raw.snapshot_animations.unwrap_or(true);
     let easing = parse_easing(raw.easing.as_deref().unwrap_or("out_cubic"))?;
     let fullscreen_windows =
         parse_fullscreen_windows(raw.fullscreen_windows.as_deref().unwrap_or("minimize"))?;
@@ -929,7 +922,6 @@ pub fn parse(text: &str) -> Result<Config, String> {
         inner_gap,
         outer_gap,
         animations,
-        snapshot_animations,
         animation_ms,
         animation_fps_limit,
         easing,
@@ -1011,10 +1003,6 @@ pub fn outer_gap() -> i32 {
 /// (animations enabled, duration in ms)
 pub fn animation() -> (bool, u32) {
     with_cfg(|c| (c.animations, c.animation_ms))
-}
-
-pub fn snapshot_animations() -> bool {
-    with_cfg(|c| c.snapshot_animations)
 }
 
 pub fn animation_fps_limit() -> u32 {
@@ -1142,7 +1130,6 @@ mod tests {
         assert_eq!(c.layout, Layout::Spiral);
         assert_eq!((c.inner_gap, c.outer_gap), (10, 10));
         assert!(c.animations);
-        assert!(c.snapshot_animations);
         assert_eq!(c.animation_ms, 140);
         assert_eq!(c.easing, Easing::OutCubic);
         assert_eq!(c.fullscreen_windows, FullscreenWindows::Minimize);
@@ -1206,6 +1193,20 @@ mod tests {
             .any(|(a, s)| *a == Action::MoveTo(8) && s == "alt+shift+9"));
     }
 
+    #[test]
+    fn legacy_snapshot_switch_is_ignored_and_never_added_to_new_configs() {
+        for enabled in [true, false] {
+            let c = parse(&format!(
+                "snapshot_animations = {enabled}\nanimations = false\n"
+            ))
+            .unwrap();
+            assert!(!c.animations);
+            assert_eq!(c.animation_fps_limit, 60);
+        }
+        assert!(!default_config().contains("snapshot_animations"));
+        assert!(!migrate(OLD_CONFIG).unwrap().contains("snapshot_animations"));
+    }
+
     /// What the first versions generated (no animations, no resize hotkeys).
     const OLD_CONFIG: &str = "# tile-rs configuration.\n\ngap = 10\n\n[hotkeys]\nfocus_left  = [\"alt+h\", \"alt+left\"]\npause = \"ctrl+alt+p\"\nquit = \"ctrl+alt+q\"\n\n[[rules]]\nprocess = \"Taskmgr\"\naction = \"float\"\n";
 
@@ -1264,7 +1265,7 @@ mod tests {
         let custom = "layout = \"spiral\"\ngap = 5\nanimations = false\n# animation_ms = 99\neasing = \"linear\"\nfullscreen_windows = \"ignore\"\nmedia_windows = \"tile\"\nresize_step = 10\nborder = false\n# border_color = \"#112233\"\nborder_width = 3\nmin_tile_width = 400\nmin_tile_height = 300\nmax_tiles = 6\nauto_overflow = false\nworkspace_indicator = false\nworkspace_indicator_size = \"small\"\nfocus_follows_mouse = true\n\n[hotkeys]\n# grow_width = \"alt+plus\"\n# shrink_width = \"alt+minus\"\nminimize = \"alt+shift+m\"\ntoggle_float = \"alt+shift+f\"\nclose = \"alt+shift+q\"\ncycle_layout = \"ctrl+alt+l\"\nquit = \"ctrl+alt+q\"\nworkspace_next = \"alt+shift+period\"\nworkspace_prev = \"alt+shift+comma\"\nmove_to_next_workspace = \"ctrl+alt+period\"\nmove_to_prev_workspace = \"ctrl+alt+comma\"\n";
         let custom = format!("animation_fps_limit = 30\nsnapshot_animations = false\n{custom}");
         assert!(migrate(&custom).is_none());
-        assert!(!parse(&custom).unwrap().snapshot_animations);
+        assert!(!parse(&custom).unwrap().animations);
         // the freshly generated default never needs migrating
         assert!(migrate(&default_config()).is_none());
     }

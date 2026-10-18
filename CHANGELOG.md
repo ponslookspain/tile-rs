@@ -7,16 +7,25 @@ follows [Semantic Versioning](https://semver.org) (see [docs/RELEASING.md](docs/
 ## [Unreleased]
 
 ### Changed
+- Resize real application windows during edge and divider gestures, without screenshot overlays.
+  Coalesce each window's pending target, pace slow clients independently and apply final sizes
+  immediately on release. Divider dragging no longer depends on snapshot capture or settings.
+- Remove snapshot rendering and its launcher toggle; existing `snapshot_animations` keys are ignored.
 - Cap animation work at a configurable 60 FPS by default; cache display refresh queries and
   avoid monitor-list copies, redundant border paints and divider-window recreation.
-- Upload snapshot pixels directly from a shared CPU DIB, avoiding a second full-screen CPU
-  buffer; reuse preview vectors and remove per-frame GDI brush allocation.
 - Coalesce deferred motion events between lifecycle barriers and bound replay work so callback
   bursts yield to frame scheduling. Bound retained motion keys and profiling samples.
 - Reuse dependency caches across CI/release jobs, lock dependency resolution in build scripts,
   and reuse the packaged executable when building the release installer.
 
 ### Fixed
+- Keep divider gestures active when clients clamp sizes or DWM reports delayed geometry; learn
+  confirmed minimum-size feedback without rolling the layout back. Keep captured handles highlighted
+  outside their bounds and clip input surfaces to actual gaps instead of covering client content.
+- Keep frame-border offsets stable during live resize and skip redundant native geometry/size
+  notifications, including moves that preserve the application's viewport size.
+- Restore surviving windows on divider cancellation and prevent expected live geometry events
+  from cancelling the gesture; the captured handle follows the moving gap.
 - Avoid desktop rescans for unrelated hidden/created/destroyed windows; bound reconciliation
   retries when clients repeatedly reject an unchanged position and stop extending debounce
   deadlines indefinitely during sustained event bursts.

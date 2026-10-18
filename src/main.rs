@@ -15,12 +15,11 @@ mod diagnostics;
 mod divider;
 mod event_queue;
 mod geometry;
-mod gpu_snapshot;
 mod launcher;
+mod live_resize;
 mod monitor;
 mod overlay;
 mod prof;
-mod snapshot;
 mod tray;
 mod update;
 mod window;
@@ -410,9 +409,22 @@ fn apply_window_pos(
     y: i32,
     width: i32,
     height: i32,
-    flags: windows::Win32::UI::WindowsAndMessaging::SET_WINDOW_POS_FLAGS,
+    mut flags: windows::Win32::UI::WindowsAndMessaging::SET_WINDOW_POS_FLAGS,
     operation: &'static str,
 ) -> bool {
+    let mut current = RECT::default();
+    if unsafe { GetWindowRect(hwnd, &mut current) }.is_ok() {
+        let target = RECT {
+            left: x,
+            top: y,
+            right: x + width,
+            bottom: y + height,
+        };
+        if current == target {
+            return true;
+        }
+        flags |= unchanged_position_flags(&current, &target);
+    }
     if prof::on() {
         prof::PLACEMENTS.fetch_add(1, Ordering::Relaxed);
     }
@@ -426,6 +438,60 @@ fn apply_window_pos(
                 hwnd.0 as usize
             ));
             false
+        }
+    }
+}
+
+fn unchanged_position_flags(
+    current: &RECT,
+    target: &RECT,
+) -> windows::Win32::UI::WindowsAndMessaging::SET_WINDOW_POS_FLAGS {
+    let mut flags = windows::Win32::UI::WindowsAndMessaging::SET_WINDOW_POS_FLAGS(0);
+    if current.left == target.left && current.top == target.top {
+        flags |= windows::Win32::UI::WindowsAndMessaging::SWP_NOMOVE;
+    }
+    if current.right - current.left == target.right - target.left
+        && current.bottom - current.top == target.bottom - target.top
+    {
+        flags |= SWP_NOSIZE;
+    }
+    flags
+}
+
+type FrameInsets = (i32, i32, i32, i32);
+
+fn frame_insets(native: &RECT, visible: &RECT) -> Option<FrameInsets> {
+    let b = (
+        visible.left - native.left,
+        visible.top - native.top,
+        native.right - visible.right,
+        native.bottom - visible.bottom,
+    );
+    [b.0, b.1, b.2, b.3]
+        .iter()
+        .all(|v| (0..=64).contains(v))
+        .then_some(b)
+}
+
+fn inset_target(target: RECT, b: FrameInsets) -> RECT {
+    RECT {
+        left: target.left - b.0,
+        top: target.top - b.1,
+        right: target.right + b.2,
+        bottom: target.bottom + b.3,
+    }
+}
+
+fn capture_live_borders(s: &mut State, windows: &[isize]) {
+    for h in windows {
+        let hwnd = HWND(*h as *mut _);
+        let mut native = RECT::default();
+        if let Some(visible) = visible_rect(hwnd) {
+            if unsafe { GetWindowRect(hwnd, &mut native) }.is_ok() {
+                if let Some(border) = frame_insets(&native, &visible) {
+                    s.live_borders.insert(*h, border);
+                }
+            }
         }
     }
 }
@@ -544,7 +610,16 @@ fn place_batch(s: &mut State, targets: &[(isize, RECT)]) {
             if visible_rect(hwnd).is_some_and(|actual| same_rect(&actual, target, 0)) {
                 return None;
             }
-            native_target(hwnd, *target).map(|r| (*h, *target, r))
+            let r = match s.live_borders.get(h) {
+                Some(border) => inset_target(*target, *border),
+                None => native_target(hwnd, *target)?,
+            };
+            let mut current = RECT::default();
+            unsafe { GetWindowRect(hwnd, &mut current) }.ok()?;
+            if current == r {
+                return None;
+            }
+            Some((*h, *target, r, unchanged_position_flags(&current, &r)))
         })
         .collect();
     if operations.is_empty() {
@@ -552,7 +627,7 @@ fn place_batch(s: &mut State, targets: &[(isize, RECT)]) {
     }
     let result = unsafe {
         BeginDeferWindowPos(operations.len() as i32).and_then(|mut batch| {
-            for (h, _, r) in &operations {
+            for (h, _, r, flags) in &operations {
                 batch = DeferWindowPos(
                     batch,
                     HWND(*h as *mut _),
@@ -561,7 +636,7 @@ fn place_batch(s: &mut State, targets: &[(isize, RECT)]) {
                     r.top,
                     r.right - r.left,
                     r.bottom - r.top,
-                    SWP_NOACTIVATE | SWP_NOZORDER | SWP_NOOWNERZORDER | SWP_ASYNCWINDOWPOS,
+                    SWP_NOACTIVATE | SWP_NOZORDER | SWP_NOOWNERZORDER | SWP_ASYNCWINDOWPOS | *flags,
                 )?;
             }
             EndDeferWindowPos(batch)
@@ -573,7 +648,7 @@ fn place_batch(s: &mut State, targets: &[(isize, RECT)]) {
     if result.is_ok() && prof::on() {
         prof::PLACEMENTS.fetch_add(operations.len() as u32, Ordering::Relaxed);
     }
-    for (h, target, _) in operations {
+    for (h, target, _, _) in operations {
         s.anims.retain(|a| a.hwnd != h);
         let hwnd = HWND(h as *mut _);
         let ok = result.is_ok() || place(hwnd, target);
@@ -584,37 +659,13 @@ fn place_batch(s: &mut State, targets: &[(isize, RECT)]) {
     }
 }
 
-fn visual_commit(
-    s: &mut State,
-    mi: usize,
-    targets: &[(isize, RECT)],
-    ms: u32,
-    entering: &[isize],
-) -> bool {
-    if !config::snapshot_animations() || !config::animation().0 || s.anim_timer.is_invalid() {
-        return false;
+fn flush_live_resize(s: &mut State) {
+    let targets = s
+        .live_resize
+        .take_ready(Instant::now(), |h| visible_rect(HWND(h as *mut _)));
+    if !targets.is_empty() {
+        place_batch(s, &targets);
     }
-    if !snapshot::supports(mi, targets) {
-        let sources: Vec<_> = targets
-            .iter()
-            .filter_map(|(h, _)| visible_rect(HWND(*h as *mut _)).map(|r| (*h, r)))
-            .collect();
-        if sources.len() != targets.len() || !snapshot::prepare(mi, monitor_work(mi), &sources) {
-            return false;
-        }
-    }
-    snapshot::entering(mi, entering);
-    if !snapshot::reveal(mi) {
-        snapshot::cancel(mi);
-        return false;
-    }
-    place_batch(s, targets);
-    if snapshot::animate(mi, targets, ms) {
-        arm_anim_timer(s);
-    } else {
-        snapshot::cancel(mi);
-    }
-    true
 }
 
 fn is_parked(hwnd: HWND) -> bool {
@@ -717,6 +768,9 @@ struct State {
     resizing: bool,
     /// While resizing: re-layout the other windows now (throttled by a short timer).
     live: bool,
+    live_resize: live_resize::Scheduler,
+    /// Frozen at gesture start: DWM bounds can lag native size changes by a frame.
+    live_borders: HashMap<isize, FrameInsets>,
     /// Live drag & drop preview: the tile index whose window is currently slid into the dragged
     /// window's slot, with that window's handle (see `update_drag_preview`).
     drag_preview: Option<(usize, isize)>,
@@ -808,6 +862,8 @@ impl State {
     fn clear_placement_history(&mut self) {
         self.placement_failures.clear();
         self.geometry_retries.clear();
+        self.live_resize.clear();
+        self.live_borders.clear();
     }
     fn animation_current(&self, h: isize) -> bool {
         !self.paused
@@ -1229,9 +1285,6 @@ fn arm_anim_timer(s: &mut State) {
         if !s.frame_armed {
             s.frame_fallback = SetTimer(None, s.frame_fallback, frame, None);
             s.frame_armed = s.frame_fallback != 0;
-            if !s.frame_armed {
-                snapshot::clear();
-            }
         }
     }
 }
@@ -1255,6 +1308,7 @@ fn cancel_anim_timer(s: &mut State) {
 
 /// One animation frame (called from the frame timer).
 fn anim_tick() {
+    let had_animations = STATE.with(|s| !s.borrow().anims.is_empty());
     divider::tick();
     if !divider::captured() && STATE.with(|s| s.borrow().divider.is_some()) {
         end_divider(false);
@@ -1263,15 +1317,29 @@ fn anim_tick() {
     if live {
         live_resize();
     }
-    if snapshot::tick() {
-        STATE.with(|s| {
-            let mut s = s.borrow_mut();
-            if !s.paused && s.dragging.is_none() {
-                s.enforce = true;
-                s.timer = unsafe { SetTimer(None, s.timer, VERIFY_MS, None) };
-            }
-        });
-    }
+    STATE.with(|s| flush_live_resize(&mut s.borrow_mut()));
+    STATE.with(|s| {
+        let s = s.borrow();
+        if let Some(gesture) = s.divider.as_ref() {
+            let observed: Vec<_> = gesture
+                .windows
+                .iter()
+                .enumerate()
+                .map(|(i, h)| visible_rect(HWND(*h as *mut _)).unwrap_or(gesture.preview[i]))
+                .collect();
+            let handles: Vec<_> = divider::handles(
+                gesture.handle.monitor,
+                gesture.layout,
+                &observed,
+                &gesture.regions,
+                gesture.gaps.inner,
+            )
+            .into_iter()
+            .filter(|handle| handle.split == gesture.handle.split)
+            .collect();
+            divider::follow(divider::unobstructed(handles, &observed).into_iter().next());
+        }
+    });
     let profiling = prof::on();
     let easing = config::easing();
     STATE.with(|s| {
@@ -1279,7 +1347,7 @@ fn anim_tick() {
         if s.anims.is_empty() {
             // The queue was emptied outside `anim_tick` (e.g. a drag started): stop the timer so
             // it does not keep firing at 60 Hz doing nothing.
-            if !snapshot::is_animating() && s.divider.is_none() {
+            if s.divider.is_none() && !s.resizing {
                 cancel_anim_timer(&mut s);
             }
             return;
@@ -1337,7 +1405,7 @@ fn anim_tick() {
         s.anims = keep;
         s.min_size_reflow |= min_size_changed;
         if s.anims.is_empty() {
-            if !snapshot::is_animating() && s.divider.is_none() {
+            if s.divider.is_none() && !s.resizing {
                 cancel_anim_timer(&mut s);
             }
             // A client can reject the target size while an animation is running. Reflow once
@@ -1363,6 +1431,9 @@ fn anim_tick() {
     // Posted requests may still be pending: follow the observed frame instead
     // of drawing the border at the next animation target.
     sync_border();
+    if had_animations && STATE.with(|s| s.borrow().anims.is_empty()) {
+        sync_dividers();
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1414,8 +1485,12 @@ fn update_border(s: &mut State, focus: isize) {
     // be momentarily stale) a known window that belongs to the current workspace
     let mi = s.mi(focus);
     let tiled = s.last[mi].contains(&focus) || s.ws.get(&focus) == Some(&s.cur[mi]);
-    s.border_on =
-        (config::border().is_some() && !s.paused && s.dragging.is_none() && tiled).then_some(focus);
+    s.border_on = (config::border().is_some()
+        && !s.paused
+        && s.dragging.is_none()
+        && s.divider.is_none()
+        && tiled)
+        .then_some(focus);
 }
 
 /// Re-evaluate which window should have the border (after layout / pause / config changes).
@@ -1433,20 +1508,25 @@ fn sync_dividers() {
         if s.paused
             || s.dragging.is_some()
             || !s.anims.is_empty()
-            || snapshot::is_animating()
-            || !config::snapshot_animations()
             || !s.last.iter().any(|windows| windows.contains(&fg))
         {
             return Vec::new();
         }
         (0..monitor::count().min(MON))
             .flat_map(|mi| {
-                divider::handles(
-                    mi,
-                    config::layout(),
-                    &s.rects[mi],
-                    &s.regions[mi],
-                    config::inner_gap(),
+                let frames: Vec<_> = s.last[mi]
+                    .iter()
+                    .filter_map(|h| visible_rect(HWND(*h as *mut _)))
+                    .collect();
+                divider::unobstructed(
+                    divider::handles(
+                        mi,
+                        config::layout(),
+                        &s.rects[mi],
+                        &s.regions[mi],
+                        config::inner_gap(),
+                    ),
+                    &frames,
                 )
             })
             .collect()
@@ -1468,8 +1548,6 @@ fn begin_divider(handle: divider::Handle, origin: POINT) -> bool {
             || s.divider.is_some()
             || s.windows_changed
             || !s.anims.is_empty()
-            || snapshot::is_animating()
-            || !config::snapshot_animations()
             || !divider::handles(
                 mi,
                 config::layout(),
@@ -1477,11 +1555,18 @@ fn begin_divider(handle: divider::Handle, origin: POINT) -> bool {
                 &s.regions[mi],
                 config::inner_gap(),
             )
-            .contains(&handle)
+            .iter()
+            .any(|candidate| {
+                candidate.split == handle.split && candidate.vertical == handle.vertical
+            })
         {
             return false;
         }
         let windows = s.last[mi].clone();
+        for h in &windows {
+            s.placement_failures.remove(h);
+            s.geometry_retries.remove(h);
+        }
         let sources: Vec<_> = windows
             .iter()
             .filter_map(|h| visible_rect(HWND(*h as *mut _)).map(|r| (*h, r)))
@@ -1491,12 +1576,11 @@ fn begin_divider(handle: divider::Handle, origin: POINT) -> bool {
                 .iter()
                 .zip(&s.rects[mi])
                 .any(|((_, actual), target)| !same_rect(actual, target, 2))
-            || !snapshot::prepare(mi, monitor_work(mi), &sources)
-            || !snapshot::reveal(mi)
         {
-            snapshot::cancel(mi);
             return false;
         }
+        s.live_borders.clear();
+        capture_live_borders(&mut s, &windows);
         let layout = config::layout();
         let gaps = gaps();
         // Recover ratios from settled geometry, including any adaptive minimum-size fitting.
@@ -1551,6 +1635,11 @@ fn begin_divider(handle: divider::Handle, origin: POINT) -> bool {
             s.timer = 0;
         }
         arm_anim_timer(&mut s);
+        if !s.frame_armed {
+            s.divider = None;
+            s.live_borders.clear();
+            return false;
+        }
         true
     })
 }
@@ -1569,11 +1658,25 @@ fn update_divider(point: POINT) {
             || s.cur[mi] != gesture.workspace
             || s.last[mi] != gesture.windows
             || config::layout() != gesture.layout
-            || !snapshot::contains(mi)
         {
             return false;
         }
-        if !s.divider.as_mut().unwrap().pointer_changed(point) {
+        let constraints = s
+            .live_resize
+            .constrained_targets(Instant::now(), |h| visible_rect(HWND(h as *mut _)));
+        let mut minimum_changed = false;
+        for (h, target) in constraints {
+            if observe_min_size(&mut s, HWND(h as *mut _), &target) {
+                let minimum = s.min_size[&h];
+                let gesture = s.divider.as_mut().unwrap();
+                if let Some(i) = gesture.windows.iter().position(|window| *window == h) {
+                    gesture.minimums[i].0 = gesture.minimums[i].0.max(minimum.0);
+                    gesture.minimums[i].1 = gesture.minimums[i].1.max(minimum.1);
+                    minimum_changed = true;
+                }
+            }
+        }
+        if !s.divider.as_mut().unwrap().pointer_changed(point) && !minimum_changed {
             return true;
         }
         let gesture = s.divider.as_ref().unwrap();
@@ -1587,9 +1690,7 @@ fn update_divider(point: POINT) {
             .copied()
             .zip(tiles.iter().copied())
             .collect();
-        if !snapshot::preview(mi, &targets) {
-            return false;
-        }
+        s.live_resize.queue(&targets);
         s.divider.as_mut().unwrap().preview = tiles;
         true
     });
@@ -1617,38 +1718,45 @@ fn end_divider(commit: bool) {
         let valid = !s.paused
             && s.cur[mi] == gesture.workspace
             && s.last[mi] == gesture.windows
-            && config::layout() == gesture.layout
-            && snapshot::contains(mi);
-        if commit && valid {
-            let mut point = POINT::default();
-            if unsafe { GetCursorPos(&mut point) }.is_ok() {
-                let (ratios, tiles, regions) = gesture.target(point);
-                let targets: Vec<_> = gesture
-                    .windows
-                    .iter()
-                    .copied()
-                    .zip(tiles.iter().copied())
-                    .collect();
-                place_batch(&mut s, &targets);
-                s.ratios[mi].insert(gesture.workspace, ratios);
-                s.rects[mi] = tiles;
-                s.regions[mi] = regions;
-                // Retain the final preview for one frame while applications begin repainting.
-                if snapshot::animate(mi, &targets, 1) {
-                    arm_anim_timer(&mut s);
-                } else {
-                    snapshot::cancel(mi);
-                }
-                s.enforce = true;
-                if std::mem::take(&mut s.min_size_reflow) {
-                    s.reflow = true;
-                }
-                s.timer = unsafe { SetTimer(None, s.timer, VERIFY_MS, None) };
-            } else {
-                snapshot::cancel(mi);
+            && config::layout() == gesture.layout;
+        s.live_resize.forget(&gesture.windows);
+        let mut point = POINT::default();
+        let result = (commit && valid && unsafe { GetCursorPos(&mut point) }.is_ok())
+            .then(|| gesture.target(point));
+        let tiles = result
+            .as_ref()
+            .map_or(&gesture.tiles, |(_, tiles, _)| tiles);
+        // Final placement bypasses the frame throttle. Cancellation restores the
+        // original geometry, but must never resurrect or unpark a departed window.
+        if s.cur[mi] == gesture.workspace {
+            let targets: Vec<_> = gesture
+                .windows
+                .iter()
+                .copied()
+                .zip(tiles.iter().copied())
+                .filter(|(h, _)| {
+                    let hwnd = HWND(*h as *mut _);
+                    s.ws.get(h) == Some(&gesture.workspace)
+                        && s.mi(*h) == mi
+                        && unsafe { IsWindowVisible(hwnd).as_bool() && !IsIconic(hwnd).as_bool() }
+                })
+                .collect();
+            place_batch(&mut s, &targets);
+        }
+        if let Some((ratios, tiles, regions)) = result {
+            s.ratios[mi].insert(gesture.workspace, ratios);
+            s.rects[mi] = tiles;
+            s.regions[mi] = regions;
+        }
+        for h in &gesture.windows {
+            s.live_borders.remove(h);
+        }
+        if !s.paused {
+            s.enforce = true;
+            if std::mem::take(&mut s.min_size_reflow) {
+                s.reflow = true;
             }
-        } else {
-            snapshot::cancel(mi);
+            s.timer = unsafe { SetTimer(None, s.timer, VERIFY_MS, None) };
         }
     });
     refresh_border();
@@ -1728,7 +1836,6 @@ pub fn ui_state() -> (u8, bool) {
 pub fn request_relayout() {
     end_divider(false);
     DISPLAY_HZ.with(|cache| cache.set(None));
-    snapshot::clear();
     let old_monitors = monitor::list();
     monitor::refresh();
     let new_monitors = monitor::list();
@@ -1862,7 +1969,8 @@ fn forget_window(s: &mut State, h: isize) -> bool {
     if !tracked {
         return false;
     }
-    snapshot::cancel(s.mi(h));
+    s.live_resize.forget(&[h]);
+    s.live_borders.remove(&h);
     s.ws.remove(&h);
     s.mon.remove(&h);
     s.fs_ws.remove(&h);
@@ -1887,6 +1995,8 @@ fn forget_window(s: &mut State, h: isize) -> bool {
         }
     }
     if s.dragging == Some(h) {
+        s.live_resize.clear();
+        s.live_borders.clear();
         s.dragging = None;
         s.drag_started = None;
         s.resizing = false;
@@ -1963,15 +2073,11 @@ unsafe extern "system" fn on_event(
             | EVENT_OBJECT_UNCLOAKED
             | EVENT_SYSTEM_MINIMIZEEND
             | EVENT_SYSTEM_MOVESIZESTART
-            | EVENT_SYSTEM_FOREGROUND
             | EVENT_SYSTEM_MENUPOPUPSTART => true,
-            EVENT_OBJECT_LOCATIONCHANGE => gesture
-                .windows
-                .iter()
-                .position(|window| *window == h)
-                .is_some_and(|i| {
-                    visible_rect(hwnd).is_none_or(|r| !same_rect(&r, &gesture.tiles[i], 2))
-                }),
+            EVENT_SYSTEM_FOREGROUND => !gesture.windows.contains(&h),
+            // A live client may clamp its size or report a delayed DWM frame.
+            // Only explicit lifecycle/input changes cancel ownership of the gesture.
+            EVENT_OBJECT_LOCATIONCHANGE => false,
             _ => false,
         }
     });
@@ -2017,7 +2123,6 @@ unsafe extern "system" fn on_event(
                             s.drag_timer = SetTimer(None, 0, DRAG_WATCHDOG_MS, None);
                             let affected: HashSet<isize> = s.last[mi].iter().copied().collect();
                             s.anims.retain(|a| !affected.contains(&a.hwnd));
-                            snapshot::cancel(mi);
                             s.resizing = false;
                             s.live = false;
                             s.drag_preview = None;
@@ -2026,17 +2131,11 @@ unsafe extern "system" fn on_event(
                             // for the duration of the drag and let the re-tile restore it
                             s.border_on = None;
                             overlay::hide_border();
-                            if config::snapshot_animations() {
-                                let sources: Vec<_> = s.last[mi]
-                                    .iter()
-                                    .filter_map(|h| {
-                                        visible_rect(HWND(*h as *mut _)).map(|r| (*h, r))
-                                    })
-                                    .collect();
-                                if sources.len() == s.last[mi].len() {
-                                    snapshot::prepare(mi, monitor_work(mi), &sources);
-                                }
-                            }
+                            divider::sync(Vec::new());
+                            s.live_resize.clear();
+                            s.live_borders.clear();
+                            let windows = s.last[mi].clone();
+                            capture_live_borders(&mut s, &windows);
                             // Remember the window's *actual* size, not the tile's: an app with a
                             // minimum size (or one that resized itself) can be larger than its
                             // tile, and comparing a plain move against the tile size would then be
@@ -2064,9 +2163,9 @@ unsafe extern "system" fn on_event(
                     }
                     let old_mi = s.mi(h);
                     let new_mi = monitor::of_window(hwnd).min(MON - 1);
+                    let affected = s.last[old_mi].clone();
+                    s.live_resize.forget(&affected);
                     if old_mi != new_mi {
-                        snapshot::cancel(old_mi);
-                        snapshot::cancel(new_mi);
                         // A manual cross-monitor drag is an explicit move to the destination
                         // monitor's currently visible workspace. Do not interpret its final size
                         // as a resize of a split on the source monitor.
@@ -2101,12 +2200,26 @@ unsafe extern "system" fn on_event(
                                 config::inner_gap(),
                             );
                             s.ratios[mi].insert(cur, rs);
+                            let (tiles, regions) = layout_tiles(
+                                config::layout(),
+                                monitor_work(mi),
+                                s.last[mi].len(),
+                                &s.ratios[mi][&cur],
+                                gaps(),
+                            );
+                            let targets: Vec<_> = s.last[mi]
+                                .iter()
+                                .copied()
+                                .zip(tiles.iter().copied())
+                                .collect();
+                            place_batch(&mut s, &targets);
+                            s.rects[mi] = tiles;
+                            s.regions[mi] = regions;
                         }
                         s.resizing = false;
                         s.live = false;
                     } else {
                         let mi = old_mi;
-                        snapshot::cancel(mi);
                         // dropped onto another tile? -> swap the two windows; otherwise snap back
                         let mut p = POINT::default();
                         let _ = GetCursorPos(&mut p);
@@ -2134,6 +2247,9 @@ unsafe extern "system" fn on_event(
                         }
                     }
                     s.reflow = true;
+                    for h in &affected {
+                        s.live_borders.remove(h);
+                    }
                     dirty = true;
                 } else {
                     return;
@@ -2151,6 +2267,14 @@ unsafe extern "system" fn on_event(
                         Some(vis) => place_border(&vis, h),
                         None => overlay::hide_border(),
                     }
+                }
+                if s.divider
+                    .as_ref()
+                    .is_some_and(|gesture| gesture.windows.contains(&h))
+                {
+                    // The gesture owns these geometry changes. Verification and
+                    // adaptive fitting resume after release, not between frames.
+                    return;
                 }
                 if s.dragging.is_none()
                     && actual
@@ -2221,9 +2345,6 @@ unsafe extern "system" fn on_event(
                 }
             }
             EVENT_OBJECT_SHOW => {
-                if let Some(dragged) = s.dragging {
-                    snapshot::cancel(s.mi(dragged));
-                }
                 s.windows_changed = true;
                 dirty = true;
                 // a window just appeared: put it into its tile right away, without waiting
@@ -2247,9 +2368,6 @@ unsafe extern "system" fn on_event(
                     .unwrap_or_else(|| monitor::of_window(HWND(h as *mut _)))
                     .min(MON - 1);
                 let ws = s.ws.get(&h).copied().or_else(|| s.fs_ws.get(&h).copied());
-                if !recently || ws != Some(s.cur[mi]) {
-                    snapshot::clear();
-                }
                 match ws {
                     Some(w) if w != s.cur[mi] && !s.paused && !recently => {
                         s.follow = Some((mi, w, h));
@@ -2373,9 +2491,7 @@ fn resize_focused(width: bool, grow: bool) {
         let (tiles, regions) = fitted(monitor_work(mi), &s.last[mi], &ratios, &s.min_size);
         let last = s.last[mi].clone();
         let targets: Vec<_> = last.iter().copied().zip(tiles.iter().copied()).collect();
-        // Hotkeys must not capture/upload a monitor or queue a frozen transition on
-        // every repeat. In particular, a held key commits all neighbours together.
-        snapshot::cancel(mi);
+        // A held key commits all neighbours together without queuing animations.
         if held {
             place_batch(&mut s, &targets);
         } else {
@@ -2493,12 +2609,8 @@ fn live_resize() {
                 .copied()
                 .zip(new_tiles.iter().copied())
                 .collect();
-            let preview = snapshot::contains(mi) && snapshot::preview(mi, &targets);
-            if !preview {
-                snapshot::cancel(mi);
-                let others: Vec<_> = targets.into_iter().filter(|(hw, _)| *hw != h).collect();
-                place_batch(&mut s, &others);
-            }
+            let others: Vec<_> = targets.into_iter().filter(|(hw, _)| *hw != h).collect();
+            s.live_resize.queue(&others);
             s.rects[mi] = new_tiles;
             s.regions[mi] = new_regions;
         }
@@ -2628,12 +2740,9 @@ fn fast_add(s: &mut State, hwnd: HWND) -> bool {
     // Now that the minimum is known, lay the whole workspace out again (the new window's tile may
     // have grown, and the neighbours move aside).
     let (rects, regions) = fitted(monitor_work(mi), &layout, &ratios, &s.min_size);
-    let targets: Vec<_> = layout.iter().copied().zip(rects.iter().copied()).collect();
-    if !visual_commit(s, mi, &targets, config::animation().1, &[h]) {
-        for (i, hh) in layout.iter().enumerate() {
-            // the new window appears in its tile instantly; the others glide to make room
-            move_window(s, HWND(*hh as *mut _), rects[i], *hh != h);
-        }
+    for (i, hh) in layout.iter().enumerate() {
+        // the new window appears in its tile instantly; the others glide to make room
+        move_window(s, HWND(*hh as *mut _), rects[i], *hh != h);
     }
     s.rects[mi] = rects;
     s.regions[mi] = regions;
@@ -2766,37 +2875,14 @@ fn retile() {
                 // same windows and same tiles: leave them alone (respects manual tweaks)
                 continue;
             }
-            let targets: Vec<_> = layout.iter().copied().zip(rects.iter().copied()).collect();
-            let (animation_on, ms) = config::animation();
-            if !snapshot::supports(mi, &targets) {
-                snapshot::cancel(mi);
-            }
-            // Reuse a scene prepared by a native resize, but never capture here:
-            // this path also handles latency-sensitive swaps and drag previews.
-            let entering: Vec<_> = layout
-                .iter()
-                .filter(|h| fresh.contains(h))
-                .copied()
-                .collect();
-            snapshot::entering(mi, &entering);
-            let visual = snapshot::contains(mi) && snapshot::reveal(mi);
             s.rects[mi] = rects.clone();
             s.regions[mi] = regions;
-            if visual {
-                place_batch(&mut s, &targets);
-                if snapshot::animate(mi, &targets, if animation_on { ms } else { 1 }) {
-                    arm_anim_timer(&mut s);
-                } else {
-                    snapshot::cancel(mi);
+            for (h, r) in layout.iter().zip(rects) {
+                if s.dragging == Some(*h) {
+                    continue; // the user is dragging it right now: leave it under the cursor
                 }
-            } else {
-                for (h, r) in layout.iter().zip(rects) {
-                    if s.dragging == Some(*h) {
-                        continue; // the user is dragging it right now: leave it under the cursor
-                    }
-                    let animate = animate_all && !fresh.contains(h);
-                    move_window(&mut s, HWND(*h as *mut _), r, animate);
-                }
+                let animate = animate_all && !fresh.contains(h);
+                move_window(&mut s, HWND(*h as *mut _), r, animate);
             }
             log(format!(
                 "monitor {}: workspace {}: tiled {} window(s)",
@@ -2866,7 +2952,6 @@ fn focus_or_swap(dir: Dir, swap: bool) {
             return;
         };
         if swap {
-            snapshot::cancel(mi);
             let (a, b) = (s.last[mi][cur], s.last[mi][to]);
             let (ia, ib) = (
                 s.order[mi].iter().position(|h| *h == a),
@@ -2930,27 +3015,10 @@ fn move_ws_relative(step: i8) {
 
 fn switch_ws(mi: usize, n: u8, focus: Option<isize>) {
     end_divider(false);
-    let mut departure = None;
-    let mut offset = -48;
     let changed = STATE.with(|s| {
         let mut s = s.borrow_mut();
         if mi >= MON || s.paused || s.dragging.is_some() || n == s.cur[mi] || n >= WS_COUNT {
             return false;
-        }
-        snapshot::cancel(mi);
-        if config::snapshot_animations() && config::animation().0 {
-            let sources: Vec<_> = s.last[mi]
-                .iter()
-                .filter_map(|h| visible_rect(HWND(*h as *mut _)).map(|r| (*h, r)))
-                .collect();
-            if sources.len() == s.last[mi].len()
-                && snapshot::prepare(mi, monitor_work(mi), &sources)
-            {
-                departure = snapshot::hold(mi);
-                if n < s.cur[mi] {
-                    offset = 48;
-                }
-            }
         }
         s.cur[mi] = n;
         s.no_anim = true;
@@ -2968,13 +3036,6 @@ fn switch_ws(mi: usize, n: u8, focus: Option<isize>) {
     match focus {
         Some(h) => focus_hwnd(h),
         None => focus_workspace(mi, n),
-    }
-    if let Some(scene) = departure {
-        if snapshot::depart(mi, scene, offset, config::animation().1) {
-            STATE.with(|s| arm_anim_timer(&mut s.borrow_mut()));
-        } else {
-            snapshot::cancel(mi);
-        }
     }
     tray::update();
     log(format!("switched to workspace {}", n + 1));
@@ -3109,8 +3170,9 @@ fn toggle_pause() {
         s.paused = !s.paused;
         if s.paused {
             s.anims.clear();
+            s.live_resize.clear();
+            s.live_borders.clear();
             cancel_anim_timer(&mut s);
-            snapshot::clear();
         }
         s.paused
     });
@@ -3143,7 +3205,6 @@ pub fn dispatch_quit() {
 
 pub fn reload_config() {
     end_divider(false);
-    snapshot::clear();
     STATE.with(|s| {
         let mut s = s.borrow_mut();
         s.anims.clear();
@@ -3705,7 +3766,6 @@ fn start(interactive: bool) {
     end_divider(false);
     divider::sync(Vec::new());
     clear_border();
-    snapshot::clear();
     STATE.with(|s| {
         let mut s = s.borrow_mut();
         s.anims.clear();
@@ -4052,6 +4112,11 @@ mod tests {
         let batch_elapsed = started.elapsed();
         let actual = owner.join().unwrap();
         release.join().unwrap();
+        eprintln!(
+            "native placement submission: single={}us batch={}us (client stalled 900ms)",
+            individual_elapsed.as_micros(),
+            batch_elapsed.as_micros()
+        );
         assert!(accepted);
         assert!(
             individual_elapsed < Duration::from_millis(450),
@@ -4063,6 +4128,242 @@ mod tests {
         );
         assert_eq!(actual, target);
         assert!(!state.min_size.contains_key(&h));
+    }
+
+    #[test]
+    fn cancelling_live_divider_restores_real_windows_and_discards_pending_motion() {
+        use windows::Win32::UI::WindowsAndMessaging::{
+            CreateWindowExW, DestroyWindow, WS_POPUP, WS_VISIBLE,
+        };
+        let area = RECT {
+            left: -20000,
+            top: -20000,
+            right: -18800,
+            bottom: -19000,
+        };
+        let gap = Gaps {
+            inner: 10,
+            outer: 10,
+        };
+        let (tiles, regions) = layout_tiles(Layout::Spiral, area, 2, &[0.5], gap);
+        let windows: Vec<_> = tiles
+            .iter()
+            .map(|r| unsafe {
+                CreateWindowExW(
+                    Default::default(),
+                    w!("STATIC"),
+                    w!("tile-rs live resize regression"),
+                    WS_POPUP | WS_VISIBLE,
+                    r.left,
+                    r.top,
+                    r.right - r.left,
+                    r.bottom - r.top,
+                    None,
+                    None,
+                    None,
+                    None,
+                )
+                .unwrap()
+                .0 as isize
+            })
+            .collect();
+        let handle = divider::handles(0, Layout::Spiral, &tiles, &regions, gap.inner)[0];
+        let origin = POINT {
+            x: handle.rect.left,
+            y: handle.rect.top,
+        };
+        let gesture = divider::Resize {
+            handle,
+            layout: Layout::Spiral,
+            area,
+            gaps: gap,
+            windows: windows.clone(),
+            workspace: 0,
+            ratios: vec![0.5],
+            tiles: tiles.clone(),
+            preview: tiles.clone(),
+            regions: regions.clone(),
+            minimums: vec![(100, 100); 2],
+            origin,
+            last_pointer_axis: origin.x,
+        };
+        let (_, changed, _) = gesture.target(POINT {
+            x: origin.x + 150,
+            ..origin
+        });
+        STATE.with(|state| {
+            let mut s = state.borrow_mut();
+            *s = State::default();
+            s.last[0] = windows.clone();
+            s.rects[0] = tiles.clone();
+            s.regions[0] = regions;
+            for h in &windows {
+                s.ws.insert(*h, 0);
+                s.mon.insert(*h, 0);
+            }
+            let targets: Vec<_> = windows.iter().copied().zip(changed).collect();
+            place_batch(&mut s, &targets);
+            s.live_resize.queue(&targets);
+            s.divider = Some(gesture);
+        });
+        end_divider(false);
+        STATE.with(|state| {
+            let mut s = state.borrow_mut();
+            assert!(s.divider.is_none());
+            assert!(s
+                .live_resize
+                .take_ready(Instant::now(), |_| Some(area))
+                .is_empty());
+            for (h, original) in windows.iter().zip(tiles) {
+                let mut actual = RECT::default();
+                unsafe {
+                    GetWindowRect(HWND(*h as *mut _), &mut actual).unwrap();
+                }
+                assert_eq!(actual, original);
+            }
+            if s.timer != 0 {
+                unsafe {
+                    let _ = KillTimer(None, s.timer);
+                }
+            }
+            cancel_anim_timer(&mut s);
+            *s = State::default();
+        });
+        for h in windows {
+            unsafe {
+                DestroyWindow(HWND(h as *mut _)).unwrap();
+            }
+        }
+    }
+
+    #[test]
+    fn delayed_or_clamped_geometry_does_not_cancel_a_live_divider() {
+        let area = RECT {
+            left: 0,
+            top: 0,
+            right: 1600,
+            bottom: 1000,
+        };
+        let gaps = Gaps {
+            inner: 10,
+            outer: 10,
+        };
+        let (tiles, regions) = layout_tiles(Layout::Spiral, area, 2, &[0.5], gaps);
+        let handle = divider::handles(0, Layout::Spiral, &tiles, &regions, gaps.inner)[0];
+        let origin = POINT {
+            x: handle.rect.left,
+            y: handle.rect.top,
+        };
+        STATE.with(|state| {
+            let mut s = state.borrow_mut();
+            *s = State::default();
+            s.ws.extend([(11, 0), (12, 0)]);
+            s.last[0] = vec![11, 12];
+            s.rects[0] = tiles.clone();
+            s.divider = Some(divider::Resize {
+                handle,
+                layout: Layout::Spiral,
+                area,
+                gaps,
+                windows: vec![11, 12],
+                workspace: 0,
+                ratios: vec![0.5],
+                tiles: tiles.clone(),
+                preview: tiles,
+                regions,
+                minimums: vec![(100, 100); 2],
+                origin,
+                last_pointer_axis: origin.x,
+            });
+        });
+        // Even a temporarily unavailable DWM rectangle is not an explicit user
+        // cancellation. The old code rolled the whole layout back in this case.
+        unsafe {
+            on_event(
+                HWINEVENTHOOK(std::ptr::null_mut()),
+                EVENT_OBJECT_LOCATIONCHANGE,
+                HWND(11usize as *mut _),
+                0,
+                0,
+                0,
+                0,
+            );
+        }
+        STATE.with(|state| {
+            let mut s = state.borrow_mut();
+            assert!(s.divider.is_some());
+            assert!(!s.reflow);
+            *s = State::default();
+        });
+    }
+
+    #[test]
+    fn moving_or_repeating_native_geometry_does_not_send_redundant_size_events() {
+        use windows::Win32::Foundation::{LPARAM, LRESULT};
+        use windows::Win32::UI::WindowsAndMessaging::{
+            CreateWindowExW, DefWindowProcW, DestroyWindow, SetWindowLongPtrW, GWLP_WNDPROC,
+            WM_SIZE, WS_POPUP,
+        };
+        thread_local! { static SIZES: Cell<u32> = const { Cell::new(0) }; }
+        unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
+            if msg == WM_SIZE {
+                SIZES.with(|sizes| sizes.set(sizes.get() + 1));
+            }
+            DefWindowProcW(hwnd, msg, wp, lp)
+        }
+        unsafe {
+            let hwnd = CreateWindowExW(
+                Default::default(),
+                w!("STATIC"),
+                w!("tile-rs size notification regression"),
+                WS_POPUP,
+                -20000,
+                -20000,
+                400,
+                300,
+                None,
+                None,
+                None,
+                None,
+            )
+            .unwrap();
+            let original = SetWindowLongPtrW(hwnd, GWLP_WNDPROC, proc as *const () as isize);
+            SIZES.with(|sizes| sizes.set(0));
+            let moved = apply_window_pos(
+                hwnd,
+                -19990,
+                -19990,
+                400,
+                300,
+                SWP_NOZORDER | SWP_NOACTIVATE,
+                "test-move",
+            );
+            let repeated = apply_window_pos(
+                hwnd,
+                -19990,
+                -19990,
+                400,
+                300,
+                SWP_NOZORDER | SWP_NOACTIVATE,
+                "test-repeat",
+            );
+            let move_sizes = SIZES.with(|sizes| sizes.get());
+            let resized = apply_window_pos(
+                hwnd,
+                -19990,
+                -19990,
+                500,
+                300,
+                SWP_NOZORDER | SWP_NOACTIVATE,
+                "test-size",
+            );
+            let final_sizes = SIZES.with(|sizes| sizes.get());
+            SetWindowLongPtrW(hwnd, GWLP_WNDPROC, original);
+            DestroyWindow(hwnd).unwrap();
+            assert!(moved && repeated && resized);
+            assert_eq!(move_sizes, 0);
+            assert_eq!(final_sizes, 1);
+        }
     }
 
     #[test]
@@ -4293,11 +4594,25 @@ mod tests {
         state.expected.insert(11, (RECT::default(), Instant::now()));
         state.dragging = Some(11);
         state.resizing = true;
+        state.live_borders.insert(12, (7, 0, 7, 7));
+        state.live_resize.queue(&[(
+            12,
+            RECT {
+                right: 100,
+                bottom: 100,
+                ..Default::default()
+            },
+        )]);
         assert!(forget_window(&mut state, 11));
         assert!(!state.ws.contains_key(&11));
         assert!(!state.expected.contains_key(&11));
         assert!(state.dragging.is_none());
         assert!(!state.resizing);
+        assert!(state.live_borders.is_empty());
+        assert!(state
+            .live_resize
+            .take_ready(Instant::now(), |_| Some(RECT::default()))
+            .is_empty());
         assert!(state.reflow);
     }
 

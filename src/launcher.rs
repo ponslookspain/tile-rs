@@ -229,7 +229,6 @@ fn populate(ui: &MainWindow, cfg: &config::Config) {
         IndicatorSize::Large => 2,
     });
     ui.set_animations(cfg.animations);
-    ui.set_snapshot_animations(cfg.snapshot_animations);
     ui.set_auto_overflow(cfg.auto_overflow);
     ui.set_show_indicator(cfg.workspace_indicator);
     ui.set_focus_follows_mouse(cfg.focus_follows_mouse);
@@ -408,10 +407,6 @@ fn save(ui: &MainWindow) {
         ("inner_gap", ui.get_inner_gap().to_string()),
         ("outer_gap", ui.get_outer_gap().to_string()),
         ("animations", ui.get_animations().to_string()),
-        (
-            "snapshot_animations",
-            ui.get_snapshot_animations().to_string(),
-        ),
         ("animation_ms", ui.get_animation_ms().to_string()),
         ("easing", format!("\"{easing}\"")),
         ("resize_step", ui.get_resize_step().to_string()),

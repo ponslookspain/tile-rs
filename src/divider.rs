@@ -1,4 +1,4 @@
-//! Input surfaces for adjustable tile gaps. No foreign HWND is resized during a gesture.
+//! Input surfaces for adjustable tile gaps; real windows resize on frame ticks.
 use crate::config::Layout;
 use crate::geometry::{place, Gaps, MAX_RATIO, MIN_RATIO};
 use std::cell::{Cell, RefCell};
@@ -68,6 +68,91 @@ pub fn handles(
             })
         })
         .collect()
+}
+
+/// Keep only the largest uncovered part of each input surface. Real clients
+/// can lag their targets or enforce a larger size; a topmost handle must not
+/// steal input from their visible content while that happens.
+pub fn unobstructed(handles: Vec<Handle>, frames: &[RECT]) -> Vec<Handle> {
+    handles
+        .into_iter()
+        .filter_map(|mut handle| {
+            let mut parts = vec![handle.rect];
+            for frame in frames {
+                parts = parts
+                    .into_iter()
+                    .flat_map(|r| {
+                        let cut = RECT {
+                            left: r.left.max(frame.left),
+                            top: r.top.max(frame.top),
+                            right: r.right.min(frame.right),
+                            bottom: r.bottom.min(frame.bottom),
+                        };
+                        if cut.left >= cut.right || cut.top >= cut.bottom {
+                            return vec![r];
+                        }
+                        [
+                            RECT {
+                                bottom: cut.top,
+                                ..r
+                            },
+                            RECT {
+                                top: cut.bottom,
+                                ..r
+                            },
+                            RECT {
+                                right: cut.left,
+                                top: cut.top,
+                                bottom: cut.bottom,
+                                ..r
+                            },
+                            RECT {
+                                left: cut.right,
+                                top: cut.top,
+                                bottom: cut.bottom,
+                                ..r
+                            },
+                        ]
+                        .into_iter()
+                        .filter(|r| r.left < r.right && r.top < r.bottom)
+                        .collect()
+                    })
+                    .collect();
+            }
+            handle.rect = parts
+                .into_iter()
+                .max_by_key(|r| i64::from(r.right - r.left) * i64::from(r.bottom - r.top))?;
+            Some(handle)
+        })
+        .collect()
+}
+
+fn highlight_alpha(captured: bool, hovered: bool) -> u8 {
+    if captured {
+        180
+    } else if hovered {
+        90
+    } else {
+        1
+    }
+}
+
+fn highlight(hwnd: HWND, handle: &Handle) {
+    unsafe {
+        let mut point = POINT::default();
+        let hovered = GetCursorPos(&mut point).is_ok()
+            && point.x >= handle.rect.left
+            && point.x < handle.rect.right
+            && point.y >= handle.rect.top
+            && point.y < handle.rect.bottom;
+        let active = CAPTURE.with(|capture| capture.get() == hwnd);
+        let _ = SetLayeredWindowAttributes(
+            hwnd,
+            COLORREF(0),
+            highlight_alpha(active, hovered),
+            LWA_ALPHA,
+        );
+    }
 }
 
 pub struct Resize {
@@ -178,6 +263,47 @@ pub fn captured() -> bool {
     CAPTURE.with(|c| !c.get().is_invalid())
 }
 
+/// Keep the captured input surface in the moving gap without replacing its HWND
+/// or losing capture. Other handles are reconciled after the gesture ends.
+pub fn follow(handle: Option<Handle>) {
+    let hwnd = CAPTURE.with(|capture| capture.get());
+    if hwnd.is_invalid() {
+        return;
+    }
+    let Some(handle) = handle else {
+        // Keep capture, but do not paint over an application while the two
+        // asynchronous window edges temporarily leave no actual gap.
+        unsafe {
+            let _ = SetLayeredWindowAttributes(hwnd, COLORREF(0), 0, LWA_ALPHA);
+        }
+        return;
+    };
+    let changed = SURFACES.with(|surfaces| {
+        let mut surfaces = surfaces.borrow_mut();
+        let Some((previous, _)) = surfaces.iter_mut().find(|(_, window)| *window == hwnd) else {
+            return false;
+        };
+        let changed = previous.rect != handle.rect;
+        *previous = handle;
+        changed
+    });
+    if changed {
+        let r = handle.rect;
+        unsafe {
+            let _ = SetWindowPos(
+                hwnd,
+                None,
+                r.left,
+                r.top,
+                r.right - r.left,
+                r.bottom - r.top,
+                SWP_NOACTIVATE | SWP_NOZORDER,
+            );
+        }
+    }
+    highlight(hwnd, &handle);
+}
+
 /// Called by the high-resolution frame scheduler; the window timer only provides a watchdog.
 pub fn tick() {
     if !captured() {
@@ -204,13 +330,17 @@ pub fn sync(handles: Vec<Handle>) {
         return;
     }
     let unchanged = SURFACES.with(|surfaces| {
-        surfaces
-            .borrow()
-            .iter()
-            .map(|(h, _)| *h)
-            .eq(handles.iter().copied())
+        let surfaces = surfaces.borrow();
+        surfaces.iter().map(|(h, _)| *h).eq(handles.iter().copied())
+            && surfaces
+                .iter()
+                .all(|(_, hwnd)| unsafe { IsWindowVisible(*hwnd).as_bool() })
     });
     if unchanged {
+        let surfaces = SURFACES.with(|surfaces| surfaces.borrow().clone());
+        for (handle, hwnd) in surfaces {
+            highlight(hwnd, &handle);
+        }
         return;
     }
     // Remove handles from TLS before destroying their windows (Win32 can call us back).
@@ -250,6 +380,10 @@ pub fn sync(handles: Vec<Handle>) {
                         SWP_NOACTIVATE | SWP_NOZORDER,
                     );
                 }
+                if !IsWindowVisible(hwnd).as_bool() {
+                    let _ = ShowWindow(hwnd, SW_SHOWNA);
+                }
+                highlight(hwnd, &handle);
                 continue;
             }
             if let Ok(hwnd) = CreateWindowExW(
@@ -269,6 +403,7 @@ pub fn sync(handles: Vec<Handle>) {
                 let _ = SetLayeredWindowAttributes(hwnd, COLORREF(0), 1, LWA_ALPHA);
                 SURFACES.with(|s| s.borrow_mut().push((handle, hwnd)));
                 let _ = ShowWindow(hwnd, SW_SHOWNA);
+                highlight(hwnd, &handle);
             }
         }
         for (_, hwnd) in old {
@@ -299,14 +434,35 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             {
                 CAPTURE.with(|c| c.set(hwnd));
                 SetCapture(hwnd);
+                let _ = SetLayeredWindowAttributes(hwnd, COLORREF(0), 180, LWA_ALPHA);
                 if GetCapture() != hwnd || SetTimer(Some(hwnd), 1, 100, None) == 0 {
                     release();
                     crate::end_divider(false);
+                } else {
+                    let others: Vec<_> = SURFACES.with(|surfaces| {
+                        surfaces
+                            .borrow()
+                            .iter()
+                            .filter_map(|(_, window)| (*window != hwnd).then_some(*window))
+                            .collect()
+                    });
+                    for other in others {
+                        let _ = ShowWindow(other, SW_HIDE);
+                    }
                 }
             }
         }
         WM_MOUSEMOVE => {
-            let _ = SetLayeredWindowAttributes(hwnd, COLORREF(0), 90, LWA_ALPHA);
+            let active = CAPTURE.with(|capture| capture.get() == hwnd);
+            if active {
+                return LRESULT(0);
+            } // The frame tick positions and highlights the captured surface.
+            let _ = SetLayeredWindowAttributes(
+                hwnd,
+                COLORREF(0),
+                highlight_alpha(active, true),
+                LWA_ALPHA,
+            );
             let mut tracking = TRACKMOUSEEVENT {
                 cbSize: std::mem::size_of::<TRACKMOUSEEVENT>() as u32,
                 dwFlags: TME_LEAVE,
@@ -317,7 +473,16 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
         }
         0x02A3 => {
             // WM_MOUSELEAVE
-            let _ = SetLayeredWindowAttributes(hwnd, COLORREF(0), 1, LWA_ALPHA);
+            let active = CAPTURE.with(|capture| capture.get() == hwnd);
+            if active {
+                return LRESULT(0);
+            }
+            let _ = SetLayeredWindowAttributes(
+                hwnd,
+                COLORREF(0),
+                highlight_alpha(active, false),
+                LWA_ALPHA,
+            );
         }
         WM_TIMER if wp.0 == 1 => tick(),
         WM_LBUTTONUP => {
@@ -347,6 +512,59 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn captured_highlight_survives_mouse_leaving_a_clamped_split() {
+        assert_eq!(highlight_alpha(true, false), 180);
+        assert_eq!(highlight_alpha(true, true), 180);
+        assert_eq!(highlight_alpha(false, true), 90);
+        assert_eq!(highlight_alpha(false, false), 1);
+    }
+
+    #[test]
+    fn handles_never_cover_observed_windows_even_when_clients_lag_or_reject_sizes() {
+        let handle = Handle {
+            monitor: 0,
+            split: 0,
+            vertical: true,
+            rect: RECT {
+                left: 100,
+                top: -20,
+                right: 108,
+                bottom: 500,
+            },
+        };
+        let frames = [
+            RECT {
+                left: 0,
+                top: 60,
+                right: 105,
+                bottom: 300,
+            },
+            RECT {
+                left: 104,
+                top: 200,
+                right: 400,
+                bottom: 450,
+            },
+        ];
+        let safe = unobstructed(vec![handle], &frames);
+        assert_eq!(safe.len(), 1);
+        for h in &safe {
+            assert!(h.rect.left >= handle.rect.left && h.rect.right <= handle.rect.right);
+            assert!(h.rect.top >= handle.rect.top && h.rect.bottom <= handle.rect.bottom);
+            for r in &frames {
+                assert!(
+                    h.rect.right <= r.left
+                        || h.rect.left >= r.right
+                        || h.rect.bottom <= r.top
+                        || h.rect.top >= r.bottom
+                );
+            }
+        }
+        assert!(unobstructed(vec![handle], &[handle.rect]).is_empty());
+        assert_eq!(unobstructed(vec![handle], &[]), vec![handle]);
+    }
 
     fn gesture(layout: Layout, n: usize, split: usize) -> Resize {
         let area = RECT {

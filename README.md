@@ -21,11 +21,11 @@ everything lives in one small `.exe` with a tray icon and a plain-text config.
   windows glide aside with a short animation.
 - **Resize like a normal window**: drag any edge or corner and the neighbours follow live. Or use
   `Alt +` / `Alt -` (hold to repeat).
-- **Frozen-image resize**: eligible workspaces display scaled snapshots during resizing, then apply
-  the neighbours' real sizes together. Direct2D accelerates the images; ordinary placement remains
-  the fallback. Configure `snapshot_animations` in settings; [details and limitations](docs/WINDOW-MOTION.md).
-- **Draggable tile gaps** in Spiral and Master/stack: preview a resize without changing application
-  sizes until release. Hover inside a gap and drag; press Escape to cancel.
+- **Live tile resize**: applications reflow their own content while affected windows resize together,
+  without screenshot overlays. Input is coalesced per frame and slow clients are paced independently;
+  [details and limitations](docs/WINDOW-MOTION.md).
+- **Draggable tile gaps** in Spiral and Master/stack: hover inside a gap and drag to resize the actual
+  windows. Press Escape to restore the original layout.
 - **Drag a window onto another tile** to swap them; drop it anywhere else and it snaps back.
 - **Fullscreen games and videos**: a window that covers a whole screen without a title bar
   (exclusive or borderless fullscreen) is never tiled. It is minimized when you switch to another
@@ -166,7 +166,6 @@ tile-rs again.
 inner_gap = 10           # pixels between windows
 outer_gap = 10           # pixels around the screen edges
 animations = true
-snapshot_animations = true # resize frozen images instead of repeatedly resizing neighbours
 animation_ms = 140
 easing = "out_cubic"     # animation curve: linear, out_quad, out_cubic, out_quart, in_out_cubic
 fullscreen_windows = "minimize"  # or "ignore": never touch fullscreen games

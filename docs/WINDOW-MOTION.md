@@ -1,128 +1,85 @@
-# Window motion and snapshot resize
+# Live window motion and resize
 
-`snapshot_animations = true` is enabled by default and exposed as **Растягивать снимки окон** in
-the launcher's animation settings. `animations` and `animation_ms` control timed transitions;
-snapshot preview during manual resize is controlled independently by `snapshot_animations`.
+All tile resizing uses real application windows. There are no screenshot overlays, frozen
+previews, capture sessions or GPU image uploads. Applications reflow and repaint their own
+content as their native window sizes change. Layout changes still use ordinary geometry
+animations; workspace switching restores the actual workspace directly.
 
 ## Dragging a tile divider
 
-With snapshots enabled, Spiral and Master/stack expose a mouse handle inside each adjustable
-gap. Hover over the gap until the resize cursor and blue highlight appear, then drag with the
-left mouse button. The handle is up to 8 physical pixels wide and stays inside the configured
-gap. A zero inner gap disables these handles. Grid and Columns retain equal-size tiles.
+Spiral and Master/stack expose a mouse handle inside each adjustable gap when `inner_gap > 0`.
+Hover over the gap until the resize cursor and blue highlight appear, then drag with the left
+mouse button. The handle is up to 8 physical pixels wide and stays inside the gap. The captured
+handle follows the split without losing capture; other handles are hidden until release.
+Grid and Columns retain equal-size tiles. Native window edges remain available in every layout.
+Neither `animations` nor the old `snapshot_animations` switch disables divider dragging.
 
-During this gesture all actual application windows retain their sizes. Frozen images follow
-the latest pointer position on the existing high-resolution frame scheduler; intermediate
-pointer events are not queued as animations. Geometry is always derived from the initial
-layout, and all affected tiles are constrained by their known minimum sizes. Release applies
-the targets as a batch and briefly retains the preview while applications start repainting.
+A gesture derives every target from its original geometry. Known minimum window sizes constrain
+all affected descendants. Ratios are committed on release; Escape, capture loss, a workspace,
+configuration or display change, or an incompatible window event cancels the gesture and restores
+surviving windows to their original geometry. Hidden, minimized or departed windows are not restored.
 
-Escape, capture loss, a workspace/configuration/display change, or a window appearing,
-disappearing or unexpectedly moving cancels the gesture. Original geometry and workspace
-ratios are retained on cancellation. Ordinary window-edge resize remains available. If the
-screen cannot be captured safely (occlusion, overlapping sources, capture budget), the divider
-does not start; use the application's own edge instead.
+## Scheduling and responsiveness
 
-This mode uses the existing Direct2D/GDI renderer. It does not cloak foreign windows or depend
-on undocumented DWM interfaces. First-gesture capture/upload and the final repaint still have
-costs; this implementation does not promise that every application repaints within one frame.
+- The refresh-derived frame timer samples the latest pointer position. Intermediate mouse events
+  are not queued as geometry animations. `animation_fps_limit` also caps live resize (60 by default).
+- Each affected window has at most one unsent target, replaced by newer input. Unchanged windows
+  are skipped. A client whose previous request is not yet reflected in observed bounds is given
+  up to 90 ms before another request; responsive windows can continue at the normal frame rate.
+  This limits submissions to slow clients, but does not cancel requests already posted to Windows
+  or guarantee that an unresponsive application's message queue remains empty.
+- A frame places ready windows through `DeferWindowPos`. Individual bounded placements recover
+  from batch failure. Both paths use `SWP_ASYNCWINDOWPOS`; the manager does not wait for a foreign
+  UI thread to finish processing a resize. No process is suspended or sent `WM_SETREDRAW`.
+- Release discards unsent intermediate targets and immediately submits the final geometry,
+  bypassing the interactive throttle. There is no screenshot fade or catch-up animation.
+- During native edge resizing Windows owns the selected window; tile-rs updates its neighbours.
+  The selected application's own native resize loop is outside tile-rs's frame limit.
+- During a divider gesture, a settled larger size can raise the relevant minimum and clamp the
+  split without cancellation. Feedback requires observed progress; an unchanged busy window is
+  not learned as a minimum. Full adaptive fitting and corrective verification resume after release. A posted
+  request is not evidence of its completion: minimum sizes are not learned from a stale large
+  frame during the verification interval. Geometry retries remain bounded per unchanged target.
+- Delayed location events and application-enforced sizes do not cancel divider capture. Explicit
+  native move/resize starts and lifecycle changes still cancel it. Input surfaces are clipped against
+  observed window bounds; the active highlight survives the cursor leaving a clamped handle.
+- Invisible frame-border offsets are captured once per gesture so lagging DWM bounds cannot
+  introduce viewport jitter. Identical native rectangles are skipped; position-only changes use
+  `SWP_NOSIZE`, preserving the application's current viewport dimensions.
+- The focus border follows observed geometry. Frame timers have a cancellable thread-timer
+  fallback, and stop once both gestures and ordinary animations have finished.
 
-## Implementation
+Native content is always visible, including video and text. Smoothness depends on the application:
+its layout and paint work can take longer than a frame even when tile-rs submits positions quickly.
+The manager can coalesce and pace requests, but cannot guarantee 60 FPS in every foreign process.
+On a slower computer, try `animation_fps_limit = 30`; turning off `animations` removes timed layout
+transitions while retaining live resize. The legacy `snapshot_animations` key is accepted and
+ignored so existing configuration files continue to load; it is no longer generated or shown.
 
-- Capture visible monitor pixels once at the beginning of an eligible resize/transition. Images
-  stay in memory, are never saved, and are released on completion or cancellation.
-- A tool overlay passes pointer input to the real windows. Its background is dark while the
-  frozen tiles move. The monitor's taskbar and workspace dots are outside the scene.
-- Upload the image once to a hardware Direct2D target. Subsequent frames transform image regions
-  with linear interpolation. If target creation or drawing fails, use the GDI implementation.
-- During a native mouse resize the selected application still receives Windows resize messages;
-  its content changes behind the snapshot. Neighbouring applications retain their sizes until
-  release. No process is suspended and no foreign window receives `WM_SETREDRAW`.
-- Commit neighbour geometry through `DeferWindowPos`. Individual bounded placements recover from
-  batch failure. Both batches and individual placements use `SWP_ASYNCWINDOWPOS`; restoring or
-  minimizing foreign windows uses `ShowWindowAsync`. A busy application must not hold the manager's
-  input loop and capture watchdogs inside a synchronous window-position call. API success means
-  acceptance, not completion: verify geometry afterwards and defer minimum-size observations for
-  at least the verification interval (90 ms), so the previous large frame is not learned immediately
-  as a permanent minimum. Applications that remain unresponsive can still delay their own geometry.
-- The focus border follows observed visible bounds rather than posted animation targets.
-  Location-change events update it even when the event matches the manager's expected geometry;
-  animation ticks and delayed verification also resynchronize it after placement.
-- Resize hotkeys and tile swaps do not capture the screen: single resize taps use ordinary
-  geometry animation, while held keys commit all affected windows together immediately.
-  General layout reconciliation only reuses an existing mouse-resize scene; it does not
-  synchronously capture and upload the monitor for each rearrangement. New captured windows fade in.
-  Closing a window animates the remaining layout; a destroyed window has no exit image unless
-  a scene already captured it. There is no continuous background capture to manufacture one.
-- Workspace switches commit the actual workspace immediately, then show a short directional fade
-  of the outgoing scene. Repeated switches cancel the previous scene.
-
-## Adversarial review by stage
-
-| Stage | Failure considered | Implemented response |
-| --- | --- | --- |
-| Motion lifecycle | A parked window's old animation brings it back | Cancel the monitor's old queue; validate workspace and drag ownership before every frame |
-| Retargeting | Pointer events restart an unchanged animation | Keep an identical target and its original start time |
-| Geometry transactions | One member rejects a batch, or stale DWM bounds look like a huge border | Bounded fallback and verification; validate border offsets |
-| Busy applications | Extreme resizing leaves a client slow to process position messages | Post placements and show-state changes asynchronously; verify after settling instead of blocking mouse cleanup |
-| Resize preview | A neighbour is destroyed or a new window appears during drag | Cancel the stale scene and defer whole-layout reconciliation until the gesture ends |
-| Event ownership | A global quiet period hides another window's genuine movement | Compare the most recent expected frame independently for each HWND |
-| Callback reentrancy | Foreign window calls deliver another WinEvent while state is borrowed | Queue ordered events and replay after the transaction |
-| GPU lifecycle | Initialization fails or the device is lost | Retain the CPU snapshot and switch to GDI for that scene |
-| Capture validity | A popup or another window covers a source | Check Z order and rectangles; use ordinary placement instead of capturing the covering window |
-| Memory | Many monitors or very large desktops allocate excessive captures | Limit each scene to 16 million pixels and mapped scenes together to 24 million; fall back above the limit |
-| Timing | Missing/failed waitable timer or changed display refresh rate | Cancellable thread-timer fallback; refresh cadence for each motion burst |
-| Cleanup | Pause, focus change, display changes, config reload, shutdown | Discard the affected scenes and release their window, bitmap, DC and GPU resources |
-| Divider ownership | Verification, focus-follows-mouse or a hotkey fights a gesture | Pause verification during capture, disable focus-follow during a gesture and cancel before commands |
-| Divider cancellation | Capture-loss callback arrives during a State borrow | Release capture immediately and finish cancellation on the next frame after the transaction |
-| Divider constraints | Fast reversal drifts ratios or shrinks a descendant below its minimum | Derive every target from initial geometry and clamp against all affected tiles |
-
-## Practical limits
-
-This implementation captures visible screen pixels, not private application surfaces. Overlapping
-source rectangles, occluding windows and partially off-screen sources disable the scene. This
-often applies while a new window initially overlaps the existing layout. Protected content can
-appear black and should use the ordinary mode. HDR colour fidelity is not guaranteed by the SDR
-screen capture path.
-
-The CPU snapshot is a top-down 32-bit DIB. Direct2D uploads from that storage directly, without
-an additional full-screen CPU staging copy. GPU copies and render targets still consume memory
-in addition to the CPU bitmap budget above. Scheduling uses cached refresh-derived timers,
-capped by `animation_fps_limit` (60 by default), not a guarantee of display-vsync alignment.
-Application-enforced minimum sizes are still handled most fully by the spiral layout; the other
-layouts retain their existing constraints. The native selected window still performs its own
-layout work; dragging the custom gap avoids repeatedly resizing those application windows.
+A website may rebuild its player when the browser crosses a responsive layout breakpoint. This
+also occurs during ordinary browser resizing with tile-rs paused. Live resizing cannot suppress
+that page behaviour; keeping the browser above that width (or raising `min_tile_width` for the
+layout) avoids crossing the breakpoint. The manager never reloads browser tabs.
 
 ## Verification
 
-Automated checks cover geometry/configuration, hidden-workspace/pause/drag guards, unchanged
-animation targets, independent expected geometry, destroyed-window cleanup, queued reentrant
-destroy events, timer fallback and capture rejection. A hidden test window deliberately stops
-pumping messages for 900 ms: individual and batch placement must each return within 450 ms,
-must not learn its old large size as a minimum, and must apply the final position when it resumes.
-The autostart registry test is unrelated
-and is excluded from the focused motion test run:
+Automated checks cover latest-target replacement, independent pacing of slow and responsive
+windows, unchanged geometry, expected-event ownership, cancelled pending motion, geometry ratios,
+minimum-size reversal, frame-timer fallback, hidden-workspace guards and deferred event replay.
+A Win32 regression test moves off-screen fixture windows, cancels a divider gesture and verifies
+that their original native geometry is restored. Another fixture stops pumping messages for
+900 ms and verifies that individual and batch submissions do not wait for it.
 
 ```powershell
 cargo test --offline --bin tile-rs -- --skip autostart_registry_roundtrip
 cargo clippy --offline --all-targets -- -D warnings
 ```
 
-Manual visual verification is still required. It has not been replaced by the unit tests:
+Manual verification remains necessary: browser, Explorer, Telegram and an editor; fast reversals,
+very narrow/wide tiles, Escape and capture loss; opening/closing/minimizing a neighbour; switching
+workspaces; mixed-DPI displays at 60 and 144+ Hz. Compare the same scenarios at 30 and 60 FPS.
+Automated fixtures do not establish actual frame rates or visual smoothness in these applications.
 
-1. Browser, Explorer, Telegram and an editor: slow/fast resize, rapid direction reversals, all
-   three workspace-dot sizes, and both spiral/master-stack layouts.
-2. Open/close a neighbour during resize; drag a window to another monitor; open a modal dialog;
-   Alt+Tab away while a transition runs; pause and resume.
-3. Repeatedly switch workspaces and move the focused window between them during a transition.
-4. Mixed-DPI monitors at 60 and 144+ Hz; disconnect/reconnect a monitor; compare the ordinary mode.
-5. GPU initialization/device-loss fallback, protected video and HDR desktops.
-6. Drag a gap in Spiral and Master/stack, reverse rapidly, release beyond the monitor, and
-   press Escape. Open/close a window during the gesture. Compare gap dragging with native edge
-   resizing; verify keyboard resizing still responds immediately while held.
-
-Set `TILE_RS_PROFILE=1` before starting tile-rs to record layout/batch times, cumulative real-window
-placement counts, queue/coalescing counters, capture/upload durations, selected snapshot renderer,
-scene frame counts and average rendering time in the existing log. Animation percentiles retain
-at most the latest 4096 samples per metric. These are instrumentation, not a claim that desktop
-performance was measured. See the [performance audit](PERFORMANCE-AUDIT.md) for remaining work.
+Set `TILE_RS_PROFILE=1` before starting tile-rs to log layout/batch durations, placement counts,
+frame intervals and event queue/coalescing counters. Animation percentiles retain at most the latest
+4096 samples per metric. See the [performance audit](PERFORMANCE-AUDIT.md) for remaining work.

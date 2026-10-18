@@ -179,7 +179,6 @@ export component MainWindow inherits Window {
     in-out property <int> layout_index: 0;
     in-out property <int> indicator_size: 1;
     in-out property <bool> animations: true;
-    in-out property <bool> snapshot_animations: true;
     in-out property <bool> auto_overflow: true;
     in-out property <bool> show_indicator: true;
     in-out property <bool> focus_follows_mouse: false;
@@ -342,7 +341,6 @@ export component MainWindow inherits Window {
                                     spacing: 8px;
                                     Text { text: "Анимация"; color: #edf2f4; font-size: 14px; font-weight: 600; height: 20px; }
                                     ToggleRow { label: "Плавно перемещать окна"; checked: animations; changed(value) => { animations = value; } }
-                                    ToggleRow { label: "Растягивать снимки окон"; checked: snapshot_animations; changed(value) => { snapshot_animations = value; } }
                                     HorizontalLayout {
                                         Text { text: "Длительность (мс)"; color: AppTheme.muted; font-size: 12px; vertical-alignment: center; horizontal-stretch: 1; }
                                         NumberField { label: ""; value <=> animation_ms; field-width: 90px; }
