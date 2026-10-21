@@ -8,15 +8,23 @@ everything lives in one small `.exe` with a tray icon and a plain-text config.
 [Development & testing](docs/DEVELOPMENT.md) · [Changelog](CHANGELOG.md) ·
 [Releasing & versioning](docs/RELEASING.md)
 
+![The tile-rs settings launcher](docs/images/launcher-general.png)
+
 ## Features
 
-- **Settings launcher**: a Slint window in its own process (tray menu -> *Settings...*, or on first start)
-  for layouts, gaps, animations, borders, workspace behavior and hotkeys, with update checking and
-  a direct GitHub link. Application-specific rules remain in `config.toml`.
+- **Settings launcher**: a window in its own process (tray menu -> *Settings...*, or on first start)
+  for everything you would otherwise edit in `config.toml`: layout, gaps, animations, the focus
+  border, workspaces, **hotkeys** (record a combination by pressing it) and **application rules**
+  (pick a running program, choose "floating window" or "workspace N"), plus update checking and
+  installing.
+- **Monocle** (`Alt+M`): show the focused window alone on the whole screen and flip through the
+  other windows of the workspace with the focus keys; press again to get the layout back.
 - **Four layouts** (settings launcher, tray or the `layout` setting): **spiral** (dwindle, the
   default - window 1 takes the left part, window 2 the top-right, and so on), **master-stack** (a
-  master column on the left, the rest stacked on the right), **grid** and **columns**. Close or open
-  a window and the rest adapt.
+  master column on the left, the rest stacked on the right; `Alt+.` / `Alt+,` put more or fewer
+  windows into the master column), **grid** and **columns**. Close or open a window and the rest adapt.
+- **Jump back**: `Alt+Z` returns to the previously focused window, `Alt+Shift+Z` to the previous
+  workspace.
 - **New windows appear in their tile immediately** (no flash in the middle of the screen); the other
   windows glide aside with a short animation.
 - **Resize like a normal window**: drag any edge or corner and the neighbours follow live. Or use
@@ -42,7 +50,7 @@ everything lives in one small `.exe` with a tray icon and a plain-text config.
   master tile narrows to make room), and once a workspace is full a new window opens on the next
   workspace. Minimal clickable dots at the top of each monitor show current and occupied
   workspaces: the active dot is blue with an outline, occupied dots glow blue, and empty dots are dim.
-- Everything configurable in `config.toml`: hotkeys, gap, animation, rules.
+- Everything is also in a plain `config.toml` (hotkeys, gaps, animation, rules) for those who prefer text.
 
 ## Requirements
 
@@ -103,10 +111,23 @@ of the old file is saved as `config.toml.bak`).
 
 ### Settings launcher
 
-Right-click the tray icon and choose **Settings...** (it also opens on first start). From there you
-can change the layout, gaps, animations, the focus border, the workspace behaviour and the hotkeys,
-and use **Check for updates** to open the release page. **Save & apply** writes the config and applies
-it immediately.
+Right-click the tray icon and choose **Settings...** (it also opens on first start, with a short card
+listing the main shortcuts). Pages:
+
+| Page | What you change there |
+|---|---|
+| General | the layout (with a live preview), animation and gaps, and a summary of your setup |
+| Layout | windows in the master column, minimum tile size, windows per workspace, resize step |
+| Workspaces | the workspace dots at the top of each screen, their size and colour, focus follows mouse |
+| Window behaviour | fullscreen games and videos, photo/video viewers, the focus border |
+| Hotkeys | every action: record a new combination, add a second one, remove it, reset all |
+| Applications | rules per program: keep it floating or always open it on workspace N |
+| Advanced | start with Windows, open the config or the log, about |
+| Updates | check for a new version, see what is new and install it in one click |
+
+Changes are applied with **Save**; while something is not saved yet, the header says so.
+
+![Hotkeys page](docs/images/launcher-hotkeys.png)
 
 ### Default hotkeys
 
@@ -121,13 +142,18 @@ it immediately.
 | `Alt+=` / `Alt+-` (also `Alt+Num+` / `Alt+Num-`) | make the focused window wider / narrower (hold to repeat) |
 | `Alt+Shift+M` | minimize the focused window |
 | `Alt+Shift+F` | float the focused window in place, or tile it again |
+| `Alt+M` | monocle: the focused window on the whole screen, and back |
+| `Alt+Z` | focus the previously focused window |
+| `Alt+Shift+Z` | go back to the previous workspace |
+| `Alt+.` / `Alt+,` | master-stack: one more / one fewer window in the master column |
 | `Alt+Shift+Q` | close the focused window (like Alt+F4) |
 | `Ctrl+Alt+L` | switch to the next layout (spiral, master-stack, grid, columns) |
 | `Ctrl+Alt+P` or `Alt+Shift+P` | pause / resume tiling |
 | `Ctrl+Alt+Q` | quit (all windows are brought back to the current workspace) |
 
 Optional actions without a default key: `grow_height`, `shrink_height`, `retile`, `reload_config`,
-`edit_config`. Every hotkey can be changed or removed, see [the configuration reference](docs/CONFIGURATION.md).
+`edit_config`, `focus_next_monitor`, `move_to_next_monitor` and their `prev` versions. Every hotkey can
+be changed or removed on the launcher's **Hotkeys** page or in [the configuration reference](docs/CONFIGURATION.md).
 
 ### Mouse
 
@@ -153,6 +179,7 @@ tile-rs.exe --autostart  start silently (what the autostart entry uses)
 tile-rs.exe list         show which windows would be tiled, and why others are not
 tile-rs.exe diagnose     export window diagnostics from the running manager
 tile-rs.exe tile         arrange the current windows once and exit
+tile-rs.exe --restore-windows  bring back windows left off-screen after a crash or a kill
 tile-rs.exe --version
 ```
 
@@ -186,6 +213,8 @@ auto_overflow = true     # a new window goes to the next workspace when this one
 workspace_indicator = true  # minimal dots at the top; click one to switch workspaces
 workspace_indicator_size = "medium" # dot and target size: small, medium, or large
 focus_follows_mouse = false  # focus the tiled window under the pointer when it moves onto it
+smart_gaps = false       # no gaps when a workspace holds a single window
+master_count = 1         # master-stack: windows in the master column (1-8)
 
 [hotkeys]
 focus_left = ["alt+h", "alt+left"]
@@ -212,7 +241,8 @@ Full reference: [docs/CONFIGURATION.md](docs/CONFIGURATION.md).
 | A window is not tiled | Run `tile-rs.exe list` in a terminal: it prints each window and the reason it is skipped (dialog, not resizable, maximized, matched a `float` rule...). |
 | An app misbehaves when tiled | Add a rule with `action = "float"` for it (see the reference). |
 | An app running as administrator ignores tile-rs | Windows does not let a normal program move elevated windows. Start tile-rs as administrator too if you need that. |
-| Windows are gone after a crash | Start tile-rs again: it brings windows that were parked off-screen back. |
+| Windows are gone after a crash | Start tile-rs again: it brings windows that were parked off-screen back. Or run `tile-rs.exe --restore-windows` without starting it. |
+| Windows SmartScreen warns about the installer | The installer is not code-signed yet. Click *More info* → *Run anyway*, or check the `.sha256` file from the release. |
 | Animations stutter on heavy apps | Lower `animation_ms`, or set `animations = false`. |
 | Something else | Tray → *Open log*. |
 
@@ -231,7 +261,7 @@ back when you switch), so they still show up in the taskbar and in `Alt+Tab`.
 - With `grid` and `columns` the tiles are fixed (even) sizes: only the spiral and master-stack can
   be resized by dragging an edge.
 - Do not run it together with another window manager (GlazeWM, Komorebi, ...).
-- The executable is unsigned.
+- The executable and the installer are not code-signed yet.
 
 ## Contributing & versions
 
@@ -245,9 +275,3 @@ Current multi-monitor implementation status and manual verification steps are tr
 [MIT](LICENSE). The settings window is built with [Slint](https://slint.dev) under the Slint
 Royalty-Free Desktop, Mobile and Web Applications License (a "Made with Slint" credit is shown in
 Settings -> Advanced -> About).
-
-## Troubleshooting
-
-If tile-rs is killed (Task Manager, power loss) while windows of other workspaces are parked
-off-screen, they come back the next time tile-rs starts. To bring them back without starting it:
-`tile-rs.exe --restore-windows`.

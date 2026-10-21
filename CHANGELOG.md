@@ -6,6 +6,8 @@ follows [Semantic Versioning](https://semver.org) (see [docs/RELEASING.md](docs/
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-10-21
+
 ### Added
 - Redesigned settings launcher: light soft-dashboard look with white rounded cards, an icon
   sidebar, authored outline icons, pill buttons and the blue accent; the live layout miniature
@@ -21,6 +23,10 @@ follows [Semantic Versioning](https://semver.org) (see [docs/RELEASING.md](docs/
 - Several master windows in master-stack (`master_count`, `master_count_inc` / `master_count_dec`);
   growing a stack window with `grow_width` now narrows the master column.
 - `focus_last` (`alt+z`) and `workspace_back_and_forth` (`alt+shift+z`).
+- `focus_next_monitor`/`focus_prev_monitor` and `move_to_next_monitor`/`move_to_prev_monitor`
+  actions, and a `smart_gaps` option that removes the gaps around a lone window.
+- Suspend animations for 15 s when frames repeatedly take far longer than the frame interval
+  (slow machines), and trim the working set after 20 s of idleness.
 
 ### Changed
 - Resize real application windows during edge and divider gestures, without screenshot overlays.
@@ -33,19 +39,6 @@ follows [Semantic Versioning](https://semver.org) (see [docs/RELEASING.md](docs/
   bursts yield to frame scheduling. Bound retained motion keys and profiling samples.
 - Reuse dependency caches across CI/release jobs, lock dependency resolution in build scripts,
   and reuse the packaged executable when building the release installer.
-
-### Added
-- `focus_next_monitor`/`focus_prev_monitor` and `move_to_next_monitor`/`move_to_prev_monitor`
-  actions, and a `smart_gaps` option that removes the gaps around a lone window.
-- Suspend animations for 15 s when frames repeatedly take far longer than the frame interval
-  (slow machines), and trim the working set after 20 s of idleness.
-
-### Fixed
-- Restore the automatic per-workspace tile limit (derived from the monitor's work area and the
-  minimum tile size, 2 to 8 tiles): with `auto_overflow` on, the next window now opens on the next
-  workspace instead of being squeezed in. The workspace indicator dots are slightly larger.
-
-### Changed
 - Tests that change the shared config now serialize on one lock, so `cargo test` is reliable
   without `--test-threads=1`; the build scripts load the MSVC environment themselves
   (`scripts/vcenv.ps1`).
@@ -58,6 +51,9 @@ follows [Semantic Versioning](https://semver.org) (see [docs/RELEASING.md](docs/
   is below the refresh rate).
 
 ### Fixed
+- Restore the automatic per-workspace tile limit (derived from the monitor's work area and the
+  minimum tile size, 2 to 8 tiles): with `auto_overflow` on, the next window now opens on the next
+  workspace instead of being squeezed in. The workspace indicator dots are slightly larger.
 - Redesign the workspace indicator as a white pill with soft shadows (8 px padding and gap, a
   24x12 capsule for the current workspace, 12x12 dots for the others, an outer ring around the
   current one), anti-aliased and scaled per monitor DPI. Its colours come from the new
@@ -301,7 +297,8 @@ First working prototype.
 - Tray icon with menu, autostart, single-instance guard, first-run dialog.
 - `config.toml`: gap, animations, hotkeys, per-application rules (float / workspace).
 
-[Unreleased]: https://github.com/ponslookspain/tile-rs/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/ponslookspain/tile-rs/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/ponslookspain/tile-rs/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/ponslookspain/tile-rs/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/ponslookspain/tile-rs/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/ponslookspain/tile-rs/compare/v0.2.0...v0.3.0

@@ -1,6 +1,6 @@
 [package]
 name = "tile-rs"
-version = "0.5.0"
+version = "0.6.0"
 edition = "2021"
 description = "A small spiral tiling window manager for Windows 10/11 with workspaces, animations and a tray icon"
 license = "MIT"
