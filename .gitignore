@@ -24,3 +24,6 @@
 .idea/
 Thumbs.db
 desktop.ini
+
+# Design review captures (regenerated locally)
+/.impeccable/review/

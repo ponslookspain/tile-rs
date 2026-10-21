@@ -193,6 +193,38 @@ pub fn conflicts(rows: &[Row]) -> Vec<bool> {
     flags
 }
 
+/// A combination as people read it: `alt+shift+left` -> `Alt + Shift + ←`.
+pub fn display_spec(spec: &str) -> String {
+    spec.split('+')
+        .map(|part| match part.trim().to_ascii_lowercase().as_str() {
+            "alt" => "Alt".to_string(),
+            "ctrl" | "control" => "Ctrl".to_string(),
+            "shift" => "Shift".to_string(),
+            "win" | "super" | "meta" => "Win".to_string(),
+            "left" => "←".to_string(),
+            "right" => "→".to_string(),
+            "up" => "↑".to_string(),
+            "down" => "↓".to_string(),
+            "plus" => "+".to_string(),
+            "minus" => "−".to_string(),
+            "comma" => ",".to_string(),
+            "period" => ".".to_string(),
+            "numpad_add" => "Num +".to_string(),
+            "numpad_subtract" => "Num −".to_string(),
+            "esc" | "escape" => "Esc".to_string(),
+            "enter" | "return" => "Enter".to_string(),
+            other => {
+                let mut chars = other.chars();
+                match chars.next() {
+                    Some(first) => first.to_uppercase().chain(chars).collect(),
+                    None => String::new(),
+                }
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" + ")
+}
+
 /// What a key press means while a hotkey is being recorded.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Capture {
@@ -267,34 +299,34 @@ pub fn capture_key(text: &str, alt: bool, ctrl: bool, shift: bool, meta: bool) -
 pub fn rule_label(rule: &Rule) -> String {
     let mut who: Vec<String> = Vec::new();
     if let Some(p) = &rule.process {
-        who.push(format!("программа {p}"));
+        who.push(format!("{p}.exe"));
     }
     if let Some(c) = &rule.class {
-        who.push(format!("класс {c}"));
+        who.push(format!("окна класса {c}"));
     }
     if let Some(t) = &rule.title {
-        who.push(format!("заголовок «{t}»"));
+        who.push(format!("окна «{t}»"));
     }
     let who = if who.is_empty() {
-        "любое окно".to_string()
+        "Любое окно".to_string()
     } else {
         who.join(", ")
     };
     let mut what: Vec<String> = Vec::new();
     match rule.action.as_deref() {
-        Some("float") => what.push("не трогать (плавающее)".into()),
+        Some("float") => what.push("плавающее окно".into()),
         Some("tile") => what.push("всегда в раскладке".into()),
-        Some("ignore") => what.push("игнорировать".into()),
+        Some("ignore") => what.push("не управляется".into()),
         Some(other) => what.push(other.to_string()),
         None => {}
     }
     if let Some(ws) = rule.workspace {
-        what.push(format!("открывать на столе {ws}"));
+        what.push(format!("рабочий стол {ws}"));
     }
     if what.is_empty() {
         what.push("без действия".into());
     }
-    format!("{who} → {}", what.join(", "))
+    format!("{who}  ·  {}", what.join(", "))
 }
 
 fn quoted(s: &str) -> String {
@@ -390,6 +422,14 @@ mod tests {
             conflicts(&rows).iter().all(|c| !c),
             "defaults must not clash"
         );
+    }
+
+    #[test]
+    fn combinations_are_shown_readably() {
+        assert_eq!(display_spec("alt+shift+left"), "Alt + Shift + ←");
+        assert_eq!(display_spec("ctrl+alt+l"), "Ctrl + Alt + L");
+        assert_eq!(display_spec("alt+numpad_add"), "Alt + Num +");
+        assert_eq!(display_spec("f5"), "F5");
     }
 
     #[test]

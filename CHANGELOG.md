@@ -7,6 +7,9 @@ follows [Semantic Versioning](https://semver.org) (see [docs/RELEASING.md](docs/
 ## [Unreleased]
 
 ### Added
+- Redesigned settings launcher: light soft-dashboard look with white rounded cards, an icon
+  sidebar, authored outline icons, pill buttons and the blue accent; the live layout miniature
+  follows the layout, gap and master count; one keycap per hotkey binding; light window caption.
 - Settings launcher: hotkey editor (record a combination by pressing it, add a second one, clear,
   reset all, conflict warnings), application rules editor with a picker of running windows, `smart_gaps`
   and `master_count` settings, an unsaved-changes indicator and a one-time welcome card with the

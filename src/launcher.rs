@@ -123,13 +123,34 @@ pub fn run() {
         }
     };
     populate(&ui, &cfg);
+    ui.global::<ColorParser>()
+        .on_parse(|text| parse_hex_color(text.as_str()));
 
     ui.set_app_version(env!("CARGO_PKG_VERSION").into());
     if std::env::args().any(|arg| arg == "--updates") {
         ui.set_page(7);
     }
+    // `--page N` opens a given page (used for design previews and screenshots).
+    let args: Vec<String> = std::env::args().collect();
+    if let Some(page) = args
+        .windows(2)
+        .find(|pair| pair[0] == "--page")
+        .and_then(|pair| pair[1].parse::<i32>().ok())
+    {
+        ui.set_page(page.clamp(0, 7));
+    }
     wire_updates(&ui);
     wire_editors(&ui);
+    // The launcher is light-only: keep the caption light even when Windows uses dark mode.
+    slint::Timer::single_shot(Duration::from_millis(60), light_caption);
+    if std::env::args().any(|arg| arg == "--preview-dirty") {
+        let weak = ui.as_weak();
+        slint::Timer::single_shot(Duration::from_millis(700), move || {
+            if let Some(ui) = weak.upgrade() {
+                ui.set_inner_gap("12".into());
+            }
+        });
+    }
     ui.on_open_github(|| {
         crate::tray::open("https://github.com/ponslookspain/tile-rs", "");
     });
@@ -192,6 +213,22 @@ pub fn run() {
         unsafe {
             let _ = CloseHandle(mutex);
         }
+    }
+}
+
+fn light_caption() {
+    use windows::Win32::Graphics::Dwm::{DwmSetWindowAttribute, DWMWA_USE_IMMERSIVE_DARK_MODE};
+    let Ok(hwnd) = (unsafe { FindWindowW(PCWSTR::null(), LAUNCHER_TITLE) }) else {
+        return;
+    };
+    let dark: i32 = 0; // FALSE
+    unsafe {
+        let _ = DwmSetWindowAttribute(
+            hwnd,
+            DWMWA_USE_IMMERSIVE_DARK_MODE,
+            &dark as *const i32 as *const _,
+            std::mem::size_of::<i32>() as u32,
+        );
     }
 }
 
@@ -273,7 +310,7 @@ fn populate(ui: &MainWindow, cfg: &config::Config) {
     ui.set_media_windows(i32::from(cfg.media_windows == MediaWindows::Tile));
     ui.set_smart_gaps(cfg.smart_gaps);
     ui.set_master_count(cfg.master_count.to_string().into());
-    ui.set_status(format!("Настройки загружены · версия {}", env!("CARGO_PKG_VERSION")).into());
+    ui.set_status("".into()); // empty: the header shows the page subtitle
 }
 
 /// UI state stays on Slint's thread; only network and installer work run on workers.
@@ -375,6 +412,15 @@ fn easing_name(easing: crate::geometry::Easing) -> &'static str {
     }
 }
 
+/// "#RRGGBB" -> colour for the swatches; anything else is transparent.
+fn parse_hex_color(text: &str) -> slint::Color {
+    let hex = text.trim().trim_start_matches('#');
+    match (hex.len(), u32::from_str_radix(hex, 16)) {
+        (6, Ok(v)) => slint::Color::from_rgb_u8((v >> 16) as u8, (v >> 8) as u8, v as u8),
+        _ => slint::Color::from_argb_u8(0, 0, 0, 0),
+    }
+}
+
 /// Where the "welcome" card remembers that it was shown.
 fn welcome_marker() -> std::path::PathBuf {
     config::config_path().with_file_name("welcome-shown")
@@ -401,10 +447,16 @@ fn push_rows(ui: &MainWindow, editor: &Editor) {
             action: row.action.clone().into(),
             label: row.label.clone().into(),
             group: row.group.clone().into(),
-            keys: row.keys.join(",  ").into(),
+            keys: ModelRc::new(VecModel::from(
+                row.keys
+                    .iter()
+                    .map(|k| SharedString::from(launcher_model::display_spec(k)))
+                    .collect::<Vec<_>>(),
+            )),
             conflict,
         })
         .collect();
+    ui.set_hotkeys_bound(editor.rows.iter().filter(|r| !r.keys.is_empty()).count() as i32);
     ui.set_hotkey_rows(ModelRc::new(VecModel::from(rows)));
 }
 
@@ -422,8 +474,8 @@ fn push_apps(ui: &MainWindow, editor: &Editor) {
         .apps
         .iter()
         .map(|(process, _, title)| {
-            let title: String = title.chars().take(48).collect();
-            format!("{process} — {title}").into()
+            let title: String = title.chars().take(44).collect();
+            format!("{title}  ·  {process}.exe").into()
         })
         .collect();
     ui.set_app_choices(ModelRc::new(VecModel::from(choices)));

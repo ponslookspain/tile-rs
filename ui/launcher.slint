@@ -1,184 +1,512 @@
-import { ComboBox, LineEdit, TextEdit, ScrollView, AboutSlint } from "std-widgets.slint";
+import { ScrollView, AboutSlint, Palette } from "std-widgets.slint";
 
-// Shared native UI tokens; motion follows the animation preference.
+// Light, soft theme: lavender-grey canvas, white cards, the product's blue accent.
 export global AppTheme {
     in-out property <bool> motion: true;
-    out property <color> accent: #64dfb4;
-    out property <color> canvas: #0d1218;
-    out property <color> surface: #151d26;
-    out property <color> muted: #a2b0bf;
+    out property <color> canvas: #eef1f8;
+    out property <color> surface: #ffffff;
+    out property <color> sunken: #f4f6fb;
+    out property <color> line: #e3e8f2;
+    out property <color> ink: #1d2433;
+    out property <color> ink-2: #556075;
+    out property <color> muted: #687287;
+    out property <color> accent: #008cff;
+    out property <color> accent-strong: #0070e0;
+    out property <color> accent-strong-hover: #0062c7;
+    out property <color> accent-soft: #e6f2ff;
+    out property <color> accent-soft-hover: #d6eaff;
+    out property <color> accent-ink: #005fc0;
+    out property <color> danger: #d93d42;
+    out property <color> danger-soft: #fdeeee;
+    out property <color> warn-ink: #8a5300;
+    out property <color> warn-soft: #fff3dc;
+    out property <color> success-ink: #137a47;
+    out property <color> success-soft: #e3f6ec;
+    out property <color> shadow: #22325a1a;
+    out property <duration> quick: 140ms;
 }
 
 export struct HotkeyRowData {
     action: string,
     label: string,
     group: string,
-    keys: string,
+    keys: [string],
     conflict: bool,
+}
+
+component Icon inherits Image {
+    in property <color> tint: AppTheme.ink-2;
+    width: 18px;
+    height: 18px;
+    colorize: tint;
+    image-fit: contain;
+}
+
+// White card with a soft, offset shadow.
+component Card inherits Rectangle {
+    in property <length> card-height: 120px;
+    height: card-height;
+    border-radius: 18px;
+    background: AppTheme.surface;
+    border-width: 1px;
+    border-color: #e8ecf4;
+    drop-shadow-offset-y: 6px;
+    drop-shadow-blur: 22px;
+    drop-shadow-color: AppTheme.shadow;
+}
+
+component CardTitle inherits HorizontalLayout {
+    in property <string> title;
+    in property <string> subtitle: "";
+    in property <image> icon;
+    spacing: 12px;
+    height: subtitle == "" ? 36px : 40px;
+    Rectangle {
+        width: 36px;
+        height: 36px;
+        border-radius: 12px;
+        background: AppTheme.accent-soft;
+        Icon { source: icon; tint: AppTheme.accent; }
+    }
+    VerticalLayout {
+        alignment: center;
+        spacing: 1px;
+        Text { text: title; color: AppTheme.ink; font-size: 15px; font-weight: 600; }
+        if subtitle != "": Text { text: subtitle; color: AppTheme.ink-2; font-size: 12px; overflow: elide; }
+    }
 }
 
 component NavItem inherits Rectangle {
     in property <string> title;
+    in property <image> icon;
     in property <bool> selected: false;
+    in property <bool> badge: false;
     callback activated();
     height: 42px;
-    border-radius: 8px;
-    background: selected ? #203b38 : (touch.has-hover ? #1b2632 : transparent);
-    border-width: 1px;
-    border-color: focus.has-focus ? AppTheme.accent : transparent;
-    animate background { duration: AppTheme.motion ? 140ms : 0ms; }
+    border-radius: 12px;
+    background: selected ? AppTheme.accent-soft : (touch.has-hover ? AppTheme.sunken : transparent);
+    border-width: focus.has-focus ? 2px : 0px;
+    border-color: AppTheme.accent;
+    animate background { duration: AppTheme.motion ? AppTheme.quick : 0ms; }
     accessible-role: button;
     accessible-label: title;
     accessible-action-default => { root.activated(); }
     forward-focus: focus;
-    Rectangle { x: 0px; y: 12px; width: 3px; height: 18px; border-radius: 2px; background: selected ? AppTheme.accent : transparent; }
-    Text { x: 15px; height: parent.height; vertical-alignment: center; color: selected ? #a4f5d9 : #a2b0bf; font-size: 13px; font-weight: selected ? 600 : 400; text: title; }
+    HorizontalLayout {
+        padding-left: 14px;
+        padding-right: 12px;
+        spacing: 12px;
+        Icon { y: (parent.height - self.height) / 2; source: icon; tint: selected ? AppTheme.accent : AppTheme.muted; }
+        Text { text: title; color: selected ? AppTheme.accent-ink : AppTheme.ink-2; font-size: 13px; font-weight: selected ? 600 : 400; vertical-alignment: center; horizontal-stretch: 1; }
+        if badge: Rectangle { y: (parent.height - 8px) / 2; width: 8px; height: 8px; border-radius: 4px; background: AppTheme.accent; }
+    }
     focus := FocusScope { key-pressed(event) => { if (event.text == Key.Return || event.text == " ") { root.activated(); return accept; } return reject; } }
     touch := TouchArea { mouse-cursor: pointer; clicked => { focus.focus(); root.activated(); } }
 }
 
+// kind: 0 secondary, 1 primary, 2 ghost, 3 danger ghost
 component ActionButton inherits Rectangle {
     in property <string> label;
+    in property <image> icon;
+    in property <bool> has-icon: false;
+    in property <int> kind: 0;
     in property <bool> primary: false;
     in property <bool> enabled: true;
+    in property <bool> compact: false;
     in property <length> button-width: 126px;
     callback activated();
+    property <int> k: primary ? 1 : kind;
     width: button-width;
-    height: 36px;
-    border-radius: 8px;
-    opacity: enabled ? 1 : 0.45;
-    background: primary ? (touch.pressed ? #39b98d : (touch.has-hover ? #8bf0cb : AppTheme.accent)) : (touch.pressed ? #263747 : (touch.has-hover ? #24313f : #1a2531));
-    border-width: 1px;
-    border-color: focus.has-focus ? #c0ffea : (primary ? AppTheme.accent : #344454);
-    animate background, border-color { duration: AppTheme.motion ? 130ms : 0ms; }
+    height: compact ? 32px : 38px;
+    border-radius: self.height / 2;
+    opacity: enabled ? 1 : 0.5;
+    background: k == 1 ? (touch.pressed ? AppTheme.accent-strong-hover : (touch.has-hover ? AppTheme.accent-strong-hover : AppTheme.accent-strong))
+        : k == 0 ? (touch.pressed ? AppTheme.accent-soft-hover : (touch.has-hover ? AppTheme.accent-soft : AppTheme.surface))
+        : k == 3 ? (touch.has-hover ? AppTheme.danger-soft : transparent)
+        : (touch.has-hover ? AppTheme.sunken : transparent);
+    border-width: k == 0 ? 1px : 0px;
+    border-color: touch.has-hover ? #b9d9fb : AppTheme.line;
+    drop-shadow-offset-y: k == 1 ? 4px : 0px;
+    drop-shadow-blur: k == 1 ? 12px : 0px;
+    drop-shadow-color: #0070e040;
+    animate background, border-color { duration: AppTheme.motion ? AppTheme.quick : 0ms; }
     accessible-role: button;
     accessible-label: label;
     accessible-action-default => { if (root.enabled) { root.activated(); } }
     forward-focus: focus;
-    Text { text: label; color: primary ? #09271d : #e3ecf5; font-size: 12px; font-weight: 600; horizontal-alignment: center; vertical-alignment: center; }
+    HorizontalLayout {
+        alignment: center;
+        spacing: 8px;
+        if has-icon: Icon {
+            y: (parent.height - self.height) / 2;
+            width: 16px;
+            height: 16px;
+            source: icon;
+            tint: k == 1 ? #ffffff : (k == 3 ? AppTheme.danger : AppTheme.accent-ink);
+        }
+        Text {
+            text: label;
+            color: k == 1 ? #ffffff : (k == 3 ? AppTheme.danger : (k == 2 ? AppTheme.ink-2 : AppTheme.accent-ink));
+            font-size: 13px;
+            font-weight: 600;
+            vertical-alignment: center;
+        }
+    }
+    Rectangle {
+        border-radius: parent.border-radius;
+        border-width: focus.has-focus ? 2px : 0px;
+        border-color: k == 1 ? #9ccdff : AppTheme.accent;
+    }
     focus := FocusScope { enabled: root.enabled; key-pressed(event) => { if (event.text == Key.Return || event.text == " ") { root.activated(); return accept; } return reject; } }
     touch := TouchArea { enabled: root.enabled; mouse-cursor: pointer; clicked => { focus.focus(); root.activated(); } }
 }
 
+component IconButton inherits Rectangle {
+    in property <image> icon;
+    in property <string> label;
+    in property <bool> danger: false;
+    callback activated();
+    width: 34px;
+    height: 34px;
+    border-radius: 17px;
+    background: touch.has-hover ? (danger ? AppTheme.danger-soft : AppTheme.accent-soft) : transparent;
+    animate background { duration: AppTheme.motion ? AppTheme.quick : 0ms; }
+    accessible-role: button;
+    accessible-label: label;
+    accessible-action-default => { root.activated(); }
+    forward-focus: focus;
+    Icon { source: icon; tint: touch.has-hover ? (danger ? AppTheme.danger : AppTheme.accent-ink) : AppTheme.muted; }
+    Rectangle { border-radius: parent.border-radius; border-width: focus.has-focus ? 2px : 0px; border-color: AppTheme.accent; }
+    focus := FocusScope { key-pressed(event) => { if (event.text == Key.Return || event.text == " ") { root.activated(); return accept; } return reject; } }
+    touch := TouchArea { mouse-cursor: pointer; clicked => { focus.focus(); root.activated(); } }
+}
+
+component Switch inherits Rectangle {
+    in property <bool> checked;
+    width: 42px;
+    height: 24px;
+    border-radius: 12px;
+    background: checked ? AppTheme.accent : #cdd4e2;
+    animate background { duration: AppTheme.motion ? 160ms : 0ms; }
+    Rectangle {
+        x: checked ? 21px : 3px;
+        y: 3px;
+        width: 18px;
+        height: 18px;
+        border-radius: 9px;
+        background: #ffffff;
+        drop-shadow-offset-y: 1px;
+        drop-shadow-blur: 3px;
+        drop-shadow-color: #1d243340;
+        animate x { duration: AppTheme.motion ? 180ms : 0ms; easing: cubic-bezier(0.22, 1, 0.36, 1); }
+    }
+}
+
 component ToggleRow inherits Rectangle {
     in property <string> label;
+    in property <string> hint: "";
     in property <bool> checked: false;
     callback changed(bool);
-    height: 36px;
-    border-radius: 6px;
-    background: touch.has-hover ? #1b2833 : transparent;
-    border-width: 1px;
-    border-color: focus.has-focus ? AppTheme.accent : transparent;
+    height: hint == "" ? 44px : 54px;
+    border-radius: 12px;
+    background: touch.has-hover ? AppTheme.sunken : transparent;
     accessible-role: checkbox;
     accessible-label: label;
     accessible-checked: checked;
     accessible-action-default => { root.changed(!root.checked); }
     forward-focus: focus;
     HorizontalLayout {
-        padding-left: 2px;
-        padding-right: 4px;
-        spacing: 10px;
-        Text { text: label; color: #cbd6e2; font-size: 12px; vertical-alignment: center; horizontal-stretch: 1; wrap: word-wrap; }
-        Rectangle {
-            width: 34px; height: 20px; border-radius: 10px;
-            background: checked ? AppTheme.accent : #344454;
-            animate background { duration: AppTheme.motion ? 160ms : 0ms; }
-            Rectangle {
-                x: checked ? 17px : 3px; y: 3px; width: 14px; height: 14px; border-radius: 7px;
-                background: checked ? #0d3024 : #c2cedb;
-                animate x { duration: AppTheme.motion ? 160ms : 0ms; easing: ease-out; }
-            }
+        padding-left: 10px;
+        padding-right: 10px;
+        spacing: 14px;
+        VerticalLayout {
+            alignment: center;
+            horizontal-stretch: 1;
+            spacing: 2px;
+            Text { text: label; color: AppTheme.ink; font-size: 13px; wrap: word-wrap; }
+            if hint != "": Text { text: hint; color: AppTheme.muted; font-size: 12px; overflow: elide; }
         }
+        Switch { y: (parent.height - self.height) / 2; checked: root.checked; }
     }
+    Rectangle { border-radius: parent.border-radius; border-width: focus.has-focus ? 2px : 0px; border-color: AppTheme.accent; }
     focus := FocusScope { key-pressed(event) => { if (event.text == Key.Return || event.text == " ") { root.changed(!root.checked); return accept; } return reject; } }
     touch := TouchArea { mouse-cursor: pointer; clicked => { focus.focus(); root.changed(!root.checked); } }
 }
 
-component SettingCard inherits Rectangle {
-    in property <string> title;
-    in property <string> description: "";
-    in property <length> card-height: 130px;
-    height: card-height;
-    border-radius: 12px;
-    background: AppTheme.surface;
-    border-width: 1px;
-    border-color: #293645;
-}
-
-// Four actual arrangements, used both in selectors and the interactive preview.
-component LayoutPreview inherits Rectangle {
-    in property <int> mode: 0;
-    in property <bool> active: true;
-    background: #0f171f;
-    border-radius: 6px;
-    for tile[i] in [0, 1, 2, 3]: Rectangle {
-        property <float> tile-x: mode == 3 ? i * 0.25 : (mode == 2 ? mod(i, 2) * 0.5 : (i == 0 ? 0 : (mode == 0 && i == 3 ? 0.75 : 0.5)));
-        property <float> tile-y: mode == 3 ? 0 : (mode == 2 ? floor(i / 2) * 0.5 : (i == 0 ? 0 : (mode == 1 ? (i - 1) / 3 : (i == 1 ? 0 : 0.5))));
-        property <float> tile-w: mode == 3 ? 0.25 : (mode == 0 && i >= 2 ? 0.25 : 0.5);
-        property <float> tile-h: mode == 3 || (mode != 2 && i == 0) ? 1 : (mode == 1 ? 1 / 3 : 0.5);
-        x: 5px + tile-x * (root.width - 10px);
-        y: 5px + tile-y * (root.height - 10px);
-        width: tile-w * (root.width - 10px) - 3px;
-        height: tile-h * (root.height - 10px) - 3px;
-        border-radius: 3px;
-        background: active ? (i == 0 ? #64dfb4 : (i == 1 ? #3d927e : #295c56)) : #344758;
-        animate x, y, width, height, background { duration: AppTheme.motion ? 240ms : 0ms; easing: ease-in-out; }
+// Authored text field: soft fill, rounded, blue focus ring.
+component TextField inherits Rectangle {
+    in-out property <string> text;
+    in property <TextHorizontalAlignment> align: center;
+    height: 36px;
+    border-radius: 10px;
+    background: input.has-focus ? AppTheme.surface : AppTheme.sunken;
+    border-width: input.has-focus ? 2px : 1px;
+    border-color: input.has-focus ? AppTheme.accent : (hover.has-hover ? #c9d3e4 : AppTheme.line);
+    animate background, border-color { duration: AppTheme.motion ? AppTheme.quick : 0ms; }
+    hover := TouchArea { mouse-cursor: MouseCursor.text; clicked => { input.focus(); } }
+    input := TextInput {
+        x: 12px;
+        width: parent.width - 24px;
+        height: parent.height;
+        vertical-alignment: center;
+        horizontal-alignment: root.align;
+        text <=> root.text;
+        color: AppTheme.ink;
+        font-size: 13px;
+        selection-background-color: #bcdcff;
+        selection-foreground-color: AppTheme.ink;
+        single-line: true;
     }
 }
 
-component NumberField inherits Rectangle {
-    in property <string> label;
-    in-out property <string> value;
-    in property <length> field-width: 90px;
-    preferred-width: field-width;
-    min-width: field-width;
-    max-width: field-width;
-    height: label == "" ? 32px : 56px;
-    VerticalLayout {
-        spacing: 5px;
-        if label != "": Text { text: label; color: AppTheme.muted; font-size: 12px; height: 18px; }
-        LineEdit {
-            min-width: 0px;
-            preferred-width: field-width;
-            max-width: field-width;
-            text: value;
-            height: 30px;
-            edited(text) => { value = text; }
+// Authored drop-down: a pill showing the choice, a soft popup list.
+component Select inherits Rectangle {
+    in property <[string]> model;
+    in-out property <int> current-index: 0;
+    in property <string> placeholder: "Нет вариантов";
+    height: 38px;
+    border-radius: 12px;
+    background: AppTheme.surface;
+    border-width: 1px;
+    border-color: touch.has-hover ? #b9d9fb : AppTheme.line;
+    animate border-color { duration: AppTheme.motion ? AppTheme.quick : 0ms; }
+    accessible-role: combobox;
+    accessible-value: model.length > 0 ? model[current-index] : placeholder;
+    HorizontalLayout {
+        padding-left: 14px;
+        padding-right: 10px;
+        spacing: 8px;
+        Text { text: model.length > 0 ? model[current-index] : placeholder; color: model.length > 0 ? AppTheme.ink : AppTheme.muted; font-size: 13px; vertical-alignment: center; horizontal-stretch: 1; overflow: elide; }
+        Icon { y: (parent.height - self.height) / 2; width: 16px; height: 16px; source: @image-url("icons/chevron-down.svg"); tint: AppTheme.muted; }
+    }
+    touch := TouchArea { mouse-cursor: pointer; clicked => { if (model.length > 0) { popup.show(); } } }
+    popup := PopupWindow {
+        x: 0px;
+        y: root.height + 6px;
+        width: root.width;
+        height: min(model.length * 38px + 12px, 304px);
+        Rectangle {
+            border-radius: 14px;
+            background: AppTheme.surface;
+            border-width: 1px;
+            border-color: AppTheme.line;
+            drop-shadow-offset-y: 10px;
+            drop-shadow-blur: 28px;
+            drop-shadow-color: #22325a26;
+            Flickable {
+                content-height: model.length * 38px + 12px;
+                VerticalLayout {
+                    padding: 6px;
+                    for option[index] in model: Rectangle {
+                        height: 38px;
+                        border-radius: 10px;
+                        background: index == current-index ? AppTheme.accent-soft : (option-touch.has-hover ? AppTheme.sunken : transparent);
+                        Text { x: 10px; width: parent.width - 20px; height: parent.height; text: option; color: index == current-index ? AppTheme.accent-ink : AppTheme.ink; font-size: 13px; font-weight: index == current-index ? 600 : 400; vertical-alignment: center; overflow: elide; }
+                        option-touch := TouchArea { mouse-cursor: pointer; clicked => { current-index = index; popup.close(); } }
+                    }
+                }
+            }
         }
     }
 }
 
+// A number or text setting: label on the left, a compact field on the right.
+component FieldRow inherits HorizontalLayout {
+    in property <string> label;
+    in property <string> hint: "";
+    in-out property <string> value;
+    in property <length> field-width: 96px;
+    height: hint == "" ? 44px : 54px;
+    padding-left: 10px;
+    padding-right: 10px;
+    spacing: 14px;
+    VerticalLayout {
+        alignment: center;
+        horizontal-stretch: 1;
+        spacing: 2px;
+        Text { text: label; color: AppTheme.ink; font-size: 13px; }
+        if hint != "": Text { text: hint; color: AppTheme.muted; font-size: 12px; overflow: elide; }
+    }
+    TextField {
+        y: (parent.height - self.height) / 2;
+        width: field-width;
+        text <=> value;
+    }
+}
+
+component Divider inherits Rectangle {
+    height: 1px;
+    background: AppTheme.line;
+}
+
+// Four windows arranged the way the chosen layout arranges them; it follows the gap and the
+// master-column count, and animates between layouts.
+component LayoutPreview inherits Rectangle {
+    in property <int> mode: 0;
+    in property <bool> filled: false;
+    in property <int> masters: 1;
+    in property <length> gap: 4px;
+    in property <length> pad: 6px;
+    property <int> m: clamp(masters, 1, 4);
+    border-radius: 10px;
+    background: filled ? transparent : AppTheme.sunken;
+    for tile[i] in [0, 1, 2, 3]: Rectangle {
+        property <float> tx: mode == 3 ? i * 0.25 : (mode == 2 ? mod(i, 2) * 0.5 : (mode == 1 ? ((m >= 4 || i < m) ? 0 : 0.5) : (i == 0 ? 0 : (i == 3 ? 0.75 : 0.5))));
+        property <float> tw: mode == 3 ? 0.25 : (mode == 2 ? 0.5 : (mode == 1 ? (m >= 4 ? 1 : 0.5) : (i >= 2 ? 0.25 : 0.5)));
+        property <float> ty: mode == 3 ? 0 : (mode == 2 ? floor(i / 2) * 0.5 : (mode == 1 ? (m >= 4 ? i / 4 : (i < m ? i / m : (i - m) / (4 - m))) : (i <= 1 ? 0 : 0.5)));
+        property <float> th: mode == 3 ? 1 : (mode == 2 ? 0.5 : (mode == 1 ? (m >= 4 ? 0.25 : (i < m ? 1 / m : 1 / (4 - m))) : (i == 0 ? 1 : 0.5)));
+        property <length> span-w: root.width - 2 * root.pad + root.gap;
+        property <length> span-h: root.height - 2 * root.pad + root.gap;
+        x: root.pad + tx * span-w;
+        y: root.pad + ty * span-h;
+        width: max(2px, tw * span-w - root.gap);
+        height: max(2px, th * span-h - root.gap);
+        border-radius: 5px;
+        background: filled ? (i == 0 ? #ffffff : (i == 1 ? #ffffffd9 : #ffffffa6)) : (i == 0 ? AppTheme.accent : (i == 1 ? #5cb3ff : #a9d5ff));
+        animate x, y, width, height { duration: AppTheme.motion ? 260ms : 0ms; easing: cubic-bezier(0.65, 0, 0.35, 1); }
+    }
+}
+
+// Proportion ring for a real ratio (value of total).
+component Ring inherits Rectangle {
+    in property <float> fraction: 0;
+    in property <string> center-text;
+    width: 64px;
+    height: 64px;
+    property <float> f: clamp(fraction, 0, 0.9999);
+    Rectangle { border-radius: self.width / 2; border-width: 6px; border-color: AppTheme.accent-soft; }
+    if f > 0.001: Path {
+        width: parent.width;
+        height: parent.height;
+        viewbox-width: 64;
+        viewbox-height: 64;
+        stroke: AppTheme.accent;
+        stroke-width: 6px;
+        MoveTo { x: 32; y: 3; }
+        ArcTo {
+            x: 32 + 29 * sin(f * 360deg);
+            y: 32 - 29 * cos(f * 360deg);
+            radius-x: 29;
+            radius-y: 29;
+            large-arc: f > 0.5;
+            sweep: true;
+        }
+    }
+    Text { text: center-text; color: AppTheme.ink; font-size: 16px; font-weight: 600; horizontal-alignment: center; vertical-alignment: center; }
+}
+
+component StatCard inherits Card {
+    in property <string> title;
+    in property <string> caption;
+    in property <float> fraction: -1;
+    in property <string> value;
+    card-height: 96px;
+    HorizontalLayout {
+        padding-left: 18px;
+        padding-right: 16px;
+        spacing: 12px;
+        VerticalLayout {
+            alignment: center;
+            horizontal-stretch: 1;
+            spacing: 3px;
+            Text { text: title; color: AppTheme.ink; font-size: 13px; font-weight: 600; wrap: word-wrap; }
+            Text { text: caption; color: AppTheme.muted; font-size: 12px; wrap: word-wrap; }
+        }
+        if fraction >= 0: Ring { y: (parent.height - self.height) / 2; fraction: root.fraction; center-text: root.value; }
+        if fraction < 0: Rectangle {
+            y: (parent.height - self.height) / 2;
+            width: 64px;
+            height: 64px;
+            border-radius: 32px;
+            background: AppTheme.accent-soft;
+            Text { text: root.value; color: AppTheme.accent-ink; font-size: 16px; font-weight: 600; horizontal-alignment: center; vertical-alignment: center; }
+        }
+    }
+}
+
+// Segmented choice: one rounded track, the chosen segment raised.
+component Segmented inherits Rectangle {
+    in property <[string]> options;
+    in-out property <int> current: 0;
+    in property <length> segment-width: 110px;
+    width: options.length * segment-width + 8px;
+    height: 40px;
+    border-radius: 20px;
+    background: AppTheme.sunken;
+    for option[index] in options: Rectangle {
+        x: 4px + index * segment-width;
+        y: 4px;
+        width: segment-width;
+        height: 32px;
+        border-radius: 16px;
+        background: current == index ? AppTheme.surface : transparent;
+        drop-shadow-offset-y: current == index ? 2px : 0px;
+        drop-shadow-blur: current == index ? 6px : 0px;
+        drop-shadow-color: AppTheme.shadow;
+        animate background { duration: AppTheme.motion ? AppTheme.quick : 0ms; }
+        accessible-role: button;
+        accessible-label: option;
+        Text { text: option; color: current == index ? AppTheme.accent-ink : AppTheme.ink-2; font-size: 12px; font-weight: current == index ? 600 : 400; horizontal-alignment: center; vertical-alignment: center; }
+        TouchArea { mouse-cursor: pointer; clicked => { current = index; } }
+    }
+}
+
+component Stepper inherits Rectangle {
+    in-out property <string> value;
+    in property <int> minimum: 1;
+    in property <int> maximum: 8;
+    property <int> number: clamp(round(value.to-float()), minimum, maximum);
+    width: 124px;
+    height: 38px;
+    border-radius: 19px;
+    background: AppTheme.sunken;
+    HorizontalLayout {
+        padding: 2px;
+        IconButton { icon: @image-url("icons/minus.svg"); label: "Меньше"; activated => { value = "" + max(minimum, number - 1); } }
+        Text { text: number; color: AppTheme.ink; font-size: 15px; font-weight: 600; horizontal-alignment: center; vertical-alignment: center; horizontal-stretch: 1; }
+        IconButton { icon: @image-url("icons/plus.svg"); label: "Больше"; activated => { value = "" + min(maximum, number + 1); } }
+    }
+}
+
+// Parses "#RRGGBB" (Rust side); an invalid value shows as transparent.
+export global ColorParser {
+    pure callback parse(string) -> color;
+}
+
+component Swatch inherits Rectangle {
+    in property <string> hex;
+    width: 34px;
+    height: 34px;
+    border-radius: 10px;
+    border-width: 1px;
+    border-color: #0000001a;
+    background: ColorParser.parse(hex);
+}
+
 component DotCell inherits Rectangle {
     in property <int> state: 0; // 0 empty, 1 occupied, 2 active
-    in property <length> diameter: 14px;
-    callback activated();
-    width: 32px;
-    height: 32px;
-    background: transparent;
+    in property <length> diameter: 8px;
+    width: 28px;
+    height: 28px;
     Rectangle {
-        x: (parent.width - diameter - 6px) / 2;
-        y: (parent.height - diameter - 6px) / 2;
         width: diameter + 6px;
         height: diameter + 6px;
         border-radius: (diameter + 6px) / 2;
-        background: state == 2 ? #b7dcff : (state == 1 ? #183e63 : transparent);
+        background: state == 2 ? #b7dcff : transparent;
     }
     Rectangle {
-        x: (parent.width - diameter) / 2;
-        y: (parent.height - diameter) / 2;
         width: diameter;
         height: diameter;
         border-radius: diameter / 2;
-        background: state == 2 ? #278ff5 : (state == 1 ? #2780d8 : #48515a);
+        background: state == 2 ? AppTheme.accent : (state == 1 ? #7cbcf5 : #c3cad8);
     }
-    TouchArea { clicked => { root.activated(); } }
 }
 
 export component MainWindow inherits Window {
     title: "tile-rs Settings";
     default-font-family: "Segoe UI";
-    preferred-width: 1120px;
-    preferred-height: 800px;
+    preferred-width: 1180px;
+    preferred-height: 820px;
     min-width: 1000px;
     min-height: 640px;
     background: AppTheme.canvas;
@@ -209,6 +537,7 @@ export component MainWindow inherits Window {
     in-out property <string> master_count: "1";
     // hotkey editor: one row per action; `recording` is the row waiting for a key press (-1: none)
     in-out property <[HotkeyRowData]> hotkey_rows;
+    in-out property <int> hotkeys_bound: 0;
     in-out property <int> recording: -1;
     in-out property <bool> recording_append: false;
     // application rules: readable descriptions, and the running windows a rule can be made from
@@ -216,7 +545,7 @@ export component MainWindow inherits Window {
     in-out property <[string]> app_choices;
     in-out property <int> rule_app_index: 0;
     in-out property <int> rule_kind_index: 0;
-    property <[string]> rule_kinds: ["Не тайлить (плавающее окно)", "Открывать на рабочем столе 1", "Открывать на рабочем столе 2", "Открывать на рабочем столе 3", "Открывать на рабочем столе 4", "Открывать на рабочем столе 5", "Открывать на рабочем столе 6", "Открывать на рабочем столе 7", "Открывать на рабочем столе 8", "Открывать на рабочем столе 9"];
+    property <[string]> rule_kinds: ["Плавающее окно", "Рабочий стол 1", "Рабочий стол 2", "Рабочий стол 3", "Рабочий стол 4", "Рабочий стол 5", "Рабочий стол 6", "Рабочий стол 7", "Рабочий стол 8", "Рабочий стол 9"];
     in-out property <bool> dirty: false;
     in-out property <bool> show_welcome: false;
     in-out property <string> status: "Настройки загружены";
@@ -228,6 +557,16 @@ export component MainWindow inherits Window {
     in-out property <string> update_version;
     in-out property <string> update_message: "Проверьте, появилась ли новая версия tile-rs.";
     in-out property <string> release_notes;
+
+    property <[string]> page_titles: ["Общие", "Раскладка", "Рабочие столы", "Поведение окон", "Горячие клавиши", "Приложения", "Дополнительно", "Обновления"];
+    property <[string]> page_subtitles: ["Раскладка, движение окон и краткая сводка", "Размеры плиток, лимиты и главная колонка", "Индикатор рабочих столов и фокус", "Полноэкранные программы и рамка активного окна", "Каждое действие — своё сочетание клавиш", "Как tile-rs обходится с конкретными программами", "Автозапуск, файлы и сведения о программе", "Новые версии tile-rs приходят прямо сюда"];
+    property <[image]> page_icons: [@image-url("icons/dashboard.svg"), @image-url("icons/layout.svg"), @image-url("icons/desktops.svg"), @image-url("icons/window.svg"), @image-url("icons/keyboard.svg"), @image-url("icons/apps.svg"), @image-url("icons/adjustments.svg"), @image-url("icons/download.svg")];
+    property <[string]> layout_names: ["Спираль", "Мастер и стек", "Сетка", "Колонки"];
+    property <[string]> layout_hints: ["Новое окно делит последнее", "Главное окно слева", "Ровные клетки", "Окна в ряд"];
+    property <length> preview_gap: clamp(inner_gap.to-float() / 3, 1, 8) * 1px;
+    property <string> update_title: update_state == 2 ? "Доступна версия " + update_version : (update_state == 1 ? "Проверяем GitHub…" : (update_state == 4 ? "Загружаем обновление" : (update_state == 3 ? "У вас последняя версия" : (update_state == 5 ? "Не удалось обновить" : "Проверка обновлений"))));
+
+    init => { Palette.color-scheme = ColorScheme.light; }
     changed animations => { AppTheme.motion = animations; dirty = true; }
     changed layout_index => { dirty = true; }
     changed indicator_size => { dirty = true; }
@@ -269,289 +608,446 @@ export component MainWindow inherits Window {
     callback open_log();
     callback quit_manager();
 
-    VerticalLayout {
-        spacing: 0px;
-
+    HorizontalLayout {
+        // ---------- sidebar ----------
         Rectangle {
-            height: 76px;
-            background: #111a23;
-            HorizontalLayout {
-                padding-left: 20px;
-                padding-right: 16px;
-                padding-top: 20px;
+            width: 236px;
+            background: AppTheme.surface;
+            Rectangle { x: parent.width - 1px; width: 1px; background: AppTheme.line; }
+            VerticalLayout {
+                padding-top: 26px;
                 padding-bottom: 20px;
-                spacing: 10px;
-                LayoutPreview { width: 36px; height: 36px; }
-                Text { text: "tile-rs"; color: #f3f6f8; font-size: 23px; font-weight: 700; vertical-alignment: center; }
-                Text { text: "ВАШЕ ПРОСТРАНСТВО. ВАШ РИТМ."; color: #87939b; font-size: 12px; vertical-alignment: center; horizontal-stretch: 1; }
-                ActionButton { label: update_state == 2 ? "Доступна " + update_version : "Check update"; primary: update_state == 2; button-width: 172px; activated => { page = 7; root.check_updates(); } }
-                ActionButton { label: "GitHub ↗"; button-width: 84px; activated => { root.open_github(); } }
-            }
-        }
-
-        HorizontalLayout {
-            spacing: 0px;
-            Rectangle {
-                width: 208px;
-                background: #101820;
-                VerticalLayout {
-                    padding-top: 20px;
-                    padding-bottom: 12px;
-                    padding-left: 12px;
-                    padding-right: 12px;
-                    spacing: 5px;
-                    Text { text: "ПАРАМЕТРЫ"; color: #75828a; font-size: 9px; font-weight: 700; height: 26px; vertical-alignment: center; }
-                    for item[index] in ["Общие", "Раскладка", "Рабочие столы", "Поведение окон", "Горячие клавиши", "Приложения", "Дополнительно", "Обновления"]: NavItem {
-                        title: item;
-                        selected: page == index;
-                        activated => { page = index; }
-                    }
-                    Rectangle { vertical-stretch: 1; }
-                    Rectangle {
-                        height: 62px;
-                        border-radius: 7px;
-                        background: #171d21;
-                        VerticalLayout {
-                            padding: 10px;
-                            spacing: 3px;
-                            Text { text: "●  tile-rs запущен"; color: #e6ecef; font-size: 12px; }
-                            Text { text: "v" + app_version + " · Windows x64"; color: #829099; font-size: 10px; }
-                        }
+                padding-left: 16px;
+                padding-right: 16px;
+                spacing: 4px;
+                HorizontalLayout {
+                    height: 40px;
+                    padding-left: 8px;
+                    spacing: 10px;
+                    LayoutPreview { y: 4px; width: 32px; height: 32px; mode: layout_index; masters: master_count.to-float(); pad: 3px; gap: 2px; background: transparent; }
+                    Text { text: "tile-rs"; color: AppTheme.ink; font-size: 21px; font-weight: 700; vertical-alignment: center; }
+                }
+                Rectangle { height: 22px; }
+                for item[index] in page_titles: NavItem {
+                    title: item;
+                    icon: page_icons[index];
+                    selected: page == index;
+                    badge: index == 7 && update_state == 2;
+                    activated => { page = index; }
+                }
+                Rectangle { vertical-stretch: 1; }
+                Rectangle {
+                    height: 118px;
+                    border-radius: 16px;
+                    background: AppTheme.sunken;
+                    VerticalLayout {
+                        padding: 14px;
+                        spacing: 4px;
+                        Text { text: "Версия " + app_version; color: AppTheme.ink; font-size: 13px; font-weight: 600; }
+                        Text { text: "Закрытие окна оставляет tile-rs в трее"; color: AppTheme.muted; font-size: 12px; wrap: word-wrap; }
+                        Rectangle { vertical-stretch: 1; }
+                        ActionButton { label: "Выйти из tile-rs"; icon: @image-url("icons/power.svg"); has-icon: true; kind: 3; compact: true; button-width: 172px; activated => { root.quit_manager(); } }
                     }
                 }
             }
+        }
 
-            Rectangle {
-                background: AppTheme.canvas;
+        // ---------- main column ----------
+        VerticalLayout {
+            horizontal-stretch: 1;
+            padding-top: 26px;
+            padding-left: 32px;
+            padding-right: 32px;
+            padding-bottom: 16px;
+            spacing: 18px;
+
+            HorizontalLayout {
+                height: 52px;
+                spacing: 12px;
                 VerticalLayout {
-                    padding: 24px;
-                    spacing: 10px;
-
+                    horizontal-stretch: 1;
+                    alignment: center;
+                    spacing: 2px;
+                    Text { text: page_titles[page]; color: AppTheme.ink; font-size: 24px; font-weight: 700; }
+                    Text { text: status == "" ? page_subtitles[page] : status; color: AppTheme.ink-2; font-size: 13px; overflow: elide; }
+                }
+                if dirty: Rectangle {
+                    y: (parent.height - self.height) / 2;
+                    width: 196px;
+                    height: 32px;
+                    border-radius: 16px;
+                    background: AppTheme.warn-soft;
                     HorizontalLayout {
-                        height: 38px;
-                        Text {
-                            text: ["Общие", "Раскладка", "Рабочие столы", "Поведение окон", "Горячие клавиши", "Приложения", "Дополнительно", "Обновления"][page];
-                            color: #f3f6f8;
-                            font-size: 22px;
-                            font-weight: 700;
-                            vertical-alignment: center;
-                            horizontal-stretch: 1;
-                        }
-                        ActionButton { label: "Сохранить"; primary: true; button-width: 104px; activated => { root.save(); } }
+                        alignment: center;
+                        spacing: 8px;
+                        Rectangle { y: (parent.height - 8px) / 2; width: 8px; height: 8px; border-radius: 4px; background: #e39a1b; }
+                        Text { text: "Есть несохранённые изменения"; color: AppTheme.warn-ink; font-size: 12px; vertical-alignment: center; }
                     }
-                    Text { text: dirty ? "● Есть несохранённые изменения · " + status : status; color: dirty ? #f0c987 : #89969d; font-size: 12px; height: 18px; }
+                }
+                ActionButton { y: (parent.height - self.height) / 2; label: dirty ? "Сохранить" : "Сохранено"; icon: @image-url("icons/check.svg"); has-icon: true; primary: dirty; button-width: 136px; activated => { root.save(); } }
+            }
 
-                    Text {
-                        text: ["Всё на своих местах — от раскладки до движения окон.", "Настройте размеры окон и свободное пространство.", "Меньше переключений. Больше порядка.", "Определите, как приложения ведут себя на рабочем столе.", "Ваши действия — в одном сочетании клавиш.", "Как tile-rs ведёт себя с конкретными программами.", "Автозапуск, конфигурация и диагностика.", "Новые возможности приходят прямо в приложение."][page];
-                        color: AppTheme.muted; font-size: 12px; height: 24px;
-                    }
-                    ScrollView {
-                        vertical-stretch: 1;
+            ScrollView {
+                vertical-stretch: 1;
+                VerticalLayout {
+                    padding-right: 14px;
+                    padding-bottom: 12px;
+                    spacing: 18px;
+
+                    // ---------- 0: general ----------
+                    if page == 0: HorizontalLayout {
+                        spacing: 22px;
                         VerticalLayout {
-                            spacing: 12px;
-                    if page == 0: VerticalLayout {
-                        spacing: 12px;
-                        SettingCard {
-                            card-height: 206px;
-                            VerticalLayout {
-                                padding: 14px;
-                                spacing: 10px;
-                                Text { text: "Раскладка окон"; color: #edf2f4; font-size: 14px; font-weight: 600; height: 20px; }
-                                Text { text: "Выберите способ распределения окон на экране."; color: AppTheme.muted; font-size: 12px; height: 16px; }
-                                HorizontalLayout {
-                                    spacing: 8px;
-                                    for layout_name[index] in ["Спираль", "Мастер / стек", "Сетка", "Колонки"]: Rectangle {
-                                        horizontal-stretch: 1;
-                                        height: 104px;
-                                        border-radius: 7px;
-                                        background: layout_index == index ? #1c302e : #1c2226;
-                                        border-width: 1px;
-                                        VerticalLayout {
-                                            padding: 8px;
-                                            spacing: 5px;
-                                            LayoutPreview { mode: index; active: layout_index == index; height: 57px; }
-                                            Text { text: layout_name; color: layout_index == index ? #a4f5d9 : #cbd6e2; font-size: 12px; }
-                                        }
-                                        border-color: layout-focus.has-focus ? #c0ffea : (layout_index == index ? #64dfb4 : #344454);
-                                        animate background, border-color { duration: AppTheme.motion ? 160ms : 0ms; }
-                                        accessible-role: button;
-                                        accessible-label: layout_name;
-                                        accessible-action-default => { layout_index = index; }
-                                        forward-focus: layout-focus;
-                                        layout-focus := FocusScope { key-pressed(event) => { if (event.text == Key.Return || event.text == " ") { layout_index = index; return accept; } return reject; } }
-                                        TouchArea { mouse-cursor: pointer; clicked => { layout-focus.focus(); layout_index = index; } }
-                                    }
-                                }
-                            }
-                        }
-                        SettingCard {
-                            card-height: 268px;
+                            horizontal-stretch: 1;
+                            alignment: start;
+                            spacing: 14px;
+                            Text { text: "Раскладка окон"; color: AppTheme.ink; font-size: 16px; font-weight: 600; }
                             HorizontalLayout {
-                                padding: 14px;
-                                spacing: 18px;
-                                VerticalLayout {
-                                    horizontal-stretch: 1;
-                                    spacing: 8px;
-                                    Text { text: "Анимация"; color: #edf2f4; font-size: 14px; font-weight: 600; height: 20px; }
-                                    ToggleRow { label: "Плавно перемещать окна"; checked: animations; changed(value) => { animations = value; } }
-                                    HorizontalLayout {
-                                        Text { text: "Длительность (мс)"; color: AppTheme.muted; font-size: 12px; vertical-alignment: center; horizontal-stretch: 1; }
-                                        NumberField { label: ""; value <=> animation_ms; field-width: 90px; }
-                                    }
-                                    HorizontalLayout {
-                                        Text { text: "Кривая движения"; color: AppTheme.muted; font-size: 12px; vertical-alignment: center; horizontal-stretch: 1; }
-                                        ComboBox { min-width: 0px; preferred-height: 34px; min-height: 34px; max-height: 34px; model: ["linear", "out_quad", "out_cubic", "out_quart", "in_out_cubic"]; current-value: easing; selected(value) => { easing = value; } }
-                                    }
-                                }
-                                Rectangle { width: 1px; background: #293137; }
-                                VerticalLayout {
-                                    width: 210px;
-                                    spacing: 5px;
-                                    LayoutPreview { mode: layout_index; height: 74px; }
-                                    Text { text: "Интервалы"; color: #edf2f4; font-size: 14px; font-weight: 600; height: 20px; }
-                                    NumberField { label: "Между окнами"; value <=> inner_gap; field-width: 210px; }
-                                    NumberField { label: "От края экрана"; value <=> outer_gap; field-width: 210px; }
-                                }
-                            }
-                        }
-                    }
-
-                    if page == 1: VerticalLayout {
-                        spacing: 12px;
-                        SettingCard {
-                            card-height: 156px;
-                            VerticalLayout {
-                                padding: 14px;
                                 spacing: 12px;
-                                Text { text: "Размеры и лимиты"; color: #edf2f4; font-size: 14px; font-weight: 600; height: 20px; }
-                                HorizontalLayout {
-                                    spacing: 14px;
-                                    NumberField { label: "Минимальная ширина"; value <=> min_tile_width; field-width: 140px; }
-                                    NumberField { label: "Минимальная высота"; value <=> min_tile_height; field-width: 140px; }
-                                    NumberField { label: "Лимит окон (0 — авто)"; value <=> max_tiles; field-width: 150px; }
-                                    NumberField { label: "Шаг изменения размера"; value <=> resize_step; field-width: 150px; }
-                                    Rectangle { horizontal-stretch: 1; }
-                                }
-                            }
-                        }
-                        SettingCard {
-                            card-height: 86px;
-                            VerticalLayout {
-                                padding: 14px;
-                                spacing: 4px;
-                                Text { text: "Поведение раскладки"; color: #edf2f4; font-size: 14px; font-weight: 600; height: 20px; }
-                                ToggleRow { label: "Переносить новые окна на следующий рабочий стол, если текущий заполнен"; checked: auto_overflow; changed(value) => { auto_overflow = value; } }
-                            }
-                        }
-                        SettingCard {
-                            card-height: 150px;
-                            VerticalLayout {
-                                padding: 14px;
-                                spacing: 6px;
-                                Text { text: "Одно окно и главная колонка"; color: #edf2f4; font-size: 14px; font-weight: 600; height: 20px; }
-                                ToggleRow { label: "Убирать отступы, если на рабочем столе одно окно"; checked: smart_gaps; changed(value) => { smart_gaps = value; } }
-                                NumberField { label: "Окон в главной колонке (раскладка master-stack, 1–8)"; value <=> master_count; field-width: 140px; }
-                            }
-                        }
-                        Text { text: "Все четыре раскладки доступны. Изменения применяются кнопкой «Сохранить»."; color: #849199; font-size: 12px; height: 20px; }
-                    }
-
-                    if page == 2: VerticalLayout {
-                        spacing: 12px;
-                        SettingCard {
-                            card-height: 226px;
-                            VerticalLayout {
-                                padding: 14px;
-                                spacing: 9px;
-                                HorizontalLayout {
-                                    height: 22px;
-                                    Text { text: "Индикатор рабочих столов"; color: #edf2f4; font-size: 14px; font-weight: 600; horizontal-stretch: 1; }
-                                    Text { text: "Предпросмотр"; color: #849199; font-size: 10px; }
-                                }
-                                ToggleRow { label: "Показывать переключатель на каждом мониторе"; checked: show_indicator; changed(value) => { show_indicator = value; } }
-                                HorizontalLayout {
-                                    spacing: 2px;
-                                    for workspace[index] in [1, 2, 3, 4, 5, 6, 7, 8, 9]: DotCell {
-                                        state: index == 0 ? 2 : (index == 1 ? 1 : 0);
-                                        diameter: indicator_size == 0 ? 6px : (indicator_size == 2 ? 10px : 8px);
+                                height: 214px;
+                                for name[index] in layout_names: Rectangle {
+                                    horizontal-stretch: 1;
+                                    min-width: 96px;
+                                    preferred-width: 120px;
+                                    border-radius: 18px;
+                                    background: layout_index == index ? AppTheme.accent-strong : AppTheme.surface;
+                                    border-width: layout_index == index ? 0px : 1px;
+                                    border-color: lt-touch.has-hover ? #b9d9fb : #e8ecf4;
+                                    drop-shadow-offset-y: layout_index == index ? 10px : 6px;
+                                    drop-shadow-blur: layout_index == index ? 24px : 22px;
+                                    drop-shadow-color: layout_index == index ? #0070e04d : AppTheme.shadow;
+                                    animate background { duration: AppTheme.motion ? 180ms : 0ms; }
+                                    accessible-role: button;
+                                    accessible-label: name;
+                                    accessible-action-default => { layout_index = index; }
+                                    forward-focus: lt-focus;
+                                    VerticalLayout {
+                                        padding: 16px;
+                                        spacing: 4px;
+                                        LayoutPreview {
+                                            height: 92px;
+                                            mode: index;
+                                            filled: layout_index == index;
+                                            masters: master_count.to-float();
+                                            gap: preview_gap;
+                                            background: layout_index == index ? #ffffff26 : AppTheme.sunken;
+                                        }
+                                        Rectangle { height: 8px; }
+                                        Text { text: name; color: layout_index == index ? #ffffff : AppTheme.ink; font-size: 14px; font-weight: 600; }
+                                        Text { text: layout_hints[index]; color: layout_index == index ? #dcecff : AppTheme.muted; font-size: 12px; wrap: word-wrap; }
                                     }
+                                    Rectangle { border-radius: parent.border-radius; border-width: lt-focus.has-focus ? 2px : 0px; border-color: layout_index == index ? #9ccdff : AppTheme.accent; }
+                                    lt-focus := FocusScope { key-pressed(event) => { if (event.text == Key.Return || event.text == " ") { layout_index = index; return accept; } return reject; } }
+                                    lt-touch := TouchArea { mouse-cursor: pointer; clicked => { lt-focus.focus(); layout_index = index; } }
                                 }
-                                HorizontalLayout {
-                                    spacing: 7px;
-                                    for size_name[index] in ["Маленький", "Средний", "Большой"]: Rectangle {
-                                        width: 104px;
-                                        height: 28px;
-                                        border-radius: 6px;
-                                        background: indicator_size == index ? #20322f : #1c2226;
-                                        border-width: 1px;
-                                        border-color: indicator_size == index ? #38c9a4 : #30383d;
-                                        Text { text: size_name; color: #e3e9ec; font-size: 10px; horizontal-alignment: center; vertical-alignment: center; }
-                                        TouchArea { clicked => { indicator_size = index; } }
+                            }
+                            Text { text: "Движение и интервалы"; color: AppTheme.ink; font-size: 16px; font-weight: 600; }
+                            Card {
+                                card-height: 292px;
+                                VerticalLayout {
+                                    padding: 18px;
+                                    spacing: 4px;
+                                    ToggleRow { label: "Плавно перемещать окна"; hint: "Окна скользят на новое место вместо скачка"; checked: animations; changed(value) => { animations = value; } }
+                                    FieldRow { label: "Длительность анимации"; hint: "Миллисекунды"; value <=> animation_ms; }
+                                    HorizontalLayout {
+                                        height: 54px;
+                                        padding-left: 10px;
+                                        padding-right: 10px;
+                                        spacing: 14px;
+                                        VerticalLayout {
+                                            alignment: center;
+                                            horizontal-stretch: 1;
+                                            spacing: 2px;
+                                            Text { text: "Кривая движения"; color: AppTheme.ink; font-size: 13px; }
+                                            Text { text: "Как окно разгоняется и тормозит"; color: AppTheme.muted; font-size: 12px; }
+                                        }
+                                        Select {
+                                            property <[string]> names: ["linear", "out_quad", "out_cubic", "out_quart", "in_out_cubic"];
+                                            y: (parent.height - self.height) / 2;
+                                            width: 200px;
+                                            model: ["Равномерно", "Мягкое торможение", "Плавное торможение", "Сильное торможение", "Разгон и торможение"];
+                                            current-index: easing == "linear" ? 0 : (easing == "out_quad" ? 1 : (easing == "out_quart" ? 3 : (easing == "in_out_cubic" ? 4 : 2)));
+                                            changed current-index => { easing = names[self.current-index]; }
+                                        }
                                     }
-                                    Text { text: "Акцент (#RRGGBB)"; color: #829099; font-size: 10px; vertical-alignment: center; }
-                                    NumberField { label: ""; value <=> accent_color; field-width: 96px; }
-                                }
-                            }
-                        }
-                        SettingCard {
-                            card-height: 82px;
-                            VerticalLayout {
-                                padding: 14px;
-                                spacing: 4px;
-                                Text { text: "Фокус"; color: #edf2f4; font-size: 14px; font-weight: 600; height: 20px; }
-                                ToggleRow { label: "Передавать фокус окну под указателем"; checked: focus_follows_mouse; changed(value) => { focus_follows_mouse = value; } }
-                            }
-                        }
-                    }
-
-                    if page == 3: VerticalLayout {
-                        spacing: 12px;
-                        HorizontalLayout {
-                            spacing: 12px;
-                            SettingCard {
-                                horizontal-stretch: 1;
-                                card-height: 228px;
-                                VerticalLayout {
-                                    padding: 14px;
-                                    spacing: 10px;
-                                    Text { text: "Полноэкранные приложения"; color: #edf2f4; font-size: 14px; font-weight: 600; height: 20px; }
-                                    Text { text: "При переключении на другой рабочий стол:"; color: AppTheme.muted; font-size: 12px; height: 16px; }
-                                    ComboBox { min-width: 0px; preferred-height: 34px; min-height: 34px; max-height: 34px; model: ["Сворачивать и восстанавливать", "Оставлять без изменений"]; current-index: fullscreen_windows; selected(value) => { fullscreen_windows = self.current-index; } }
-                                    Text { text: "Окна с фото и видео:"; color: AppTheme.muted; font-size: 12px; height: 16px; }
-                                    ComboBox { min-width: 0px; preferred-height: 34px; min-height: 34px; max-height: 34px; model: ["Оставлять плавающими", "Размещать плиткой"]; current-index: media_windows; selected(value) => { media_windows = self.current-index; } }
-                                }
-                            }
-                            SettingCard {
-                                horizontal-stretch: 1;
-                                card-height: 228px;
-                                VerticalLayout {
-                                    padding: 14px;
-                                    spacing: 8px;
-                                    Text { text: "Подсветка активного окна"; color: #edf2f4; font-size: 14px; font-weight: 600; height: 20px; }
-                                    ToggleRow { label: "Показывать рамку"; checked: highlight_window; changed(value) => { highlight_window = value; } }
+                                    Divider { }
                                     HorizontalLayout {
                                         spacing: 8px;
-                                        NumberField { label: "Цвет (#RRGGBB)"; value <=> border_color; field-width: 126px; }
-                                        NumberField { label: "Толщина (px)"; value <=> border_width; field-width: 96px; }
+                                        FieldRow { horizontal-stretch: 1; label: "Между окнами"; hint: "Пиксели"; value <=> inner_gap; field-width: 80px; }
+                                        FieldRow { horizontal-stretch: 1; label: "От края экрана"; hint: "Пиксели"; value <=> outer_gap; field-width: 80px; }
+                                    }
+                                }
+                            }
+                        }
+                        VerticalLayout {
+                            width: 256px;
+                            alignment: start;
+                            spacing: 14px;
+                            Text { text: "Сводка"; color: AppTheme.ink; font-size: 16px; font-weight: 600; }
+                            StatCard { title: "Горячие клавиши"; caption: "назначено из " + hotkey_rows.length + " действий"; fraction: hotkey_rows.length == 0 ? 0 : hotkeys_bound / hotkey_rows.length; value: hotkeys_bound; }
+                            Card {
+                                card-height: 96px;
+                                HorizontalLayout {
+                                    padding-left: 18px;
+                                    padding-right: 16px;
+                                    spacing: 8px;
+                                    VerticalLayout {
+                                        alignment: center;
+                                        horizontal-stretch: 1;
+                                        spacing: 3px;
+                                        Text { text: "Правила программ"; color: AppTheme.ink; font-size: 13px; font-weight: 600; overflow: elide; }
+                                        Text { text: rule_rows.length == 0 ? "Пока ни одного" : "Настроено: " + rule_rows.length; color: AppTheme.muted; font-size: 12px; }
+                                    }
+                                    IconButton { y: (parent.height - self.height) / 2; icon: @image-url("icons/arrow-right.svg"); label: "Открыть правила программ"; activated => { page = 5; } }
+                                }
+                            }
+                            Card {
+                                card-height: 206px;
+                                background: AppTheme.accent-soft;
+                                border-color: #d3e7fd;
+                                VerticalLayout {
+                                    padding: 18px;
+                                    spacing: 6px;
+                                    alignment: start;
+                                    Rectangle {
+                                        width: 44px;
+                                        height: 44px;
+                                        border-radius: 14px;
+                                        background: AppTheme.surface;
+                                        Icon { width: 22px; height: 22px; source: update_state == 3 ? @image-url("icons/check.svg") : @image-url("icons/download.svg"); tint: AppTheme.accent; }
+                                    }
+                                    Rectangle { height: 4px; }
+                                    Text { text: update_title; color: AppTheme.ink; font-size: 15px; font-weight: 600; wrap: word-wrap; }
+                                    Text { text: "Установлена версия " + app_version; color: AppTheme.ink-2; font-size: 12px; }
+                                    Rectangle { height: 8px; }
+                                    ActionButton {
+                                        label: update_state == 2 ? "Обновить" : "Проверить";
+                                        icon: update_state == 2 ? @image-url("icons/download.svg") : @image-url("icons/refresh.svg");
+                                        has-icon: true;
+                                        primary: true;
+                                        compact: true;
+                                        button-width: 140px;
+                                        enabled: update_state != 1 && update_state != 4;
+                                        activated => { page = 7; if (update_state != 2) { root.check_updates(); } }
                                     }
                                 }
                             }
                         }
                     }
 
-                    if page == 4: VerticalLayout {
-                        spacing: 6px;
+                    // ---------- 1: layout sizes ----------
+                    if page == 1: VerticalLayout {
+                        spacing: 18px;
                         HorizontalLayout {
-                            spacing: 8px;
-                            Text {
-                                text: recording >= 0 ? "Нажмите сочетание клавиш. Esc — отмена, Backspace — убрать сочетание." : "«Записать» заменяет сочетание, «+» добавляет ещё одно, «✕» убирает. Сохраните изменения кнопкой вверху.";
-                                color: recording >= 0 ? AppTheme.accent : AppTheme.muted;
-                                font-size: 12px;
-                                vertical-alignment: center;
+                            spacing: 18px;
+                            Card {
                                 horizontal-stretch: 1;
-                                wrap: word-wrap;
+                                card-height: 238px;
+                                VerticalLayout {
+                                    padding: 20px;
+                                    spacing: 10px;
+                                    CardTitle { title: "Главная колонка"; subtitle: "Только для раскладки «Мастер и стек»"; icon: @image-url("icons/layout.svg"); }
+                                    HorizontalLayout {
+                                        spacing: 18px;
+                                        LayoutPreview { width: 170px; height: 112px; mode: 1; masters: master_count.to-float(); gap: preview_gap; }
+                                        VerticalLayout {
+                                            alignment: center;
+                                            spacing: 8px;
+                                            Text { text: "Окон в главной колонке"; color: AppTheme.ink; font-size: 13px; }
+                                            Stepper { value <=> master_count; minimum: 1; maximum: 8; }
+                                            Text { text: "Также Alt + . и Alt + ,"; color: AppTheme.muted; font-size: 12px; }
+                                        }
+                                    }
+                                }
                             }
-                            ActionButton { label: "Сбросить все"; button-width: 120px; activated => { root.reset_hotkeys(); } }
+                            Card {
+                                horizontal-stretch: 1;
+                                card-height: 238px;
+                                VerticalLayout {
+                                    padding: 20px;
+                                    spacing: 6px;
+                                    CardTitle { title: "Поведение раскладки"; icon: @image-url("icons/overflow.svg"); }
+                                    ToggleRow { label: "Переносить новые окна дальше"; hint: "Если текущий рабочий стол заполнен"; checked: auto_overflow; changed(value) => { auto_overflow = value; } }
+                                    ToggleRow { label: "Без отступов для одного окна"; hint: "Единственное окно занимает весь экран"; checked: smart_gaps; changed(value) => { smart_gaps = value; } }
+                                }
+                            }
+                        }
+                        Card {
+                            card-height: 212px;
+                            VerticalLayout {
+                                padding: 20px;
+                                spacing: 6px;
+                                CardTitle { title: "Размеры и лимиты"; subtitle: "Плитки не станут меньше этих размеров"; icon: @image-url("icons/resize.svg"); }
+                                Rectangle { height: 4px; }
+                                HorizontalLayout {
+                                    spacing: 24px;
+                                    VerticalLayout {
+                                        horizontal-stretch: 1;
+                                        FieldRow { label: "Минимальная ширина"; hint: "Пиксели"; value <=> min_tile_width; }
+                                        Divider { }
+                                        FieldRow { label: "Минимальная высота"; hint: "Пиксели"; value <=> min_tile_height; }
+                                    }
+                                    VerticalLayout {
+                                        horizontal-stretch: 1;
+                                        FieldRow { label: "Лимит окон на стол"; hint: "0 — подбирается автоматически"; value <=> max_tiles; }
+                                        Divider { }
+                                        FieldRow { label: "Шаг изменения размера"; hint: "Пиксели на одно нажатие Alt + плюс"; value <=> resize_step; }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // ---------- 2: workspaces ----------
+                    if page == 2: VerticalLayout {
+                        spacing: 18px;
+                        Card {
+                            card-height: 300px;
+                            VerticalLayout {
+                                padding: 20px;
+                                spacing: 12px;
+                                CardTitle { title: "Индикатор рабочих столов"; subtitle: "Точки вверху каждого монитора: текущий, занятые и пустые"; icon: @image-url("icons/desktops.svg"); }
+                                Rectangle {
+                                    height: 96px;
+                                    border-radius: 14px;
+                                    background: AppTheme.sunken;
+                                    Rectangle {
+                                        x: (parent.width - self.width) / 2;
+                                        y: 14px;
+                                        width: 9 * 28px + 16px;
+                                        height: 36px;
+                                        border-radius: 18px;
+                                        background: show_indicator ? AppTheme.surface : transparent;
+                                        drop-shadow-offset-y: show_indicator ? 2px : 0px;
+                                        drop-shadow-blur: show_indicator ? 8px : 0px;
+                                        drop-shadow-color: AppTheme.shadow;
+                                        opacity: show_indicator ? 1 : 0.35;
+                                        HorizontalLayout {
+                                            padding-left: 8px;
+                                            for workspace[index] in [1, 2, 3, 4, 5, 6, 7, 8, 9]: DotCell {
+                                                y: 4px;
+                                                state: index == 0 ? 2 : (index == 1 || index == 4 ? 1 : 0);
+                                                diameter: indicator_size == 0 ? 6px : (indicator_size == 2 ? 10px : 8px);
+                                            }
+                                        }
+                                    }
+                                    Text { y: 60px; x: (parent.width - self.width) / 2; text: show_indicator ? "Так индикатор выглядит на экране" : "Индикатор скрыт"; color: AppTheme.muted; font-size: 12px; }
+                                }
+                                ToggleRow { label: "Показывать индикатор на каждом мониторе"; checked: show_indicator; changed(value) => { show_indicator = value; } }
+                                HorizontalLayout {
+                                    padding-left: 10px;
+                                    padding-right: 10px;
+                                    spacing: 16px;
+                                    height: 44px;
+                                    Text { text: "Размер точек"; color: AppTheme.ink; font-size: 13px; vertical-alignment: center; }
+                                    Segmented { y: 2px; options: ["Маленький", "Средний", "Большой"]; current <=> indicator_size; segment-width: 104px; }
+                                    Rectangle { horizontal-stretch: 1; }
+                                    Text { text: "Акцент"; color: AppTheme.ink; font-size: 13px; vertical-alignment: center; }
+                                    Swatch { y: 5px; hex: accent_color; }
+                                    TextField { y: 4px; width: 112px; text <=> accent_color; }
+                                }
+                            }
+                        }
+                        Card {
+                            card-height: 126px;
+                            VerticalLayout {
+                                padding: 20px;
+                                spacing: 4px;
+                                CardTitle { title: "Фокус"; icon: @image-url("icons/pointer.svg"); }
+                                ToggleRow { label: "Передавать фокус окну под указателем"; hint: "Без щелчка: достаточно навести мышь"; checked: focus_follows_mouse; changed(value) => { focus_follows_mouse = value; } }
+                            }
+                        }
+                    }
+
+                    // ---------- 3: window behaviour ----------
+                    if page == 3: HorizontalLayout {
+                        spacing: 18px;
+                        Card {
+                            horizontal-stretch: 1;
+                            card-height: 280px;
+                            VerticalLayout {
+                                padding: 20px;
+                                spacing: 10px;
+                                CardTitle { title: "Полноэкранные программы"; subtitle: "Игры, видео и презентации"; icon: @image-url("icons/maximize.svg"); }
+                                Rectangle { height: 2px; }
+                                Text { text: "При переходе на другой рабочий стол"; color: AppTheme.ink; font-size: 13px; }
+                                Segmented { options: ["Сворачивать", "Не трогать"]; current <=> fullscreen_windows; segment-width: 150px; }
+                                Rectangle { height: 6px; }
+                                Text { text: "Окна с фото и видео"; color: AppTheme.ink; font-size: 13px; }
+                                Segmented { options: ["Плавающие", "В раскладке"]; current <=> media_windows; segment-width: 150px; }
+                            }
+                        }
+                        Card {
+                            horizontal-stretch: 1;
+                            card-height: 280px;
+                            VerticalLayout {
+                                padding: 20px;
+                                spacing: 8px;
+                                CardTitle { title: "Рамка активного окна"; subtitle: "Видна у любого окна, даже у консоли"; icon: @image-url("icons/border.svg"); }
+                                ToggleRow { label: "Показывать рамку"; checked: highlight_window; changed(value) => { highlight_window = value; } }
+                                HorizontalLayout {
+                                    spacing: 18px;
+                                    height: 120px;
+                                    Rectangle {
+                                        width: 150px;
+                                        border-radius: 14px;
+                                        background: AppTheme.sunken;
+                                        Rectangle {
+                                            x: 22px;
+                                            y: 22px;
+                                            width: parent.width - 44px;
+                                            height: parent.height - 44px;
+                                            border-radius: 6px;
+                                            background: AppTheme.surface;
+                                            border-width: highlight_window ? clamp(border_width.to-float(), 1, 6) * 1px : 0px;
+                                            border-color: ColorParser.parse(border_color);
+                                            Rectangle { y: 0px; height: 12px; background: AppTheme.line; border-radius: 4px; }
+                                        }
+                                    }
+                                    VerticalLayout {
+                                        horizontal-stretch: 1;
+                                        alignment: center;
+                                        spacing: 10px;
+                                        HorizontalLayout {
+                                            spacing: 10px;
+                                            Swatch { hex: border_color; }
+                                            TextField { horizontal-stretch: 1; text <=> border_color; }
+                                        }
+                                        HorizontalLayout {
+                                            spacing: 10px;
+                                            Text { text: "Толщина, пиксели"; color: AppTheme.ink; font-size: 13px; vertical-alignment: center; horizontal-stretch: 1; }
+                                            TextField { width: 72px; text <=> border_width; }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // ---------- 4: hotkeys ----------
+                    if page == 4: VerticalLayout {
+                        spacing: 14px;
+                        Rectangle {
+                            height: 56px;
+                            border-radius: 16px;
+                            background: recording >= 0 ? AppTheme.accent-soft : AppTheme.surface;
+                            border-width: 1px;
+                            border-color: recording >= 0 ? #b9d9fb : #e8ecf4;
+                            HorizontalLayout {
+                                padding-left: 18px;
+                                padding-right: 10px;
+                                spacing: 12px;
+                                Icon { y: (parent.height - self.height) / 2; source: recording >= 0 ? @image-url("icons/record.svg") : @image-url("icons/info.svg"); tint: recording >= 0 ? AppTheme.accent : AppTheme.muted; }
+                                Text {
+                                    text: recording >= 0 ? "Нажмите сочетание клавиш. Esc — отмена, Backspace — убрать сочетание" : "Кружок записывает новое сочетание, плюс добавляет второе, корзина убирает";
+                                    color: recording >= 0 ? AppTheme.accent-ink : AppTheme.ink-2;
+                                    font-size: 13px;
+                                    vertical-alignment: center;
+                                    horizontal-stretch: 1;
+                                    overflow: elide;
+                                }
+                                ActionButton { y: (parent.height - self.height) / 2; label: "Сбросить все"; icon: @image-url("icons/refresh.svg"); has-icon: true; kind: 2; compact: true; button-width: 148px; activated => { root.reset_hotkeys(); } }
+                            }
                         }
                         key_capture := FocusScope {
                             width: 0px;
@@ -564,176 +1060,310 @@ export component MainWindow inherits Window {
                                 return reject;
                             }
                         }
-                        for row[index] in hotkey_rows: Rectangle {
-                            height: 40px;
-                            border-radius: 6px;
-                            background: recording == index ? #24313f : transparent;
-                            HorizontalLayout {
-                                spacing: 8px;
-                                padding-left: 8px;
-                                Text { text: row.label; color: #cbd6e2; font-size: 12px; vertical-alignment: center; width: 250px; }
-                                Text {
-                                    text: recording == index ? "нажмите клавиши…" : (row.keys == "" ? "не назначено" : row.keys);
-                                    color: row.conflict ? #ff9b8a : (row.keys == "" ? #75828a : #e3ecf5);
-                                    font-size: 12px;
-                                    vertical-alignment: center;
-                                    horizontal-stretch: 1;
+                        Card {
+                            card-height: hk-list.preferred-height + 24px;
+                            hk-list := VerticalLayout {
+                                padding-top: 12px;
+                                padding-bottom: 12px;
+                                padding-left: 14px;
+                                padding-right: 14px;
+                                for row[index] in hotkey_rows: VerticalLayout {
+                                    property <bool> first-of-group: index == 0 || hotkey_rows[index - 1].group != row.group;
+                                    if first-of-group: VerticalLayout {
+                                        padding-top: index == 0 ? 6px : 18px;
+                                        padding-left: 10px;
+                                        padding-bottom: 6px;
+                                        Text { text: row.group; color: AppTheme.ink; font-size: 14px; font-weight: 600; }
+                                    }
+                                    Rectangle {
+                                        height: 46px;
+                                        border-radius: 12px;
+                                        background: recording == index ? AppTheme.accent-soft : (row-touch.has-hover ? AppTheme.sunken : transparent);
+                                        row-touch := TouchArea { }
+                                        HorizontalLayout {
+                                            padding-left: 10px;
+                                            padding-right: 4px;
+                                            spacing: 10px;
+                                            Text { text: row.label; color: AppTheme.ink; font-size: 13px; vertical-alignment: center; width: 260px; overflow: elide; }
+                                            HorizontalLayout {
+                                                horizontal-stretch: 1;
+                                                alignment: start;
+                                                spacing: 10px;
+                                                if recording == index || row.keys.length == 0: Rectangle {
+                                                    y: (parent.height - self.height) / 2;
+                                                    height: 28px;
+                                                    width: hint-text.preferred-width + 24px;
+                                                    border-radius: 8px;
+                                                    background: recording == index ? AppTheme.surface : transparent;
+                                                    border-width: 1px;
+                                                    border-color: recording == index ? #9ccdff : AppTheme.line;
+                                                    hint-text := Text {
+                                                        text: recording == index ? "Нажмите клавиши…" : "Не назначено";
+                                                        color: recording == index ? AppTheme.accent-ink : AppTheme.muted;
+                                                        font-size: 12px;
+                                                        horizontal-alignment: center;
+                                                        vertical-alignment: center;
+                                                    }
+                                                }
+                                                if recording != index: HorizontalLayout {
+                                                    spacing: 6px;
+                                                    for key in row.keys: Rectangle {
+                                                        y: (parent.height - self.height) / 2;
+                                                        height: 28px;
+                                                        width: key-text.preferred-width + 22px;
+                                                        border-radius: 8px;
+                                                        background: row.conflict ? AppTheme.danger-soft : AppTheme.surface;
+                                                        border-width: 1px;
+                                                        border-color: row.conflict ? #f3c4c6 : #d9e0ec;
+                                                        drop-shadow-offset-y: 1px;
+                                                        drop-shadow-blur: 0px;
+                                                        drop-shadow-color: #d9e0ec;
+                                                        key-text := Text { text: key; color: row.conflict ? AppTheme.danger : AppTheme.ink; font-size: 12px; font-weight: 600; horizontal-alignment: center; vertical-alignment: center; }
+                                                    }
+                                                }
+                                                if row.conflict: HorizontalLayout {
+                                                    spacing: 6px;
+                                                    Icon { y: (parent.height - self.height) / 2; width: 16px; height: 16px; source: @image-url("icons/alert.svg"); tint: AppTheme.danger; }
+                                                    Text { text: "Уже занято"; color: AppTheme.danger; font-size: 12px; vertical-alignment: center; }
+                                                }
+                                            }
+                                            IconButton { y: (parent.height - self.height) / 2; icon: @image-url("icons/record.svg"); label: "Записать новое сочетание"; activated => { root.recording = index; root.recording_append = false; key_capture.focus(); } }
+                                            IconButton { y: (parent.height - self.height) / 2; icon: @image-url("icons/plus.svg"); label: "Добавить ещё сочетание"; activated => { root.recording = index; root.recording_append = true; key_capture.focus(); } }
+                                            IconButton { y: (parent.height - self.height) / 2; icon: @image-url("icons/trash.svg"); label: "Убрать сочетания"; danger: true; activated => { root.clear_keys(index); } }
+                                        }
+                                    }
                                 }
-                                Text { text: row.conflict ? "⚠ уже занято" : ""; color: #ff9b8a; font-size: 11px; vertical-alignment: center; width: 84px; }
-                                ActionButton { label: "Записать"; button-width: 88px; activated => { root.recording = index; root.recording_append = false; key_capture.focus(); } }
-                                ActionButton { label: "+"; button-width: 36px; activated => { root.recording = index; root.recording_append = true; key_capture.focus(); } }
-                                ActionButton { label: "✕"; button-width: 36px; activated => { root.clear_keys(index); } }
                             }
                         }
                     }
 
+                    // ---------- 5: applications ----------
                     if page == 5: VerticalLayout {
-                        spacing: 10px;
-                        Text { text: "Правила приложений"; color: #edf2f4; font-size: 14px; font-weight: 600; height: 20px; }
-                        if rule_rows.length == 0: Text { text: "Правил пока нет. Добавьте первое из списка запущенных окон ниже."; color: AppTheme.muted; font-size: 12px; height: 20px; }
-                        for rule[index] in rule_rows: Rectangle {
-                            height: 40px;
-                            border-radius: 6px;
-                            background: #151d26;
-                            HorizontalLayout {
-                                spacing: 8px;
-                                padding-left: 10px;
-                                Text { text: rule; color: #cbd6e2; font-size: 12px; vertical-alignment: center; horizontal-stretch: 1; overflow: elide; }
-                                ActionButton { label: "Удалить"; button-width: 84px; activated => { root.delete_rule(index); } }
+                        spacing: 18px;
+                        Card {
+                            card-height: rules-list.preferred-height;
+                            rules-list := VerticalLayout {
+                                padding: 20px;
+                                spacing: 6px;
+                                CardTitle { title: "Правила программ"; subtitle: rule_rows.length == 0 ? "Ещё нет ни одного правила" : "Правил: " + rule_rows.length; icon: @image-url("icons/apps.svg"); }
+                                Rectangle { height: 6px; }
+                                if rule_rows.length == 0: Rectangle {
+                                    height: 132px;
+                                    border-radius: 14px;
+                                    background: AppTheme.sunken;
+                                    VerticalLayout {
+                                        alignment: center;
+                                        spacing: 6px;
+                                        Icon { x: (parent.width - self.width) / 2; width: 28px; height: 28px; source: @image-url("icons/apps.svg"); tint: AppTheme.accent; }
+                                        Text { text: "Настройте первую программу"; color: AppTheme.ink; font-size: 14px; font-weight: 600; horizontal-alignment: center; }
+                                        Text { text: "Например, чтобы мессенджер всегда открывался на своём рабочем столе"; color: AppTheme.ink-2; font-size: 12px; horizontal-alignment: center; }
+                                    }
+                                }
+                                for rule[index] in rule_rows: Rectangle {
+                                    height: 52px;
+                                    border-radius: 12px;
+                                    background: rule-touch.has-hover ? AppTheme.sunken : transparent;
+                                    rule-touch := TouchArea { }
+                                    HorizontalLayout {
+                                        padding-left: 6px;
+                                        padding-right: 4px;
+                                        spacing: 12px;
+                                        Rectangle {
+                                            y: (parent.height - self.height) / 2;
+                                            width: 36px;
+                                            height: 36px;
+                                            border-radius: 12px;
+                                            background: AppTheme.accent-soft;
+                                            Icon { source: @image-url("icons/window.svg"); tint: AppTheme.accent; }
+                                        }
+                                        Text { text: rule; color: AppTheme.ink; font-size: 13px; vertical-alignment: center; horizontal-stretch: 1; overflow: elide; }
+                                        IconButton { y: (parent.height - self.height) / 2; icon: @image-url("icons/trash.svg"); label: "Удалить правило"; danger: true; activated => { root.delete_rule(index); } }
+                                    }
+                                }
                             }
                         }
-                        Text { text: "Добавить правило для запущенной программы"; color: #edf2f4; font-size: 14px; font-weight: 600; height: 20px; }
-                        HorizontalLayout {
-                            spacing: 8px;
-                            height: 36px;
-                            ComboBox { model: app_choices; current-index <=> rule_app_index; horizontal-stretch: 1; }
-                            ComboBox { model: rule_kinds; current-index <=> rule_kind_index; width: 260px; }
-                            ActionButton { label: "Добавить"; primary: true; button-width: 96px; enabled: app_choices.length > 0; activated => { root.add_rule(); } }
-                            ActionButton { label: "Обновить список"; button-width: 130px; activated => { root.refresh_apps(); } }
+                        Card {
+                            card-height: 148px;
+                            VerticalLayout {
+                                padding: 20px;
+                                spacing: 14px;
+                                CardTitle { title: "Новое правило"; subtitle: "Выберите открытую программу и что с ней делать"; icon: @image-url("icons/app-plus.svg"); }
+                                HorizontalLayout {
+                                    spacing: 10px;
+                                    height: 38px;
+                                    Select { horizontal-stretch: 1; model: app_choices; current-index <=> rule_app_index; placeholder: "Нет открытых программ"; }
+                                    Select { width: 250px; model: rule_kinds; current-index <=> rule_kind_index; }
+                                    ActionButton { label: "Добавить"; icon: @image-url("icons/plus.svg"); has-icon: true; primary: true; button-width: 128px; enabled: app_choices.length > 0; activated => { root.add_rule(); } }
+                                    IconButton { y: 2px; icon: @image-url("icons/refresh.svg"); label: "Обновить список программ"; activated => { root.refresh_apps(); } }
+                                }
+                            }
                         }
                     }
 
+                    // ---------- 6: advanced ----------
                     if page == 6: VerticalLayout {
-                        spacing: 12px;
-                        SettingCard {
-                            card-height: 156px;
+                        spacing: 18px;
+                        Card {
+                            card-height: 186px;
                             VerticalLayout {
-                                padding: 14px;
+                                padding: 20px;
                                 spacing: 8px;
-                                Text { text: "Запуск и диагностика"; color: #edf2f4; font-size: 14px; font-weight: 600; height: 20px; }
+                                CardTitle { title: "Запуск и диагностика"; icon: @image-url("icons/adjustments.svg"); }
                                 ToggleRow { label: "Запускать tile-rs при входе в Windows"; checked: autostart; changed(value) => { autostart = value; } }
                                 HorizontalLayout {
-                                    spacing: 8px;
-                                    ActionButton { label: "Открыть конфиг"; activated => { root.open_config(); } }
-                                    ActionButton { label: "Открыть журнал"; activated => { root.open_log(); } }
+                                    padding-left: 10px;
+                                    spacing: 10px;
+                                    alignment: start;
+                                    ActionButton { label: "Открыть конфиг"; icon: @image-url("icons/file.svg"); has-icon: true; compact: true; button-width: 168px; activated => { root.open_config(); } }
+                                    ActionButton { label: "Открыть журнал"; icon: @image-url("icons/list.svg"); has-icon: true; compact: true; button-width: 168px; activated => { root.open_log(); } }
                                 }
                             }
                         }
-                        SettingCard {
-                            card-height: 92px;
+                        Card {
+                            card-height: 226px;
                             VerticalLayout {
-                                padding: 14px;
-                                spacing: 6px;
-                                Text { text: "Расширенные параметры"; color: #edf2f4; font-size: 14px; font-weight: 600; height: 20px; }
-                                Text { text: "Правила приложений и параметры, которые редко меняются, остаются в config.toml."; color: AppTheme.muted; font-size: 12px; }
-                                Text { text: "v" + app_version + " · Windows x64"; color: #829099; font-size: 10px; }
-                            }
-                        }
-                        SettingCard {
-                            card-height: 190px;
-                            VerticalLayout {
-                                padding: 14px;
-                                spacing: 6px;
-                                Text { text: "О программе"; color: #edf2f4; font-size: 14px; font-weight: 600; height: 20px; }
-                                Text { text: "tile-rs v" + app_version + " · открытый исходный код, лицензия MIT"; color: AppTheme.muted; font-size: 12px; height: 18px; }
-                                Text { text: "Окно настроек построено на Slint (Royalty-Free License)."; color: AppTheme.muted; font-size: 12px; height: 18px; }
-                                AboutSlint { height: 100px; }
+                                padding: 20px;
+                                spacing: 8px;
+                                CardTitle { title: "О программе"; subtitle: "tile-rs " + app_version + " · открытый исходный код, лицензия MIT"; icon: @image-url("icons/info.svg"); }
+                                Text { text: "Окно настроек построено на Slint и распространяется по лицензии Slint Royalty-Free."; color: AppTheme.ink-2; font-size: 12px; wrap: word-wrap; }
+                                HorizontalLayout {
+                                    spacing: 24px;
+                                    alignment: start;
+                                    AboutSlint { width: 160px; height: 100px; }
+                                    VerticalLayout {
+                                        alignment: center;
+                                        ActionButton { label: "Страница на GitHub"; icon: @image-url("icons/external.svg"); has-icon: true; compact: true; button-width: 196px; activated => { root.open_github(); } }
+                                    }
+                                }
                             }
                         }
                     }
 
+                    // ---------- 7: updates ----------
                     if page == 7: VerticalLayout {
-                        spacing: 16px;
-                        SettingCard {
-                            card-height: 246px;
+                        spacing: 18px;
+                        Card {
+                            card-height: update_state == 4 ? 252px : 230px;
                             VerticalLayout {
-                                padding: 22px; spacing: 12px;
+                                padding: 24px;
+                                spacing: 14px;
                                 HorizontalLayout {
-                                    height: 44px; spacing: 16px;
+                                    height: 56px;
+                                    spacing: 16px;
                                     Rectangle {
-                                        width: 44px; height: 44px; border-radius: 12px; background: #203b38;
-                                        Text { text: update_state == 3 ? "✓" : "↓"; color: AppTheme.accent; font-size: 26px; horizontal-alignment: center; vertical-alignment: center; }
+                                        width: 56px;
+                                        border-radius: 18px;
+                                        background: update_state == 5 ? AppTheme.danger-soft : (update_state == 3 ? AppTheme.success-soft : AppTheme.accent-soft);
+                                        Icon {
+                                            width: 26px;
+                                            height: 26px;
+                                            source: update_state == 5 ? @image-url("icons/alert.svg") : (update_state == 3 ? @image-url("icons/check.svg") : @image-url("icons/download.svg"));
+                                            tint: update_state == 5 ? AppTheme.danger : (update_state == 3 ? AppTheme.success-ink : AppTheme.accent);
+                                        }
                                     }
                                     VerticalLayout {
+                                        alignment: center;
                                         spacing: 3px;
-                                        Text { text: update_state == 2 ? "Доступна версия " + update_version : (update_state == 1 ? "Проверяем GitHub…" : (update_state == 4 ? "Загрузка обновления…" : (update_state == 3 ? "Вы используете последнюю версию" : (update_state == 5 ? "Не удалось обновить" : "Всегда в актуальной версии")))); color: #edf5fc; font-size: 19px; font-weight: 600; }
-                                        Text { text: "Установлена v" + app_version + " · стабильный канал"; color: AppTheme.muted; font-size: 12px; }
+                                        Text { text: update_title; color: AppTheme.ink; font-size: 20px; font-weight: 700; }
+                                        Text { text: "Установлена версия " + app_version + " · стабильный канал"; color: AppTheme.ink-2; font-size: 13px; }
                                     }
                                 }
-                                Text { text: update_message; color: update_state == 5 ? #ffc1ab : #b1bfce; font-size: 12px; wrap: word-wrap; height: 44px; }
-                                Rectangle {
-                                    height: 4px; border-radius: 2px; background: #263544;
-                                    Rectangle { height: parent.height; width: parent.width * (update_progress / 100); border-radius: 2px; background: AppTheme.accent; animate width { duration: AppTheme.motion ? 120ms : 0ms; } }
+                                Text { text: update_message; color: update_state == 5 ? AppTheme.danger : AppTheme.ink-2; font-size: 13px; wrap: word-wrap; height: 40px; }
+                                if update_state == 4: Rectangle {
+                                    height: 8px;
+                                    border-radius: 4px;
+                                    background: AppTheme.accent-soft;
+                                    Rectangle { x: 0px; height: parent.height; width: parent.width * (update_progress / 100); border-radius: 4px; background: AppTheme.accent; animate width { duration: AppTheme.motion ? 160ms : 0ms; } }
                                 }
                                 HorizontalLayout {
                                     spacing: 10px;
-                                    ActionButton { label: update_state == 1 ? "Проверяем…" : "Check update"; enabled: update_state != 1 && update_state != 4; activated => { root.check_updates(); } }
-                                    if update_state == 2 || update_state == 4: ActionButton { label: update_state == 4 ? "Загрузка " + update_progress + "%" : "Установить обновление"; primary: true; button-width: 192px; enabled: update_state == 2; activated => { root.install_update(); } }
+                                    ActionButton { label: update_state == 1 ? "Проверяем…" : "Проверить"; icon: @image-url("icons/refresh.svg"); has-icon: true; button-width: 150px; enabled: update_state != 1 && update_state != 4; activated => { root.check_updates(); } }
+                                    if update_state == 2 || update_state == 4: ActionButton { label: update_state == 4 ? "Загрузка " + update_progress + "%" : "Установить обновление"; icon: @image-url("icons/download.svg"); has-icon: true; primary: true; button-width: 232px; enabled: update_state == 2; activated => { root.install_update(); } }
                                     Rectangle { horizontal-stretch: 1; }
-                                    ActionButton { label: "Релизы ↗"; button-width: 100px; activated => { root.open_release(); } }
+                                    ActionButton { label: "Все релизы"; icon: @image-url("icons/external.svg"); has-icon: true; kind: 2; button-width: 140px; activated => { root.open_release(); } }
                                 }
                             }
                         }
-                        SettingCard {
-                            card-height: 224px;
-                            VerticalLayout {
-                                padding: 18px; spacing: 10px;
-                                Text { text: "Что нового"; color: #edf5fc; font-size: 15px; font-weight: 600; height: 24px; }
-                                TextEdit { text: release_notes == "" ? "Здесь появится описание нового релиза после проверки.\n\nПроверка выполняется при запуске и затем каждые 6 часов. При появлении новой версии вы увидите уведомление в Windows." : release_notes; read-only: true; }
+                        Card {
+                            card-height: notes.preferred-height;
+                            notes := VerticalLayout {
+                                padding: 20px;
+                                spacing: 12px;
+                                CardTitle { title: "Что нового"; icon: @image-url("icons/list.svg"); }
+                                Text {
+                                    wrap: word-wrap;
+                                    color: AppTheme.ink-2;
+                                    font-size: 13px;
+                                    text: release_notes == "" ? "Здесь появится описание нового релиза после проверки.\n\nПроверка выполняется при запуске и затем каждые 6 часов. Когда выйдет новая версия, Windows покажет уведомление." : release_notes;
+                                }
                             }
                         }
-                    }
-                        }
-                    }
-                    HorizontalLayout {
-                        height: 36px;
-                        Text { text: "Закрытие окна оставляет tile-rs в системном трее"; color: #77858d; font-size: 10px; vertical-alignment: center; horizontal-stretch: 1; }
-                        ActionButton { label: "Выйти из tile-rs"; button-width: 112px; activated => { root.quit_manager(); } }
                     }
                 }
             }
         }
     }
 
+    // ---------- first-run welcome ----------
     if show_welcome: Rectangle {
         x: 0px;
         y: 0px;
         width: root.width;
         height: root.height;
-        background: #000000c0;
+        background: #1d243373;
         TouchArea { }
         Rectangle {
-            width: 560px;
-            height: 330px;
-            border-radius: 14px;
+            width: 600px;
+            height: 496px;
+            border-radius: 24px;
             background: AppTheme.surface;
-            border-width: 1px;
-            border-color: #344454;
+            drop-shadow-offset-y: 18px;
+            drop-shadow-blur: 48px;
+            drop-shadow-color: #1d243340;
             VerticalLayout {
-                padding: 26px;
-                spacing: 8px;
-                Text { text: "Добро пожаловать в tile-rs"; color: #f3f6f8; font-size: 20px; font-weight: 700; height: 32px; }
-                Text { text: "Окна выстраиваются сами. Основные сочетания:"; color: AppTheme.muted; font-size: 13px; height: 22px; }
-                Text { text: "Alt + H / J / K / L или стрелки — переход между окнами"; color: #cbd6e2; font-size: 13px; height: 22px; }
-                Text { text: "Alt + Shift + H / J / K / L — поменять окна местами"; color: #cbd6e2; font-size: 13px; height: 22px; }
-                Text { text: "Alt + 1…9 — рабочий стол,  Alt + Shift + 1…9 — перенести окно"; color: #cbd6e2; font-size: 13px; height: 22px; }
-                Text { text: "Alt + M — окно на весь экран,  Alt + Z — прошлое окно"; color: #cbd6e2; font-size: 13px; height: 22px; }
-                Text { text: "Alt + Shift + Q — закрыть окно,  Ctrl + Alt + L — смена раскладки"; color: #cbd6e2; font-size: 13px; height: 22px; }
-                Text { text: "Все сочетания можно изменить на вкладке «Горячие клавиши»."; color: AppTheme.muted; font-size: 12px; height: 22px; }
+                padding: 32px;
+                spacing: 10px;
+                HorizontalLayout {
+                    spacing: 16px;
+                    height: 64px;
+                    Rectangle {
+                        width: 64px;
+                        border-radius: 20px;
+                        background: AppTheme.accent-strong;
+                        LayoutPreview { width: 44px; height: 44px; mode: layout_index; filled: true; masters: 1; pad: 2px; gap: 3px; }
+                    }
+                    VerticalLayout {
+                        alignment: center;
+                        spacing: 2px;
+                        Text { text: "Добро пожаловать в tile-rs"; color: AppTheme.ink; font-size: 22px; font-weight: 700; }
+                        Text { text: "Окна выстраиваются сами. Вот главные сочетания"; color: AppTheme.ink-2; font-size: 13px; }
+                    }
+                }
+                Rectangle { height: 8px; }
+                for item in [
+                    { keys: "Alt + H J K L", what: "Перейти к соседнему окну" },
+                    { keys: "Alt + Shift + H J K L", what: "Поменять окна местами" },
+                    { keys: "Alt + 1 … 9", what: "Открыть рабочий стол" },
+                    { keys: "Alt + Shift + 1 … 9", what: "Перенести окно на стол" },
+                    { keys: "Alt + M", what: "Окно на весь экран и обратно" },
+                    { keys: "Alt + Z", what: "Вернуться к прошлому окну" },
+                    { keys: "Ctrl + Alt + L", what: "Сменить раскладку" },
+                ]: HorizontalLayout {
+                    height: 32px;
+                    spacing: 14px;
+                    Rectangle {
+                        width: 190px;
+                        border-radius: 8px;
+                        background: AppTheme.sunken;
+                        Text { text: item.keys; color: AppTheme.ink; font-size: 12px; font-weight: 600; horizontal-alignment: center; vertical-alignment: center; }
+                    }
+                    Text { text: item.what; color: AppTheme.ink-2; font-size: 13px; vertical-alignment: center; }
+                }
                 Rectangle { vertical-stretch: 1; }
                 HorizontalLayout {
-                    alignment: end;
-                    ActionButton { label: "Понятно"; primary: true; button-width: 120px; activated => { root.dismiss_welcome(); } }
+                    spacing: 12px;
+                    Text { text: "Любое сочетание меняется во вкладке «Горячие клавиши»"; color: AppTheme.muted; font-size: 12px; vertical-alignment: center; horizontal-stretch: 1; }
+                    ActionButton { label: "Понятно"; primary: true; button-width: 132px; activated => { root.dismiss_welcome(); } }
                 }
             }
         }

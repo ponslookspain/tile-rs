@@ -1,0 +1,174 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-10-21T12:00:00Z",
+  "title": "Design System: tile-rs",
+  "extensions": {
+    "colorMeta": {
+      "accent": { "role": "primary", "displayName": "Signal Blue", "canonical": "#008cff", "tonalRamp": ["#00264a", "#003d75", "#005fc0", "#0070e0", "#008cff", "#5cb3ff", "#a9d5ff", "#e6f2ff"] },
+      "accent-strong": { "role": "primary", "displayName": "Deep Press Blue", "canonical": "#0070e0", "tonalRamp": ["#00264a", "#003d75", "#005fc0", "#0070e0", "#008cff", "#5cb3ff", "#a9d5ff", "#e6f2ff"] },
+      "accent-strong-hover": { "role": "primary", "displayName": "Deep Press Blue, hover", "canonical": "#0062c7", "tonalRamp": ["#00264a", "#003d75", "#0062c7", "#0070e0", "#008cff", "#5cb3ff", "#a9d5ff", "#e6f2ff"] },
+      "accent-soft": { "role": "primary", "displayName": "Ice Wash", "canonical": "#e6f2ff", "tonalRamp": ["#00264a", "#003d75", "#005fc0", "#0070e0", "#008cff", "#a9d5ff", "#d6eaff", "#e6f2ff"] },
+      "accent-soft-hover": { "role": "primary", "displayName": "Ice Wash, pressed", "canonical": "#d6eaff", "tonalRamp": ["#00264a", "#003d75", "#005fc0", "#0070e0", "#008cff", "#a9d5ff", "#d6eaff", "#e6f2ff"] },
+      "accent-ink": { "role": "primary", "displayName": "Ink Blue", "canonical": "#005fc0", "tonalRamp": ["#00264a", "#003d75", "#005fc0", "#0070e0", "#008cff", "#5cb3ff", "#a9d5ff", "#e6f2ff"] },
+      "accent-hover-line": { "role": "primary", "displayName": "Pale Rim", "canonical": "#b9d9fb", "tonalRamp": ["#00264a", "#003d75", "#005fc0", "#0070e0", "#008cff", "#9ccdff", "#b9d9fb", "#e6f2ff"] },
+      "focus-on-accent": { "role": "primary", "displayName": "Focus on Blue", "canonical": "#9ccdff", "tonalRamp": ["#00264a", "#003d75", "#005fc0", "#0070e0", "#008cff", "#9ccdff", "#b9d9fb", "#e6f2ff"] },
+      "canvas": { "role": "neutral", "displayName": "Lavender Mist", "canonical": "#eef1f8", "tonalRamp": ["#1d2433", "#3a4458", "#556075", "#687287", "#9aa3b5", "#cdd4e2", "#e3e8f2", "#eef1f8"] },
+      "surface": { "role": "neutral", "displayName": "Paper White", "canonical": "#ffffff", "tonalRamp": ["#1d2433", "#3a4458", "#556075", "#687287", "#9aa3b5", "#cdd4e2", "#f4f6fb", "#ffffff"] },
+      "sunken": { "role": "neutral", "displayName": "Sunken Grey", "canonical": "#f4f6fb", "tonalRamp": ["#1d2433", "#3a4458", "#556075", "#687287", "#9aa3b5", "#cdd4e2", "#e3e8f2", "#f4f6fb"] },
+      "line": { "role": "neutral", "displayName": "Hairline", "canonical": "#e3e8f2", "tonalRamp": ["#1d2433", "#3a4458", "#556075", "#687287", "#9aa3b5", "#cdd4e2", "#e3e8f2", "#f4f6fb"] },
+      "card-line": { "role": "neutral", "displayName": "Card Rim", "canonical": "#e8ecf4", "tonalRamp": ["#1d2433", "#3a4458", "#556075", "#687287", "#9aa3b5", "#cdd4e2", "#e8ecf4", "#f4f6fb"] },
+      "switch-off": { "role": "neutral", "displayName": "Switch Off", "canonical": "#cdd4e2", "tonalRamp": ["#1d2433", "#3a4458", "#556075", "#687287", "#9aa3b5", "#cdd4e2", "#e3e8f2", "#f4f6fb"] },
+      "ink": { "role": "neutral", "displayName": "Night Ink", "canonical": "#1d2433", "tonalRamp": ["#1d2433", "#3a4458", "#556075", "#687287", "#9aa3b5", "#cdd4e2", "#e3e8f2", "#f4f6fb"] },
+      "ink-2": { "role": "neutral", "displayName": "Slate", "canonical": "#556075", "tonalRamp": ["#1d2433", "#3a4458", "#556075", "#687287", "#9aa3b5", "#cdd4e2", "#e3e8f2", "#f4f6fb"] },
+      "muted": { "role": "neutral", "displayName": "Muted Slate", "canonical": "#687287", "tonalRamp": ["#1d2433", "#3a4458", "#556075", "#687287", "#9aa3b5", "#cdd4e2", "#e3e8f2", "#f4f6fb"] },
+      "danger": { "role": "status", "displayName": "Danger", "canonical": "#d93d42", "tonalRamp": ["#4a1214", "#7a1e22", "#a92b30", "#d93d42", "#e86d71", "#f3c4c6", "#f9dcdd", "#fdeeee"] },
+      "danger-soft": { "role": "status", "displayName": "Danger Wash", "canonical": "#fdeeee", "tonalRamp": ["#4a1214", "#7a1e22", "#a92b30", "#d93d42", "#e86d71", "#f3c4c6", "#f9dcdd", "#fdeeee"] },
+      "warn-ink": { "role": "status", "displayName": "Warn Ink", "canonical": "#8a5300", "tonalRamp": ["#3a2300", "#5e3900", "#8a5300", "#b46f0a", "#e39a1b", "#f5c46e", "#fbe2b0", "#fff3dc"] },
+      "warn-soft": { "role": "status", "displayName": "Warn Wash", "canonical": "#fff3dc", "tonalRamp": ["#3a2300", "#5e3900", "#8a5300", "#b46f0a", "#e39a1b", "#f5c46e", "#fbe2b0", "#fff3dc"] },
+      "success-ink": { "role": "status", "displayName": "Success Ink", "canonical": "#137a47", "tonalRamp": ["#06301b", "#0c4f2e", "#137a47", "#1c9a5b", "#3dba7c", "#8fd9b2", "#c4ecd6", "#e3f6ec"] },
+      "success-soft": { "role": "status", "displayName": "Success Wash", "canonical": "#e3f6ec", "tonalRamp": ["#06301b", "#0c4f2e", "#137a47", "#1c9a5b", "#3dba7c", "#8fd9b2", "#c4ecd6", "#e3f6ec"] }
+    },
+    "typographyMeta": {
+      "headline": { "displayName": "Headline", "purpose": "Page title in the main header (24/700); welcome title 22/700 and update title 20/700 are the same role stepped down." },
+      "section": { "displayName": "Section", "purpose": "Section labels on the canvas above card groups; ring and stat values." },
+      "title": { "displayName": "Title", "purpose": "Card titles beside an icon badge; stepper value. Layout-card and hotkey-group names use 14/600." },
+      "body": { "displayName": "Body", "purpose": "Setting labels, field values, nav labels, status line." },
+      "body-strong": { "displayName": "Body Strong", "purpose": "Button labels, stat-card titles, selected nav label." },
+      "caption": { "displayName": "Caption", "purpose": "Hints under labels, captions, keycaps (600), segmented options. The 12px floor." }
+    },
+    "shadows": [
+      { "name": "card", "value": "0 6px 22px #22325a1a", "purpose": "Every white card and unselected layout card." },
+      { "name": "selected-tile", "value": "0 10px 24px #0070e04d", "purpose": "The chosen layout card only." },
+      { "name": "primary-pill", "value": "0 4px 12px #0070e040", "purpose": "Filled primary buttons." },
+      { "name": "raised-segment", "value": "0 2px 6px #22325a1a", "purpose": "Chosen segment in a segmented track; visible workspace-indicator pill." },
+      { "name": "popup", "value": "0 10px 28px #22325a26", "purpose": "Select drop-down." },
+      { "name": "dialog", "value": "0 18px 48px #1d243340", "purpose": "Welcome card, over a #1d243373 scrim." },
+      { "name": "thumb", "value": "0 1px 3px #1d243340", "purpose": "Switch knob." }
+    ],
+    "motion": [
+      { "name": "quick", "value": "140ms", "purpose": "Background and border colour changes on hover, selection and focus. Gated by AppTheme.motion." },
+      { "name": "switch-track", "value": "160ms", "purpose": "Switch track colour and progress-bar width." },
+      { "name": "switch-thumb", "value": "180ms cubic-bezier(0.22, 1, 0.36, 1)", "purpose": "Switch knob slide; layout-card fill change uses 180ms." },
+      { "name": "layout-morph", "value": "260ms cubic-bezier(0.65, 0, 0.35, 1)", "purpose": "Live layout miniature tiles moving between layouts." }
+    ],
+    "breakpoints": [
+      { "name": "window-min", "value": "1000px x 640px" }
+    ]
+  },
+  "components": [
+    {
+      "name": "Primary Button",
+      "kind": "button",
+      "refersTo": "button-primary",
+      "description": "Filled pill for the one main action of a view (Save when dirty, Update, Check).",
+      "html": "<button class=\"ds-btn-primary\"><svg width=\"16\" height=\"16\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.75\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M5 12.5l4.5 4.5L19 7.5\"/></svg>Сохранить</button>",
+      "css": ".ds-btn-primary { display: inline-flex; align-items: center; justify-content: center; gap: 8px; height: 38px; padding: 0 22px; border: none; border-radius: 9999px; background: #0070e0; color: #ffffff; font: 600 13px 'Segoe UI', system-ui, sans-serif; box-shadow: 0 4px 12px #0070e040; cursor: pointer; transition: background 140ms; } .ds-btn-primary:hover, .ds-btn-primary:active { background: #0062c7; } .ds-btn-primary:focus-visible { outline: none; box-shadow: inset 0 0 0 2px #9ccdff, 0 4px 12px #0070e040; }"
+    },
+    {
+      "name": "Secondary Button",
+      "kind": "button",
+      "refersTo": "button-secondary",
+      "description": "White pill with a hairline border; the clean-state Save and most card actions.",
+      "html": "<button class=\"ds-btn-secondary\">Сохранено</button>",
+      "css": ".ds-btn-secondary { height: 38px; padding: 0 22px; border: 1px solid #e3e8f2; border-radius: 9999px; background: #ffffff; color: #005fc0; font: 600 13px 'Segoe UI', system-ui, sans-serif; cursor: pointer; transition: background 140ms, border-color 140ms; } .ds-btn-secondary:hover { background: #e6f2ff; border-color: #b9d9fb; } .ds-btn-secondary:active { background: #d6eaff; } .ds-btn-secondary:focus-visible { outline: none; box-shadow: inset 0 0 0 2px #008cff; }"
+    },
+    {
+      "name": "Danger Ghost Button",
+      "kind": "button",
+      "refersTo": "button-danger",
+      "description": "Transparent compact pill for destructive actions such as quitting tile-rs.",
+      "html": "<button class=\"ds-btn-danger\"><svg width=\"16\" height=\"16\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.75\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M12 4v8\"/><path d=\"M7 7.5a7 7 0 1 0 10 0\"/></svg>Выйти из tile-rs</button>",
+      "css": ".ds-btn-danger { display: inline-flex; align-items: center; gap: 8px; height: 32px; padding: 0 16px; border: none; border-radius: 9999px; background: transparent; color: #d93d42; font: 600 13px 'Segoe UI', system-ui, sans-serif; cursor: pointer; transition: background 140ms; } .ds-btn-danger:hover { background: #fdeeee; } .ds-btn-danger:focus-visible { outline: none; box-shadow: inset 0 0 0 2px #008cff; }"
+    },
+    {
+      "name": "Card with Title",
+      "kind": "card",
+      "refersTo": "card",
+      "description": "White 18px card with soft offset shadow, headed by an Ice Wash icon badge and a 15px title.",
+      "html": "<div class=\"ds-card\"><div class=\"ds-card-title\"><span class=\"ds-icon-badge\"><svg width=\"18\" height=\"18\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.75\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><rect x=\"3.5\" y=\"4.5\" width=\"17\" height=\"15\" rx=\"2\"/><path d=\"M11 4.5v15M11 12h9.5\"/></svg></span><span><strong>Раскладка</strong><small>Как окна делят экран</small></span></div></div>",
+      "css": ".ds-card { background: #ffffff; border: 1px solid #e8ecf4; border-radius: 18px; padding: 18px; box-shadow: 0 6px 22px #22325a1a; font-family: 'Segoe UI', system-ui, sans-serif; } .ds-card-title { display: flex; align-items: center; gap: 12px; } .ds-icon-badge { display: grid; place-items: center; width: 36px; height: 36px; border-radius: 12px; background: #e6f2ff; color: #008cff; } .ds-card-title strong { display: block; font-size: 15px; font-weight: 600; color: #1d2433; } .ds-card-title small { display: block; font-size: 12px; color: #556075; }"
+    },
+    {
+      "name": "Sidebar Nav Item",
+      "kind": "nav",
+      "refersTo": "nav-item",
+      "description": "Icon plus label row in the white sidebar; Ice Wash when selected.",
+      "html": "<nav class=\"ds-nav\"><a class=\"ds-nav-item is-selected\" href=\"#\"><svg width=\"18\" height=\"18\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.75\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><rect x=\"4\" y=\"4\" width=\"6.5\" height=\"6.5\" rx=\"1.5\"/><rect x=\"13.5\" y=\"4\" width=\"6.5\" height=\"6.5\" rx=\"1.5\"/><rect x=\"4\" y=\"13.5\" width=\"6.5\" height=\"6.5\" rx=\"1.5\"/><rect x=\"13.5\" y=\"13.5\" width=\"6.5\" height=\"6.5\" rx=\"1.5\"/></svg>Общие</a><a class=\"ds-nav-item\" href=\"#\"><svg width=\"18\" height=\"18\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.75\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><rect x=\"3.5\" y=\"4.5\" width=\"17\" height=\"15\" rx=\"2\"/><path d=\"M11 4.5v15M11 12h9.5\"/></svg>Раскладка</a></nav>",
+      "css": ".ds-nav { display: flex; flex-direction: column; gap: 4px; width: 204px; padding: 16px; background: #ffffff; font-family: 'Segoe UI', system-ui, sans-serif; } .ds-nav-item { display: flex; align-items: center; gap: 12px; height: 42px; padding: 0 12px 0 14px; border-radius: 12px; color: #556075; font-size: 13px; text-decoration: none; transition: background 140ms; } .ds-nav-item svg { color: #687287; } .ds-nav-item:hover { background: #f4f6fb; } .ds-nav-item.is-selected { background: #e6f2ff; color: #005fc0; font-weight: 600; } .ds-nav-item.is-selected svg { color: #008cff; } .ds-nav-item:focus-visible { outline: none; box-shadow: inset 0 0 0 2px #008cff; }"
+    },
+    {
+      "name": "Text Field",
+      "kind": "input",
+      "refersTo": "text-field",
+      "description": "Compact sunken field for numbers and short text, right-aligned in a setting row.",
+      "html": "<input class=\"ds-input\" value=\"140\" />",
+      "css": ".ds-input { width: 96px; height: 36px; box-sizing: border-box; padding: 0 12px; border: 1px solid #e3e8f2; border-radius: 10px; background: #f4f6fb; color: #1d2433; font: 13px 'Segoe UI', system-ui, sans-serif; text-align: center; transition: background 140ms, border-color 140ms; } .ds-input:hover { border-color: #c9d3e4; } .ds-input:focus, .ds-input:focus-visible { outline: none; background: #ffffff; border: 2px solid #008cff; } .ds-input::selection { background: #bcdcff; }"
+    },
+    {
+      "name": "Toggle Row",
+      "kind": "custom",
+      "refersTo": "switch-on",
+      "description": "Two-line setting (13px label, 12px muted hint) with a pill switch; the whole row toggles.",
+      "html": "<label class=\"ds-toggle-row\"><span><b>Плавно перемещать окна</b><small>Окна скользят на новое место вместо скачка</small></span><input type=\"checkbox\" checked /><i></i></label>",
+      "css": ".ds-toggle-row { display: flex; align-items: center; gap: 14px; height: 54px; padding: 0 10px; border-radius: 12px; font-family: 'Segoe UI', system-ui, sans-serif; cursor: pointer; transition: background 140ms; } .ds-toggle-row:hover { background: #f4f6fb; } .ds-toggle-row > span { flex: 1; } .ds-toggle-row b { display: block; font-weight: 400; font-size: 13px; color: #1d2433; } .ds-toggle-row small { display: block; font-size: 12px; color: #687287; } .ds-toggle-row input { position: absolute; opacity: 0; } .ds-toggle-row i { position: relative; width: 42px; height: 24px; border-radius: 12px; background: #cdd4e2; transition: background 160ms; } .ds-toggle-row i::after { content: ''; position: absolute; top: 3px; left: 3px; width: 18px; height: 18px; border-radius: 9px; background: #fff; box-shadow: 0 1px 3px #1d243340; transition: left 180ms cubic-bezier(0.22, 1, 0.36, 1); } .ds-toggle-row input:checked + i { background: #008cff; } .ds-toggle-row input:checked + i::after { left: 21px; } .ds-toggle-row:focus-within { box-shadow: inset 0 0 0 2px #008cff; }"
+    },
+    {
+      "name": "Segmented Choice",
+      "kind": "chip",
+      "refersTo": "segmented",
+      "description": "Sunken pill track; the chosen option is a raised white pill.",
+      "html": "<div class=\"ds-seg\"><button class=\"is-on\">Всегда</button><button>При смене</button><button>Скрыт</button></div>",
+      "css": ".ds-seg { display: inline-flex; padding: 4px; height: 40px; box-sizing: border-box; border-radius: 20px; background: #f4f6fb; } .ds-seg button { width: 110px; height: 32px; border: none; border-radius: 16px; background: transparent; color: #556075; font: 12px 'Segoe UI', system-ui, sans-serif; cursor: pointer; transition: background 140ms; } .ds-seg button.is-on { background: #ffffff; color: #005fc0; font-weight: 600; box-shadow: 0 2px 6px #22325a1a; } .ds-seg button:focus-visible { outline: none; box-shadow: inset 0 0 0 2px #008cff; }"
+    },
+    {
+      "name": "Stat Card with Ring",
+      "kind": "card",
+      "refersTo": "card",
+      "description": "Summary card: title and caption left, a 64px ring showing a real ratio right.",
+      "html": "<div class=\"ds-stat\"><span><b>Горячие клавиши</b><small>назначено из 52 действий</small></span><span class=\"ds-ring\" style=\"--f: 0.83\">43</span></div>",
+      "css": ".ds-stat { display: flex; align-items: center; gap: 12px; width: 256px; height: 96px; box-sizing: border-box; padding: 0 16px 0 18px; background: #fff; border: 1px solid #e8ecf4; border-radius: 18px; box-shadow: 0 6px 22px #22325a1a; font-family: 'Segoe UI', system-ui, sans-serif; } .ds-stat > span:first-child { flex: 1; } .ds-stat b { display: block; font-size: 13px; font-weight: 600; color: #1d2433; } .ds-stat small { display: block; font-size: 12px; color: #687287; } .ds-ring { display: grid; place-items: center; width: 64px; height: 64px; border-radius: 50%; background: radial-gradient(closest-side, #fff calc(100% - 6px), transparent calc(100% - 5px)), conic-gradient(#008cff calc(var(--f) * 360deg), #e6f2ff 0); font-size: 16px; font-weight: 600; color: #1d2433; }"
+    },
+    {
+      "name": "Live Layout Miniature",
+      "kind": "custom",
+      "refersTo": "card",
+      "description": "Signature: four tiles arranged as the chosen layout arranges windows; selected layout card shown filled blue with white tiles.",
+      "html": "<div class=\"ds-layout-card is-on\"><div class=\"ds-mini\"><i style=\"grid-area:a\"></i><i style=\"grid-area:b\"></i><i style=\"grid-area:c\"></i><i style=\"grid-area:d\"></i></div><b>Спираль</b><small>Новое окно делит последнее</small></div>",
+      "css": ".ds-layout-card { width: 138px; padding: 16px; border-radius: 18px; background: #fff; border: 1px solid #e8ecf4; box-shadow: 0 6px 22px #22325a1a; font-family: 'Segoe UI', system-ui, sans-serif; cursor: pointer; transition: background 180ms; } .ds-layout-card:hover { border-color: #b9d9fb; } .ds-layout-card b { display: block; margin-top: 12px; font-size: 14px; font-weight: 600; color: #1d2433; } .ds-layout-card small { display: block; margin-top: 4px; font-size: 12px; color: #687287; } .ds-mini { display: grid; grid-template-areas: 'a b b' 'a c d'; grid-template-columns: 2fr 1fr 1fr; gap: 4px; height: 92px; padding: 6px; box-sizing: border-box; border-radius: 10px; background: #f4f6fb; } .ds-mini i { border-radius: 5px; background: #a9d5ff; transition: all 260ms cubic-bezier(0.65, 0, 0.35, 1); } .ds-mini i:nth-child(1) { background: #008cff; } .ds-mini i:nth-child(2) { background: #5cb3ff; } .ds-layout-card.is-on { background: #0070e0; border-color: transparent; box-shadow: 0 10px 24px #0070e04d; } .ds-layout-card.is-on b { color: #fff; } .ds-layout-card.is-on small { color: #dcecff; } .ds-layout-card.is-on .ds-mini { background: #ffffff26; } .ds-layout-card.is-on .ds-mini i { background: #ffffffa6; } .ds-layout-card.is-on .ds-mini i:nth-child(1) { background: #ffffff; } .ds-layout-card.is-on .ds-mini i:nth-child(2) { background: #ffffffd9; } .ds-layout-card:focus-visible { outline: none; box-shadow: inset 0 0 0 2px #9ccdff, 0 10px 24px #0070e04d; }"
+    }
+  ],
+  "narrative": {
+    "northStar": "The Soft Control Room",
+    "overview": "The launcher is a light, soft settings dashboard: a lavender-grey canvas holding white, generously rounded cards that float on low, diffuse shadows. A white icon-and-label sidebar anchors the left; the main column carries a page title, a one-line subtitle, and the Save pill at top right. Everything a user changes is shown before it is saved, and the system's one expressive device is the live layout miniature, a four-tile diagram that follows the chosen layout, gap and master count, used as the logo mark, the layout picker and the welcome badge.\n\nDensity is calm, not sparse: 13px body in Segoe UI, 44 to 54px setting rows, 18px card padding. One blue does all the signalling; neutrals are cool and slightly violet so white cards read as raised without borders doing the work. The world was pinned by the user's own reference (a soft file-manager dashboard) and deliberately refuses the dense dark form-list the launcher used to be. Light theme only for now.",
+    "keyCharacteristics": [
+      "Lavender-grey canvas, white 18px cards, soft offset shadows.",
+      "One blue accent family; filled controls use the stronger blue.",
+      "Pill buttons, rounded-square icon badges, outline icons on a 24px grid.",
+      "The live layout miniature as the signature and brand mark.",
+      "Russian UI text in Segoe UI; nothing smaller than 12px."
+    ],
+    "rules": [
+      { "name": "The One Blue Rule", "body": "Blue is the only hue that means \"chosen\", \"act\" or \"data\". No second accent; status colours appear only as soft-wash plus ink pairs and only for real status.", "section": "colors" },
+      { "name": "The Filled-Means-Strong Rule", "body": "A blue surface that carries white text uses accent-strong, never accent; accent is for strokes, dots, arcs and tints.", "section": "colors" },
+      { "name": "The 12px Floor Rule", "body": "No text below 12px anywhere in the launcher.", "section": "typography" },
+      { "name": "The Two-Line Setting Rule", "body": "Every setting is a 13px ink label with an optional 12px muted hint beneath it; the control sits right-aligned on the same row.", "section": "typography" },
+      { "name": "The Soft Lift Rule", "body": "Every shadow is blurred at least twice its offset and tinted with the cool ink, never pure black. Depth reads as light, not as outline.", "section": "elevation" }
+    ],
+    "dos": [
+      "Do put every setting in a white 18px card on the lavender canvas, with a 16px/600 section label sitting on the canvas above it.",
+      "Do use Deep Press Blue for anything filled and white-labelled, Signal Blue for strokes, dots and arcs, Ice Wash for selection.",
+      "Do pair every label with a plain-language 12px muted hint when the effect is not obvious.",
+      "Do reuse the live layout miniature wherever a layout is shown; never substitute a static picture.",
+      "Do gate every animation on the motion setting (AppTheme.motion); 140ms for state colour, 160 to 260ms for movement.",
+      "Do draw new icons as 24px outline SVGs, 1.75 stroke, round caps and joins, tinted at runtime."
+    ],
+    "donts": [
+      "Don't introduce a second accent hue or use status colours for decoration.",
+      "Don't set text below 12px.",
+      "Don't use black or hard-edged shadows on cards; keep the soft, cool, blurred lift.",
+      "Don't use square buttons; actions are pills.",
+      "Don't show a status, count or ring the launcher cannot actually read.",
+      "Don't build a dense dark form-list; this world is light, soft and carded."
+    ]
+  }
+}
