@@ -696,11 +696,12 @@ fn create_event_clears_stale_state_even_when_process_and_thread_identity_match()
 }
 
 fn prepare_clamped_divider(windows: &[Fixture; 2]) -> (RECT, Vec<RECT>, Vec<RECT>) {
+    // Small enough for any CI display: Windows will not size a real window beyond the screen.
     let area = RECT {
         left: -25000,
         top: -25000,
-        right: -21560,
-        bottom: -23560,
+        right: -23600,
+        bottom: -24300,
     };
     let gaps = Gaps {
         inner: 10,
