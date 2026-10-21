@@ -1,14 +1,21 @@
 //! Slint settings launcher. The UI runs as a short-lived child process so its framework event loop
 //! cannot block tile-rs' Win32 loop, WinEvent hooks, tray messages, or animation timers.
 
+use std::cell::RefCell;
 use std::process::Command;
+use std::rc::Rc;
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
 use crate::config;
+use crate::launcher_model::{self, Capture};
+use slint::{ModelRc, SharedString, VecModel};
 use windows::core::{w, PCWSTR};
-use windows::Win32::Foundation::{CloseHandle, GetLastError, ERROR_ALREADY_EXISTS};
-use windows::Win32::System::Threading::CreateMutexW;
+use windows::Win32::Foundation::{CloseHandle, GetLastError, ERROR_ALREADY_EXISTS, WAIT_OBJECT_0};
+use windows::Win32::System::Threading::{
+    CreateEventW, CreateMutexW, SetEvent, WaitForSingleObject,
+};
 use windows::Win32::UI::HiDpi::{
     SetProcessDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
 };
@@ -27,6 +34,14 @@ pub fn create() -> bool {
 
 /// Start the UI process, or bring the existing launcher to the foreground.
 pub fn show() {
+    show_page(false);
+}
+
+pub fn show_updates() {
+    show_page(true);
+}
+
+fn show_page(updates: bool) {
     let exe = match std::env::current_exe() {
         Ok(path) => path,
         Err(err) => {
@@ -37,7 +52,12 @@ pub fn show() {
             return;
         }
     };
-    if let Err(err) = Command::new(exe).arg("--launcher-ui").spawn() {
+    let mut command = Command::new(exe);
+    command.arg("--launcher-ui");
+    if updates {
+        command.arg("--updates");
+    }
+    if let Err(err) = command.spawn() {
         crate::notify("tile-rs", &format!("Cannot open settings: {err}"));
     }
 }
@@ -103,10 +123,34 @@ pub fn run() {
         }
     };
     populate(&ui, &cfg);
+    ui.global::<ColorParser>()
+        .on_parse(|text| parse_hex_color(text.as_str()));
 
-    ui.on_check_updates(|| {
-        thread::spawn(crate::update::check_and_notify);
-    });
+    ui.set_app_version(env!("CARGO_PKG_VERSION").into());
+    if std::env::args().any(|arg| arg == "--updates") {
+        ui.set_page(7);
+    }
+    // `--page N` opens a given page (used for design previews and screenshots).
+    let args: Vec<String> = std::env::args().collect();
+    if let Some(page) = args
+        .windows(2)
+        .find(|pair| pair[0] == "--page")
+        .and_then(|pair| pair[1].parse::<i32>().ok())
+    {
+        ui.set_page(page.clamp(0, 7));
+    }
+    wire_updates(&ui);
+    wire_editors(&ui);
+    // The launcher is light-only: keep the caption light even when Windows uses dark mode.
+    slint::Timer::single_shot(Duration::from_millis(60), light_caption);
+    if std::env::args().any(|arg| arg == "--preview-dirty") {
+        let weak = ui.as_weak();
+        slint::Timer::single_shot(Duration::from_millis(700), move || {
+            if let Some(ui) = weak.upgrade() {
+                ui.set_inner_gap("12".into());
+            }
+        });
+    }
     ui.on_open_github(|| {
         crate::tray::open("https://github.com/ponslookspain/tile-rs", "");
     });
@@ -123,11 +167,12 @@ pub fn run() {
             &format!("\"{}\"", crate::log_file().display()),
         );
     });
-    ui.on_save({
+    // Property changes made while the window is being filled are not user edits.
+    slint::Timer::single_shot(Duration::from_millis(400), {
         let weak = ui.as_weak();
         move || {
             if let Some(ui) = weak.upgrade() {
-                save(&ui);
+                ui.set_dirty(false);
             }
         }
     });
@@ -136,8 +181,33 @@ pub fn run() {
         slint::quit_event_loop().ok();
     });
 
+    // Named event routes update notifications into an already open single-instance UI.
+    let updates_event =
+        unsafe { CreateEventW(None, false, false, w!("Local\\tile-rs-launcher-updates")) }.ok();
+    let routing_timer = slint::Timer::default();
+    if let Some(event) = updates_event {
+        let weak = ui.as_weak();
+        routing_timer.start(
+            slint::TimerMode::Repeated,
+            Duration::from_millis(250),
+            move || {
+                if unsafe { WaitForSingleObject(event, 0) } == WAIT_OBJECT_0 {
+                    if let Some(ui) = weak.upgrade() {
+                        ui.set_page(7);
+                        ui.invoke_check_updates();
+                    }
+                }
+            },
+        );
+    }
     if let Err(err) = ui.run() {
         crate::log(format!("launcher event loop failed: {err}"));
+    }
+    routing_timer.stop();
+    if let Some(event) = updates_event {
+        unsafe {
+            let _ = CloseHandle(event);
+        }
     }
     if !mutex.is_invalid() {
         unsafe {
@@ -146,7 +216,33 @@ pub fn run() {
     }
 }
 
+fn light_caption() {
+    use windows::Win32::Graphics::Dwm::{DwmSetWindowAttribute, DWMWA_USE_IMMERSIVE_DARK_MODE};
+    let Ok(hwnd) = (unsafe { FindWindowW(PCWSTR::null(), LAUNCHER_TITLE) }) else {
+        return;
+    };
+    let dark: i32 = 0; // FALSE
+    unsafe {
+        let _ = DwmSetWindowAttribute(
+            hwnd,
+            DWMWA_USE_IMMERSIVE_DARK_MODE,
+            &dark as *const i32 as *const _,
+            std::mem::size_of::<i32>() as u32,
+        );
+    }
+}
+
 fn activate_existing() {
+    if std::env::args().any(|arg| arg == "--updates") {
+        if let Ok(event) =
+            unsafe { CreateEventW(None, false, false, w!("Local\\tile-rs-launcher-updates")) }
+        {
+            unsafe {
+                let _ = SetEvent(event);
+                let _ = CloseHandle(event);
+            }
+        }
+    }
     // A second tray click can arrive before Slint has registered the top-level window.
     for _ in 0..20 {
         let hwnd = unsafe { FindWindowW(PCWSTR::null(), LAUNCHER_TITLE) }.unwrap_or_default();
@@ -176,7 +272,6 @@ fn populate(ui: &MainWindow, cfg: &config::Config) {
         IndicatorSize::Large => 2,
     });
     ui.set_animations(cfg.animations);
-    ui.set_snapshot_animations(cfg.snapshot_animations);
     ui.set_auto_overflow(cfg.auto_overflow);
     ui.set_show_indicator(cfg.workspace_indicator);
     ui.set_focus_follows_mouse(cfg.focus_follows_mouse);
@@ -190,6 +285,15 @@ fn populate(ui: &MainWindow, cfg: &config::Config) {
     ui.set_min_tile_width(cfg.min_tile_width.to_string().into());
     ui.set_min_tile_height(cfg.min_tile_height.to_string().into());
     ui.set_max_tiles(cfg.max_tiles.to_string().into());
+    ui.set_accent_color(
+        format!(
+            "#{:02x}{:02x}{:02x}",
+            cfg.accent_color & 0xff,
+            (cfg.accent_color >> 8) & 0xff,
+            (cfg.accent_color >> 16) & 0xff
+        )
+        .into(),
+    );
     ui.set_border_color(
         format!(
             "#{:02x}{:02x}{:02x}",
@@ -204,8 +308,97 @@ fn populate(ui: &MainWindow, cfg: &config::Config) {
         cfg.fullscreen_windows == FullscreenWindows::Ignore,
     ));
     ui.set_media_windows(i32::from(cfg.media_windows == MediaWindows::Tile));
-    ui.set_hotkeys(hotkeys_text().into());
-    ui.set_status(format!("Настройки загружены · версия {}", env!("CARGO_PKG_VERSION")).into());
+    ui.set_smart_gaps(cfg.smart_gaps);
+    ui.set_master_count(cfg.master_count.to_string().into());
+    ui.set_status("".into()); // empty: the header shows the page subtitle
+}
+
+/// UI state stays on Slint's thread; only network and installer work run on workers.
+fn wire_updates(ui: &MainWindow) {
+    let release = Arc::new(Mutex::new(None::<crate::update::Release>));
+    ui.on_check_updates({
+        let weak = ui.as_weak();
+        let release = release.clone();
+        move || {
+            let Some(ui) = weak.upgrade() else { return; };
+            if matches!(ui.get_update_state(), 1 | 4) { return; }
+            ui.set_update_state(1);
+            ui.set_update_message("Получаем информацию о последнем релизе…".into());
+            let weak = ui.as_weak();
+            let release = release.clone();
+            if let Err(err) = thread::Builder::new().name("launcher-update-check".into()).spawn(move || {
+                let result = crate::update::check_latest();
+                let _ = weak.upgrade_in_event_loop(move |ui| match result {
+                    Ok(Some(found)) => {
+                        ui.set_update_state(2);
+                        ui.set_update_version(found.version.clone().into());
+                        ui.set_release_notes(found.notes.clone().into());
+                        ui.set_update_message("После загрузки откроется установщик, затем tile-rs перезапустится. Сохраните изменения настроек перед установкой.".into());
+                        *release.lock().unwrap() = Some(found);
+                    }
+                    Ok(None) => {
+                        ui.set_update_state(3);
+                        ui.set_update_message("Обновлений нет. Можно продолжать работу.".into());
+                        ui.set_release_notes("".into());
+                        *release.lock().unwrap() = None;
+                    }
+                    Err(err) => {
+                        ui.set_update_state(5);
+                        ui.set_update_message(format!("Проверка не удалась: {err}. Нажмите Check update, чтобы повторить.").into());
+                    }
+                });
+            }) {
+                ui.set_update_state(5);
+                ui.set_update_message(format!("Не удалось запустить проверку: {err}").into());
+            }
+        }
+    });
+    ui.on_install_update({
+        let weak = ui.as_weak();
+        let release = release.clone();
+        move || {
+            let Some(ui) = weak.upgrade() else { return; };
+            if ui.get_update_state() != 2 { return; }
+            let Some(found) = release.lock().unwrap().clone() else { return; };
+            ui.set_update_state(4);
+            ui.set_update_progress(0);
+            ui.set_update_message("Загружаем установщик и проверяем SHA-256…".into());
+            let weak = ui.as_weak();
+            let worker_ui = weak.clone();
+            if let Err(err) = thread::Builder::new().name("launcher-update-install".into()).spawn(move || {
+                let progress_ui = worker_ui.clone();
+                let result = crate::update::install(&found, move |percent| {
+                    let _ = progress_ui.upgrade_in_event_loop(move |ui| ui.set_update_progress(i32::from(percent)));
+                });
+                let _ = worker_ui.upgrade_in_event_loop(move |ui| match result {
+                    Ok(()) => { let _ = slint::quit_event_loop(); }
+                    Err(err) => {
+                        ui.set_update_state(5);
+                        ui.set_update_message(format!("Установка не началась: {err}. Повторите проверку или откройте релизы.").into());
+                    }
+                });
+            }) {
+                ui.set_update_state(5);
+                ui.set_update_message(format!("Не удалось запустить загрузку: {err}").into());
+            }
+        }
+    });
+    ui.on_open_release({
+        let release = release.clone();
+        move || {
+            let url = release
+                .lock()
+                .unwrap()
+                .as_ref()
+                .map(|r| r.url.clone())
+                .unwrap_or_else(|| {
+                    "https://github.com/ponslookspain/tile-rs/releases/latest".into()
+                });
+            crate::tray::open(&url, "");
+        }
+    });
+    // Populate the update badge as soon as the launcher opens without blocking its event loop.
+    ui.invoke_check_updates();
 }
 
 fn easing_name(easing: crate::geometry::Easing) -> &'static str {
@@ -219,34 +412,237 @@ fn easing_name(easing: crate::geometry::Easing) -> &'static str {
     }
 }
 
-fn hotkeys_text() -> String {
-    let mut order: Vec<String> = Vec::new();
-    let mut map: std::collections::HashMap<String, Vec<String>> = std::collections::HashMap::new();
-    for (action, spec) in &config::current().bindings {
-        let name = crate::action_name(*action);
-        if !map.contains_key(&name) {
-            order.push(name.clone());
-        }
-        map.entry(name).or_default().push(spec.clone());
+/// "#RRGGBB" -> colour for the swatches; anything else is transparent.
+fn parse_hex_color(text: &str) -> slint::Color {
+    let hex = text.trim().trim_start_matches('#');
+    match (hex.len(), u32::from_str_radix(hex, 16)) {
+        (6, Ok(v)) => slint::Color::from_rgb_u8((v >> 16) as u8, (v >> 8) as u8, v as u8),
+        _ => slint::Color::from_argb_u8(0, 0, 0, 0),
     }
-    let mut out = String::new();
-    for name in order {
-        let specs = &map[&name];
-        if specs.len() == 1 {
-            out.push_str(&format!("{name} = \"{}\"\n", specs[0]));
-        } else {
-            let values = specs
-                .iter()
-                .map(|s| format!("\"{s}\""))
-                .collect::<Vec<_>>()
-                .join(", ");
-            out.push_str(&format!("{name} = [{values}]\n"));
-        }
-    }
-    out
 }
 
-fn save(ui: &MainWindow) {
+/// Where the "welcome" card remembers that it was shown.
+fn welcome_marker() -> std::path::PathBuf {
+    config::config_path().with_file_name("welcome-shown")
+}
+
+/// State of the hotkey and rule editors, which live outside the Slint properties.
+struct Editor {
+    rows: Vec<launcher_model::Row>,
+    rules: Vec<config::Rule>,
+    rules_dirty: bool,
+    /// (process, class, title) of the running windows offered in the rule picker.
+    apps: Vec<(String, String, String)>,
+}
+
+type Shared = Rc<RefCell<Editor>>;
+
+fn push_rows(ui: &MainWindow, editor: &Editor) {
+    let flags = launcher_model::conflicts(&editor.rows);
+    let rows: Vec<HotkeyRowData> = editor
+        .rows
+        .iter()
+        .zip(flags)
+        .map(|(row, conflict)| HotkeyRowData {
+            action: row.action.clone().into(),
+            label: row.label.clone().into(),
+            group: row.group.clone().into(),
+            keys: ModelRc::new(VecModel::from(
+                row.keys
+                    .iter()
+                    .map(|k| SharedString::from(launcher_model::display_spec(k)))
+                    .collect::<Vec<_>>(),
+            )),
+            conflict,
+        })
+        .collect();
+    ui.set_hotkeys_bound(editor.rows.iter().filter(|r| !r.keys.is_empty()).count() as i32);
+    ui.set_hotkey_rows(ModelRc::new(VecModel::from(rows)));
+}
+
+fn push_rules(ui: &MainWindow, editor: &Editor) {
+    let rules: Vec<SharedString> = editor
+        .rules
+        .iter()
+        .map(|rule| launcher_model::rule_label(rule).into())
+        .collect();
+    ui.set_rule_rows(ModelRc::new(VecModel::from(rules)));
+}
+
+fn push_apps(ui: &MainWindow, editor: &Editor) {
+    let choices: Vec<SharedString> = editor
+        .apps
+        .iter()
+        .map(|(process, _, title)| {
+            let title: String = title.chars().take(44).collect();
+            format!("{title}  ·  {process}.exe").into()
+        })
+        .collect();
+    ui.set_app_choices(ModelRc::new(VecModel::from(choices)));
+    ui.set_rule_app_index(0);
+}
+
+/// Hotkey editor, application rules and the welcome card.
+fn wire_editors(ui: &MainWindow) {
+    let editor: Shared = Rc::new(RefCell::new(Editor {
+        rows: launcher_model::rows_from_bindings(&config::current().bindings),
+        rules: config::current().rules,
+        rules_dirty: false,
+        apps: crate::window::running_apps(),
+    }));
+    {
+        let ed = editor.borrow();
+        push_rows(ui, &ed);
+        push_rules(ui, &ed);
+        push_apps(ui, &ed);
+    }
+    ui.set_show_welcome(!welcome_marker().exists());
+    ui.on_dismiss_welcome({
+        let weak = ui.as_weak();
+        move || {
+            let _ = std::fs::write(welcome_marker(), "1");
+            if let Some(ui) = weak.upgrade() {
+                ui.set_show_welcome(false);
+            }
+        }
+    });
+
+    ui.on_key_captured({
+        let weak = ui.as_weak();
+        let editor = editor.clone();
+        move |index, append, text, alt, ctrl, shift, meta| {
+            let Some(ui) = weak.upgrade() else { return };
+            let mut ed = editor.borrow_mut();
+            let Some(row) = usize::try_from(index).ok().and_then(|i| ed.rows.get_mut(i)) else {
+                ui.set_recording(-1);
+                return;
+            };
+            match launcher_model::capture_key(text.as_str(), alt, ctrl, shift, meta) {
+                Capture::Wait => {}
+                Capture::Cancel => ui.set_recording(-1),
+                Capture::Clear => {
+                    row.keys.clear();
+                    ui.set_recording(-1);
+                    push_rows(&ui, &ed);
+                }
+                Capture::Reject(reason) => ui.set_status(reason.into()),
+                Capture::Spec(spec) => {
+                    if !append {
+                        row.keys.clear();
+                    }
+                    if !row.keys.contains(&spec) {
+                        row.keys.push(spec);
+                    }
+                    ui.set_recording(-1);
+                    push_rows(&ui, &ed);
+                    if launcher_model::conflicts(&ed.rows).iter().any(|c| *c) {
+                        ui.set_status(
+                            "Это сочетание уже занято другим действием: отмечено ⚠".into(),
+                        );
+                    }
+                }
+            }
+        }
+    });
+    ui.on_clear_keys({
+        let weak = ui.as_weak();
+        let editor = editor.clone();
+        move |index| {
+            let Some(ui) = weak.upgrade() else { return };
+            let mut ed = editor.borrow_mut();
+            if let Some(row) = usize::try_from(index).ok().and_then(|i| ed.rows.get_mut(i)) {
+                row.keys.clear();
+            }
+            ui.set_recording(-1);
+            push_rows(&ui, &ed);
+        }
+    });
+    ui.on_reset_hotkeys({
+        let weak = ui.as_weak();
+        let editor = editor.clone();
+        move || {
+            let Some(ui) = weak.upgrade() else { return };
+            let mut ed = editor.borrow_mut();
+            ed.rows = launcher_model::default_rows();
+            ui.set_recording(-1);
+            push_rows(&ui, &ed);
+            ui.set_status("Сочетания сброшены к стандартным. Нажмите «Сохранить».".into());
+        }
+    });
+
+    ui.on_refresh_apps({
+        let weak = ui.as_weak();
+        let editor = editor.clone();
+        move || {
+            let Some(ui) = weak.upgrade() else { return };
+            let mut ed = editor.borrow_mut();
+            ed.apps = crate::window::running_apps();
+            push_apps(&ui, &ed);
+        }
+    });
+    ui.on_add_rule({
+        let weak = ui.as_weak();
+        let editor = editor.clone();
+        move || {
+            let Some(ui) = weak.upgrade() else { return };
+            let mut ed = editor.borrow_mut();
+            let Some((process, _, _)) = usize::try_from(ui.get_rule_app_index())
+                .ok()
+                .and_then(|i| ed.apps.get(i).cloned())
+            else {
+                return;
+            };
+            let kind = ui.get_rule_kind_index().clamp(0, 9);
+            let rule = config::Rule {
+                process: Some(process),
+                action: (kind == 0).then(|| "float".to_string()),
+                workspace: (kind > 0).then_some(kind as u8),
+                ..config::Rule::default()
+            };
+            let same = |r: &config::Rule| {
+                r.process == rule.process
+                    && r.class.is_none()
+                    && r.title.is_none()
+                    && r.action == rule.action
+                    && r.workspace == rule.workspace
+            };
+            if ed.rules.iter().any(same) {
+                ui.set_status("Такое правило уже есть".into());
+                return;
+            }
+            ed.rules.push(rule);
+            ed.rules_dirty = true;
+            push_rules(&ui, &ed);
+            ui.set_status("Правило добавлено. Нажмите «Сохранить».".into());
+        }
+    });
+    ui.on_delete_rule({
+        let weak = ui.as_weak();
+        let editor = editor.clone();
+        move |index| {
+            let Some(ui) = weak.upgrade() else { return };
+            let mut ed = editor.borrow_mut();
+            if let Ok(i) = usize::try_from(index) {
+                if i < ed.rules.len() {
+                    ed.rules.remove(i);
+                    ed.rules_dirty = true;
+                }
+            }
+            push_rules(&ui, &ed);
+        }
+    });
+
+    ui.on_save({
+        let weak = ui.as_weak();
+        move || {
+            if let Some(ui) = weak.upgrade() {
+                save(&ui, &mut editor.borrow_mut());
+            }
+        }
+    });
+}
+
+fn save(ui: &MainWindow, editor: &mut Editor) {
     use crate::config::{IndicatorSize, Layout};
 
     let layout = match ui.get_layout_index() {
@@ -262,15 +658,12 @@ fn save(ui: &MainWindow) {
     };
     let easing = ui.get_easing().to_string();
     let border_color = ui.get_border_color().to_string();
+    let accent_color = ui.get_accent_color().to_string();
     let pairs: Vec<(&str, String)> = vec![
         ("layout", format!("\"{}\"", layout.name())),
         ("inner_gap", ui.get_inner_gap().to_string()),
         ("outer_gap", ui.get_outer_gap().to_string()),
         ("animations", ui.get_animations().to_string()),
-        (
-            "snapshot_animations",
-            ui.get_snapshot_animations().to_string(),
-        ),
         ("animation_ms", ui.get_animation_ms().to_string()),
         ("easing", format!("\"{easing}\"")),
         ("resize_step", ui.get_resize_step().to_string()),
@@ -278,6 +671,8 @@ fn save(ui: &MainWindow) {
         ("min_tile_height", ui.get_min_tile_height().to_string()),
         ("max_tiles", ui.get_max_tiles().to_string()),
         ("auto_overflow", ui.get_auto_overflow().to_string()),
+        ("smart_gaps", ui.get_smart_gaps().to_string()),
+        ("master_count", ui.get_master_count().to_string()),
         ("workspace_indicator", ui.get_show_indicator().to_string()),
         (
             "workspace_indicator_size",
@@ -289,6 +684,7 @@ fn save(ui: &MainWindow) {
         ),
         ("border", ui.get_highlight_window().to_string()),
         ("border_color", format!("\"{border_color}\"")),
+        ("accent_color", format!("\"{accent_color}\"")),
         ("border_width", ui.get_border_width().to_string()),
         (
             "fullscreen_windows",
@@ -314,6 +710,12 @@ fn save(ui: &MainWindow) {
         ),
     ];
 
+    if launcher_model::conflicts(&editor.rows).iter().any(|c| *c) {
+        ui.set_status(
+            "Исправьте сочетания, отмеченные ⚠: одно сочетание нельзя назначить дважды".into(),
+        );
+        return;
+    }
     let path = config::config_path();
     let current = match std::fs::read_to_string(&path) {
         Ok(text) => text,
@@ -322,18 +724,23 @@ fn save(ui: &MainWindow) {
             return;
         }
     };
-    let updated = edit_hotkeys(
+    let mut updated = edit_hotkeys(
         &config::edit_top(&current, &pairs),
-        ui.get_hotkeys().as_ref(),
+        &launcher_model::rows_to_lines(&editor.rows),
     );
+    if editor.rules_dirty {
+        updated = launcher_model::edit_rules(&updated, &editor.rules);
+    }
     if let Err(err) = config::parse(&updated) {
         ui.set_status(format!("Проверьте настройки: {err}").into());
         return;
     }
-    if let Err(err) = std::fs::write(&path, updated) {
+    if let Err(err) = config::save_atomic(&path, &updated) {
         ui.set_status(format!("Не удалось сохранить настройки: {err}").into());
         return;
     }
+    editor.rules_dirty = false;
+    ui.set_dirty(false);
     if !crate::set_autostart(ui.get_autostart()) {
         ui.set_status("Настройки сохранены, но не удалось изменить автозапуск".into());
     } else if crate::tray::request_manager_reload() {

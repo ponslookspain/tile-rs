@@ -3,8 +3,7 @@
 //! The border is a click-through, tool-window, layered window. Drawing it ourselves makes it
 //! independent of the DWM border colour, which DWM drops whenever a window moves and which some
 //! windows (e.g. console windows such as Windows PowerShell) never show at all. The indicator is
-//! the same kind of window, but it keeps the mouse over its dots so they can be hovered and
-//! clicked (the colour-keyed background between the dots stays click-through).
+//! a per-pixel-alpha layered window that keeps the mouse, so its dots can be hovered and clicked.
 
 use std::mem::size_of;
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicIsize, AtomicU32, Ordering};
@@ -15,9 +14,8 @@ use crate::config::IndicatorSize;
 use windows::core::w;
 use windows::Win32::Foundation::{COLORREF, HINSTANCE, HWND, LPARAM, LRESULT, RECT, WPARAM};
 use windows::Win32::Graphics::Gdi::{
-    BeginPaint, CreatePen, CreateSolidBrush, DeleteObject, Ellipse, EndPaint, FillRect,
-    GetStockObject, InvalidateRect, RoundRect, SelectObject, HDC, HGDIOBJ, NULL_PEN, PAINTSTRUCT,
-    PS_SOLID,
+    BeginPaint, CreateSolidBrush, DeleteObject, EndPaint, FillRect, GetStockObject, InvalidateRect,
+    RoundRect, SelectObject, HDC, HGDIOBJ, NULL_PEN, PAINTSTRUCT,
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::Input::KeyboardAndMouse::{TrackMouseEvent, TME_LEAVE, TRACKMOUSEEVENT};
@@ -40,6 +38,8 @@ static BORDER_VISIBLE: AtomicBool = AtomicBool::new(false);
 static BORDER_COLOR: AtomicU32 = AtomicU32::new(0x00FF_FFFF);
 static BORDER_WIDTH: AtomicU32 = AtomicU32::new(2);
 static BORDER_RADIUS: AtomicU32 = AtomicU32::new(10);
+static BORDER_PAINT_WIDTH: AtomicI32 = AtomicI32::new(0);
+static BORDER_PAINT_HEIGHT: AtomicI32 = AtomicI32::new(0);
 /// Colour that is made transparent (the centre of the border window).
 const BORDER_KEY: u32 = 0x00FF_00FE;
 
@@ -160,8 +160,14 @@ pub fn show_border(rect: RECT, window: HWND, radius: i32, width: i32) {
     if w <= 0 || h <= 0 {
         return;
     }
-    BORDER_WIDTH.store(width.max(1) as u32, Ordering::Relaxed);
+    let drawing_changed = BORDER_WIDTH.swap(width.max(1) as u32, Ordering::Relaxed)
+        != width.max(1) as u32
+        || BORDER_RADIUS.load(Ordering::Relaxed) != radius.max(1) as u32
+        || BORDER_PAINT_WIDTH.load(Ordering::Relaxed) != w
+        || BORDER_PAINT_HEIGHT.load(Ordering::Relaxed) != h;
     BORDER_RADIUS.store(radius.max(1) as u32, Ordering::Relaxed);
+    BORDER_PAINT_WIDTH.store(w, Ordering::Relaxed);
+    BORDER_PAINT_HEIGHT.store(h, Ordering::Relaxed);
     unsafe {
         let hwnd = HWND(raw as *mut _);
         let _ = SetWindowPos(
@@ -173,9 +179,10 @@ pub fn show_border(rect: RECT, window: HWND, radius: i32, width: i32) {
             h,
             SWP_NOACTIVATE,
         );
-        // the frame depends on the size, so repaint on every move; it paints every pixel, so no
-        // background erase is needed
-        let _ = InvalidateRect(Some(hwnd), None, false);
+        // Pure translations reuse the existing layered bitmap.
+        if drawing_changed {
+            let _ = InvalidateRect(Some(hwnd), None, false);
+        }
         // only show it if it is not already visible (this runs on every animation frame)
         if !BORDER_VISIBLE.swap(true, Ordering::Relaxed) {
             let _ = ShowWindow(hwnd, SW_SHOWNA);
@@ -193,7 +200,19 @@ pub fn hide_border() {
     }
 }
 
+#[cfg(test)]
+pub(crate) fn border_rect() -> Option<RECT> {
+    let hwnd = HWND(BORDER.load(Ordering::Relaxed) as *mut _);
+    let mut rect = RECT::default();
+    unsafe {
+        windows::Win32::UI::WindowsAndMessaging::GetWindowRect(hwnd, &mut rect).ok()?;
+    }
+    Some(rect)
+}
+
 pub fn destroy_border() {
+    BORDER_PAINT_WIDTH.store(0, Ordering::Relaxed);
+    BORDER_PAINT_HEIGHT.store(0, Ordering::Relaxed);
     BORDER_VISIBLE.store(false, Ordering::Relaxed);
     let raw = BORDER.swap(0, Ordering::Relaxed);
     if raw != 0 {
@@ -204,29 +223,96 @@ pub fn destroy_border() {
 }
 
 // ---------------------------------------------------------------------------
-// workspace indicator: a small row of dots at the top centre
+// workspace indicator: a slim row of dots at the top centre
 // ---------------------------------------------------------------------------
+//
+// The dots are rendered in software into a 32-bit premultiplied-alpha bitmap and handed to
+// `UpdateLayeredWindow`, so their edges are anti-aliased (a colour key can only cut hard,
+// jagged edges). Every background pixel keeps an alpha of 1/255: invisible, but still hit by the
+// mouse, so the whole row (and the outer gap under it) is a click target while only a slim bar is
+// reserved from the tiling area.
+
+use windows::Win32::Foundation::{POINT, SIZE};
+use windows::Win32::Graphics::Gdi::{
+    CreateCompatibleDC, CreateDIBSection, DeleteDC, GetDC, ReleaseDC, AC_SRC_ALPHA, AC_SRC_OVER,
+    BITMAPINFO, BITMAPINFOHEADER, BI_RGB, BLENDFUNCTION, DIB_RGB_COLORS,
+};
+use windows::Win32::UI::WindowsAndMessaging::{UpdateLayeredWindow, ULW_ALPHA};
 
 const DOTS: i32 = 9;
 static INDICATOR_SCALE: AtomicU32 = AtomicU32::new(1);
-/// Colour key that is made transparent (the dots are drawn in other colours).
-const IND_KEY: u32 = 0x00FF_00FF;
-/// Hover animation: progress runs 0..=HOVER_MAX, HOVER_STEP per timer tick, and a hovered dot
-/// grows by up to HOVER_GROW pixels.
+/// Accent colour of the indicator as a COLORREF (0x00BBGGRR).
+static INDICATOR_ACCENT: AtomicU32 = AtomicU32::new(0x00FF_8C00);
+/// Hover animation: progress runs 0..=HOVER_MAX, HOVER_STEP per timer tick.
 const HOVER_MAX: u32 = 100;
-const HOVER_STEP: u32 = 25;
-const HOVER_GROW: i32 = 2;
+const HOVER_STEP: u32 = 20;
 /// Timer id of the hover animation on the indicator window.
 const TIMER_HOVER: usize = 1;
 
-fn indicator_metrics() -> (i32, i32, i32) {
-    match INDICATOR_SCALE.load(Ordering::Relaxed) {
-        // Visual diameter, breathing room between dots, and outer click-area padding.
-        // The 24/28/32 px pitch keeps the targets easy to hit while the dots stay discreet.
-        0 => (6, 18, 10),
-        2 => (10, 22, 14),
-        _ => (8, 20, 12),
+/// Indicator geometry. All lengths below are in 96-DPI pixels and are multiplied by `Metrics::k`.
+///
+/// The indicator is a white pill (28 high, 8 padding, 8 gap) holding one 24x12 capsule for the
+/// current workspace and 12x12 dots for the others, with soft shadows beneath. `TOP`, `SIDE` and
+/// `BOTTOM` are transparent margins of the window: `TOP` is kept free of tiles together with the
+/// pill; the rest only gives the shadow room.
+const PILL_H: f32 = 28.0;
+const PAD: f32 = 8.0;
+const GAP: f32 = 8.0;
+const DOT: f32 = 12.0;
+const ACTIVE_W: f32 = 24.0;
+const TOP: f32 = 8.0;
+const SIDE: f32 = 12.0;
+const BOTTOM: f32 = 8.0;
+/// Width of the pill: every dot plus one wider (active) capsule.
+const PILL_W: f32 = 2.0 * PAD + (DOTS as f32 - 1.0) * DOT + ACTIVE_W + (DOTS as f32 - 1.0) * GAP;
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Metrics {
+    /// Device pixels per design pixel: monitor DPI times the configured indicator size.
+    k: f32,
+}
+
+fn metrics(dpi: u32) -> Metrics {
+    let size = match INDICATOR_SCALE.load(Ordering::Relaxed) {
+        0 => 0.8,
+        2 => 1.25,
+        _ => 1.0,
+    };
+    Metrics {
+        k: dpi.max(96) as f32 / 96.0 * size,
     }
+}
+
+impl Metrics {
+    fn px(&self, v: f32) -> f32 {
+        v * self.k
+    }
+}
+
+/// Height reserved for the indicator at the top of a monitor's work area (pill plus its top margin).
+pub fn indicator_bar_height(dpi: u32) -> i32 {
+    metrics(dpi).px(TOP + PILL_H).round() as i32
+}
+
+/// Size of the indicator window: the pill plus transparent margins for its shadow.
+pub fn indicator_window_size(dpi: u32) -> (i32, i32) {
+    let m = metrics(dpi);
+    (
+        m.px(PILL_W + 2.0 * SIDE).round() as i32,
+        m.px(TOP + PILL_H + BOTTOM).round() as i32,
+    )
+}
+
+/// Left edge and width (design pixels, window coordinates) of dot `i` when workspace `cur` is the
+/// current one (drawn wider).
+fn dot_span(i: i32, cur: i32) -> (f32, f32) {
+    let wide = if cur >= 0 && cur < i {
+        ACTIVE_W - DOT
+    } else {
+        0.0
+    };
+    let width = if i == cur { ACTIVE_W } else { DOT };
+    (SIDE + PAD + i as f32 * (DOT + GAP) + wide, width)
 }
 
 /// One indicator per monitor; the window index is the monitor slot.
@@ -238,6 +324,7 @@ struct Ind {
     hwnd: AtomicIsize,
     cur: AtomicU32,
     pop: AtomicU32,
+    dpi: AtomicU32,
     /// Dot currently under the cursor (-1 = none).
     hover: AtomicI32,
     /// Per-dot hover animation progress, 0..=HOVER_MAX.
@@ -256,12 +343,22 @@ impl Ind {
             hwnd: AtomicIsize::new(0),
             cur: AtomicU32::new(0),
             pop: AtomicU32::new(0),
+            dpi: AtomicU32::new(96),
             hover: AtomicI32::new(-1),
             anim: [const { AtomicU32::new(0) }; DOTS as usize],
             rect: [const { AtomicI32::new(0) }; 4],
             s_cur: AtomicU32::new(u32::MAX),
             s_pop: AtomicU32::new(u32::MAX),
         }
+    }
+
+    fn size(&self) -> (i32, i32) {
+        let r: Vec<i32> = self
+            .rect
+            .iter()
+            .map(|a| a.load(Ordering::Relaxed))
+            .collect();
+        (r[2] - r[0], r[3] - r[1])
     }
 }
 
@@ -274,15 +371,19 @@ pub fn set_indicator_click(f: fn(usize, u8)) {
     let _ = IND_CLICK.set(f);
 }
 
-/// The dot index whose hit area (the dot plus half the gap on each side) contains `x`, or -1.
-fn dot_at_x(x: i32, width: i32) -> i32 {
-    let (dot, gap, _) = indicator_metrics();
-    let content = DOTS * dot + (DOTS - 1) * gap;
-    let x0 = (width - content) / 2;
-    let slot = dot + gap;
+/// The dot whose click target (the dot plus half a gap on each side, and the pill's padding at the
+/// ends) contains window x `x`, or -1.
+fn dot_at_x(x: i32, dpi: u32, cur: i32) -> i32 {
+    let u = x as f32 / metrics(dpi).k;
     for i in 0..DOTS {
-        let cx = x0 + i * slot + dot / 2;
-        if (x - cx).abs() <= slot / 2 {
+        let (left, width) = dot_span(i, cur);
+        let from = if i == 0 { SIDE } else { left - GAP / 2.0 };
+        let to = if i == DOTS - 1 {
+            SIDE + PILL_W
+        } else {
+            left + width + GAP / 2.0
+        };
+        if u >= from && u < to {
             return i;
         }
     }
@@ -298,10 +399,8 @@ fn hover_tick(hwnd: HWND, ind: &Ind) -> bool {
         let cur = a.load(Ordering::Relaxed);
         let next = if cur < target {
             (cur + HOVER_STEP).min(target)
-        } else if cur > target {
-            cur.saturating_sub(HOVER_STEP)
         } else {
-            cur
+            cur.saturating_sub(HOVER_STEP).max(target)
         };
         if next != cur {
             a.store(next, Ordering::Relaxed);
@@ -309,43 +408,210 @@ fn hover_tick(hwnd: HWND, ind: &Ind) -> bool {
         }
     }
     if moving {
-        unsafe {
-            let _ = InvalidateRect(Some(hwnd), None, false);
-        }
+        render_indicator(hwnd, ind);
     }
     moving
 }
 
-/// Paints one opaque circle. The indicator's colour-key background keeps everything around it
-/// transparent, so concentric circles can create a simple glow and outline without layered alpha.
-unsafe fn draw_dot(hdc: HDC, cx: i32, cy: i32, diameter: i32, color: u32) {
-    let left = cx - diameter / 2;
-    let top = cy - diameter / 2;
-    let brush = CreateSolidBrush(COLORREF(color));
-    let pen = CreatePen(PS_SOLID, 1, COLORREF(color));
-    let old_brush = SelectObject(hdc, HGDIOBJ(brush.0));
-    let old_pen = SelectObject(hdc, HGDIOBJ(pen.0));
-    let _ = Ellipse(hdc, left, top, left + diameter, top + diameter);
-    SelectObject(hdc, old_brush);
-    SelectObject(hdc, old_pen);
-    let _ = DeleteObject(HGDIOBJ(brush.0));
-    let _ = DeleteObject(HGDIOBJ(pen.0));
+/// A premultiplied RGBA pixel in 0..=1.
+#[derive(Clone, Copy, Default)]
+struct Px([f32; 4]);
+
+impl Px {
+    /// Source-over compositing of `rgb` at `alpha` onto this pixel.
+    fn over(&mut self, rgb: (u8, u8, u8), alpha: f32) {
+        if alpha <= 0.0 {
+            return;
+        }
+        let a = alpha.min(1.0);
+        let keep = 1.0 - a;
+        let c = [rgb.0, rgb.1, rgb.2].map(|v| v as f32 / 255.0 * a);
+        for (i, v) in c.iter().enumerate() {
+            self.0[i] = v + self.0[i] * keep;
+        }
+        self.0[3] = a + self.0[3] * keep;
+    }
 }
 
-/// Width and height of the indicator bar (the tiling area leaves this much room at the top).
-pub fn indicator_size() -> (i32, i32) {
-    let (dot, gap, pad) = indicator_metrics();
-    let w = pad * 2 + DOTS * dot + (DOTS - 1) * gap;
-    let h = pad * 2 + dot;
-    (w, h)
+/// Signed distance from (x, y) to a horizontal capsule centred at (cx, cy): `half` is the half
+/// length of its straight part (0 = a circle) and `r` its radius. Negative inside.
+fn capsule_sdf(x: f32, y: f32, cx: f32, cy: f32, half: f32, r: f32) -> f32 {
+    let qx = ((x - cx).abs() - half).max(0.0);
+    let qy = y - cy;
+    (qx * qx + qy * qy).sqrt() - r
 }
 
-/// Height of the reserved bar at the top of the work area.
-pub fn indicator_height() -> i32 {
-    indicator_size().1
+/// Anti-aliased coverage of the area `d <= edge`.
+fn fill_cov(d: f32, edge: f32) -> f32 {
+    (edge - d + 0.5).clamp(0.0, 1.0)
 }
 
-/// Changes the indicator scale and resizes the existing overlay windows immediately.
+/// Anti-aliased coverage of the band `inner < d <= outer`.
+fn band_cov(d: f32, inner: f32, outer: f32) -> f32 {
+    (fill_cov(d, outer) - fill_cov(d, inner)).max(0.0)
+}
+
+const SHADOW: (u8, u8, u8) = (0x10, 0x1A, 0x2B);
+
+/// `smoothstep`-shaped shadow coverage: 1 deep inside the shape, 0 beyond `blur` outside it.
+fn shadow_cov(d: f32, blur: f32) -> f32 {
+    let t = ((d + blur / 2.0) / blur).clamp(0.0, 1.0);
+    1.0 - t * t * (3.0 - 2.0 * t)
+}
+
+/// Renders the whole indicator as premultiplied BGRA rows (top-down). Background pixels are fully
+/// transparent, so only the pill and its shadow take mouse input.
+fn paint_dots(
+    w: i32,
+    h: i32,
+    m: Metrics,
+    cur: i32,
+    pop: u32,
+    hover: &[f32],
+    accent: (u8, u8, u8),
+) -> Vec<u32> {
+    let mut px = vec![Px([0.0; 4]); (w.max(0) * h.max(0)) as usize];
+    let cy = m.px(TOP + PILL_H / 2.0);
+    let pill_cx = w as f32 / 2.0;
+    let half = m.px((PILL_W - PILL_H) / 2.0);
+    let r = m.px(PILL_H / 2.0);
+    for y in 0..h {
+        for x in 0..w {
+            let (fx, fy) = (x as f32 + 0.5, y as f32 + 0.5);
+            let p = &mut px[(y * w + x) as usize];
+            // soft drop shadows (wide and faint, then tight and darker), then the white pill
+            let wide = capsule_sdf(fx, fy - m.px(4.0), pill_cx, cy, half, r);
+            p.over(SHADOW, 0.16 * shadow_cov(wide, m.px(12.0)));
+            let tight = capsule_sdf(fx, fy - m.px(1.0), pill_cx, cy, half, r);
+            p.over(SHADOW, 0.10 * shadow_cov(tight, m.px(4.0)));
+            let d = capsule_sdf(fx, fy, pill_cx, cy, half, r);
+            p.over((255, 255, 255), fill_cov(d, 0.0));
+        }
+    }
+    for i in 0..DOTS {
+        let (left, width) = dot_span(i, cur);
+        let cx = m.px(left + width / 2.0);
+        let t = hover.get(i as usize).copied().unwrap_or(0.0);
+        let selected = i == cur;
+        let occupied = pop & (1 << i) != 0;
+        let grow = if selected { 0.0 } else { m.px(1.0) * t };
+        let (hw, radius) = (m.px((width - DOT) / 2.0), m.px(DOT / 2.0) + grow);
+        let reach = hw + radius + m.px(5.0);
+        let (x0, x1) = (
+            ((cx - reach).floor() as i32).max(0),
+            ((cx + reach).ceil() as i32).min(w - 1),
+        );
+        let (y0, y1) = (
+            ((cy - reach).floor() as i32).max(0),
+            ((cy + reach).ceil() as i32).min(h - 1),
+        );
+        for y in y0..=y1 {
+            for x in x0..=x1 {
+                let d = capsule_sdf(x as f32 + 0.5, y as f32 + 0.5, cx, cy, hw, radius);
+                let p = &mut px[(y * w + x) as usize];
+                if selected {
+                    // a 4 px outer ring at 25% of the accent, then the solid capsule
+                    p.over(accent, 0.25 * band_cov(d, 0.0, m.px(4.0)));
+                    p.over(accent, fill_cov(d, 0.0));
+                } else if occupied {
+                    p.over(accent, fill_cov(d, 0.0));
+                } else {
+                    p.over(accent, (0.15 + 0.25 * t) * fill_cov(d, 0.0));
+                }
+            }
+        }
+    }
+    px.iter()
+        .map(|p| {
+            let [r, g, b, a] = p.0.map(|v| (v.clamp(0.0, 1.0) * 255.0).round() as u32);
+            (a << 24) | (r << 16) | (g << 8) | b
+        })
+        .collect()
+}
+
+/// Draws the current state of `ind` into its layered window.
+fn render_indicator(hwnd: HWND, ind: &Ind) {
+    let (w, h) = ind.size();
+    if w <= 0 || h <= 0 {
+        return;
+    }
+    let dpi = ind.dpi.load(Ordering::Relaxed);
+    let hover: Vec<f32> = ind
+        .anim
+        .iter()
+        .map(|a| a.load(Ordering::Relaxed) as f32 / HOVER_MAX as f32)
+        .collect();
+    let accent = INDICATOR_ACCENT.load(Ordering::Relaxed);
+    let pixels = paint_dots(
+        w,
+        h,
+        metrics(dpi),
+        ind.cur.load(Ordering::Relaxed) as i32,
+        ind.pop.load(Ordering::Relaxed),
+        &hover,
+        (
+            (accent & 0xff) as u8,
+            ((accent >> 8) & 0xff) as u8,
+            ((accent >> 16) & 0xff) as u8,
+        ),
+    );
+    unsafe {
+        let screen = GetDC(None);
+        let mem = CreateCompatibleDC(Some(screen));
+        let info = BITMAPINFO {
+            bmiHeader: BITMAPINFOHEADER {
+                biSize: size_of::<BITMAPINFOHEADER>() as u32,
+                biWidth: w,
+                biHeight: -h, // top-down rows
+                biPlanes: 1,
+                biBitCount: 32,
+                biCompression: BI_RGB.0,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let mut bits: *mut core::ffi::c_void = std::ptr::null_mut();
+        if let Ok(bitmap) = CreateDIBSection(Some(mem), &info, DIB_RGB_COLORS, &mut bits, None, 0) {
+            if !bits.is_null() {
+                std::ptr::copy_nonoverlapping(pixels.as_ptr(), bits as *mut u32, pixels.len());
+                let old = SelectObject(mem, HGDIOBJ(bitmap.0));
+                let blend = BLENDFUNCTION {
+                    BlendOp: AC_SRC_OVER as u8,
+                    BlendFlags: 0,
+                    SourceConstantAlpha: 255,
+                    AlphaFormat: AC_SRC_ALPHA as u8,
+                };
+                let size = SIZE { cx: w, cy: h };
+                let origin = POINT::default();
+                let _ = UpdateLayeredWindow(
+                    hwnd,
+                    Some(screen),
+                    None,
+                    Some(&size),
+                    Some(mem),
+                    Some(&origin),
+                    COLORREF(0),
+                    Some(&blend),
+                    ULW_ALPHA,
+                );
+                SelectObject(mem, old);
+            }
+            let _ = DeleteObject(HGDIOBJ(bitmap.0));
+        }
+        let _ = DeleteDC(mem);
+        ReleaseDC(None, screen);
+    }
+}
+
+/// Sets the accent colour (COLORREF); every indicator is repainted on its next `show_indicator`.
+pub fn set_indicator_accent(color: u32) {
+    INDICATOR_ACCENT.store(color, Ordering::Relaxed);
+    for ind in &INDS {
+        ind.s_cur.store(u32::MAX, Ordering::Relaxed);
+    }
+}
+
+/// Changes the indicator scale. The next `show_indicator` resizes and repaints every indicator.
 pub fn set_indicator_size(size: IndicatorSize) {
     let scale = match size {
         IndicatorSize::Small => 0,
@@ -353,25 +619,8 @@ pub fn set_indicator_size(size: IndicatorSize) {
         IndicatorSize::Large => 2,
     };
     INDICATOR_SCALE.store(scale, Ordering::Relaxed);
-    let (w, h) = indicator_size();
     for ind in &INDS {
-        let raw = ind.hwnd.load(Ordering::Relaxed);
-        if raw != 0 {
-            unsafe {
-                let _ = SetWindowPos(
-                    HWND(raw as *mut _),
-                    None,
-                    0,
-                    0,
-                    w,
-                    h,
-                    SWP_NOACTIVATE
-                        | SWP_NOZORDER
-                        | windows::Win32::UI::WindowsAndMessaging::SWP_NOMOVE,
-                );
-                let _ = InvalidateRect(Some(HWND(raw as *mut _)), None, false);
-            }
-        }
+        ind.s_cur.store(u32::MAX, Ordering::Relaxed);
     }
 }
 
@@ -387,58 +636,13 @@ unsafe extern "system" fn indicator_wndproc(
     }
     let ind = &INDS[mi];
     match msg {
-        // the paint handler fills the whole client rect with the colour key, so there is nothing
-        // to erase here (this also avoids a redundant fill on every show)
-        WM_ERASEBKGND => LRESULT(1),
-        WM_PAINT => {
-            unsafe {
-                let mut ps = PAINTSTRUCT::default();
-                let hdc = BeginPaint(hwnd, &mut ps);
-                let mut rc = RECT::default();
-                let _ = GetClientRect(hwnd, &mut rc);
-                let bg = CreateSolidBrush(COLORREF(IND_KEY));
-                FillRect(hdc, &rc, bg);
-                let _ = DeleteObject(HGDIOBJ(bg.0));
-                let cur = ind.cur.load(Ordering::Relaxed) as i32;
-                let pop = ind.pop.load(Ordering::Relaxed);
-                let (dot, gap, _) = indicator_metrics();
-                let content = DOTS * dot + (DOTS - 1) * gap;
-                let x0 = (rc.right - content) / 2;
-                let cy = rc.bottom / 2;
-                for (i, a) in ind.anim.iter().enumerate() {
-                    let i = i as i32;
-                    let grow = (a.load(Ordering::Relaxed) as i32 * HOVER_GROW) / HOVER_MAX as i32;
-                    let cx = x0 + i * (dot + gap) + dot / 2;
-                    let hovered = ind.hover.load(Ordering::Relaxed) == i;
-                    let selected = i == cur;
-                    let occupied = pop & (1 << i) != 0;
-                    let size = dot + grow * 2;
-                    if selected {
-                        // A bright blue outline distinguishes the current desktop even when it
-                        // has no windows; the blue center also keeps its state obvious at a glance.
-                        draw_dot(hdc, cx, cy, size + 8, 0x00623E17);
-                        draw_dot(hdc, cx, cy, size + 4, 0x00FFD69A);
-                        draw_dot(hdc, cx, cy, size, 0x00FF8F25);
-                    } else if occupied {
-                        // Occupied desktops glow blue but remain distinct from the selected one.
-                        draw_dot(hdc, cx, cy, size + 6, 0x00502F16);
-                        draw_dot(hdc, cx, cy, size, 0x00E27E28);
-                    } else if hovered {
-                        draw_dot(hdc, cx, cy, size + 4, 0x005E5540);
-                        draw_dot(hdc, cx, cy, size, 0x00484239);
-                    } else {
-                        draw_dot(hdc, cx, cy, size, 0x00554B42);
-                    }
-                }
-                let _ = EndPaint(hwnd, &ps);
-            }
-            LRESULT(0)
-        }
         WM_MOUSEMOVE => {
             let x = (lparam.0 & 0xFFFF) as u16 as i16 as i32;
-            let mut rc = RECT::default();
-            let _ = unsafe { GetClientRect(hwnd, &mut rc) };
-            let idx = dot_at_x(x, rc.right);
+            let idx = dot_at_x(
+                x,
+                ind.dpi.load(Ordering::Relaxed),
+                ind.cur.load(Ordering::Relaxed) as i32,
+            );
             if idx != ind.hover.load(Ordering::Relaxed) {
                 ind.hover.store(idx, Ordering::Relaxed);
                 unsafe {
@@ -466,9 +670,11 @@ unsafe extern "system" fn indicator_wndproc(
         }
         WM_LBUTTONUP => {
             let x = (lparam.0 & 0xFFFF) as u16 as i16 as i32;
-            let mut rc = RECT::default();
-            let _ = unsafe { GetClientRect(hwnd, &mut rc) };
-            let idx = dot_at_x(x, rc.right);
+            let idx = dot_at_x(
+                x,
+                ind.dpi.load(Ordering::Relaxed),
+                ind.cur.load(Ordering::Relaxed) as i32,
+            );
             if idx >= 0 {
                 if let Some(f) = IND_CLICK.get() {
                     f(mi, idx as u8);
@@ -488,44 +694,48 @@ unsafe extern "system" fn indicator_wndproc(
     }
 }
 
+fn create_indicator_window(mi: usize, hinst: HINSTANCE) -> Option<HWND> {
+    let (w, h) = indicator_window_size(96);
+    unsafe {
+        let hwnd = CreateWindowExW(
+            WS_EX_LAYERED | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
+            w!("tile-rs-indicator"),
+            w!("tile-rs-indicator"),
+            WS_POPUP,
+            0,
+            0,
+            w,
+            h,
+            None,
+            None,
+            Some(hinst),
+            None,
+        )
+        .ok()?;
+        let _ = SetWindowLongPtrW(hwnd, GWLP_USERDATA, mi as isize);
+        Some(hwnd)
+    }
+}
+
 /// Creates the (hidden) workspace indicator. Returns false if it could not be created.
 pub fn create_indicator(count: usize) -> bool {
     unsafe {
         let hmod = GetModuleHandleW(None).unwrap_or_default();
         let hinst = HINSTANCE(hmod.0);
-        let class = w!("tile-rs-indicator");
         let wc = WNDCLASSW {
             lpfnWndProc: Some(indicator_wndproc),
             hInstance: hinst,
             hCursor: LoadCursorW(None, IDC_HAND).unwrap_or_default(),
-            lpszClassName: class,
+            lpszClassName: w!("tile-rs-indicator"),
             ..Default::default()
         };
         RegisterClassW(&wc);
-        let (w, h) = indicator_size();
         let mut created = true;
         for (mi, ind) in INDS.iter().enumerate().take(count.min(MAX_MON)) {
-            // The colour-key background stays click-through while the dots receive the mouse.
-            let Ok(hwnd) = CreateWindowExW(
-                WS_EX_LAYERED | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
-                class,
-                w!("tile-rs-indicator"),
-                WS_POPUP,
-                0,
-                0,
-                w,
-                h,
-                None,
-                None,
-                Some(hinst),
-                None,
-            ) else {
-                created = false;
-                continue;
-            };
-            let _ = SetWindowLongPtrW(hwnd, GWLP_USERDATA, mi as isize);
-            let _ = SetLayeredWindowAttributes(hwnd, COLORREF(IND_KEY), 0, LWA_COLORKEY);
-            ind.hwnd.store(hwnd.0 as isize, Ordering::Relaxed);
+            match create_indicator_window(mi, hinst) {
+                Some(hwnd) => ind.hwnd.store(hwnd.0 as isize, Ordering::Relaxed),
+                None => created = false,
+            }
         }
         created
     }
@@ -538,35 +748,12 @@ pub fn sync_indicator_count(count: usize) -> bool {
     for (mi, ind) in INDS.iter().enumerate() {
         if mi < count && ind.hwnd.load(Ordering::Relaxed) == 0 {
             let hmod = unsafe { GetModuleHandleW(None).unwrap_or_default() };
-            let hinst = HINSTANCE(hmod.0);
-            let (w, h) = indicator_size();
-            let created = unsafe {
-                CreateWindowExW(
-                    WS_EX_LAYERED | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
-                    w!("tile-rs-indicator"),
-                    w!("tile-rs-indicator"),
-                    WS_POPUP,
-                    0,
-                    0,
-                    w,
-                    h,
-                    None,
-                    None,
-                    Some(hinst),
-                    None,
-                )
-            };
-            match created {
-                Ok(hwnd) => {
-                    unsafe {
-                        let _ = SetWindowLongPtrW(hwnd, GWLP_USERDATA, mi as isize);
-                        let _ =
-                            SetLayeredWindowAttributes(hwnd, COLORREF(IND_KEY), 0, LWA_COLORKEY);
-                    }
+            match create_indicator_window(mi, HINSTANCE(hmod.0)) {
+                Some(hwnd) => {
                     ind.hwnd.store(hwnd.0 as isize, Ordering::Relaxed);
                     ind.s_cur.store(u32::MAX, Ordering::Relaxed);
                 }
-                Err(_) => ok = false,
+                None => ok = false,
             }
         } else if mi >= count {
             let raw = ind.hwnd.swap(0, Ordering::Relaxed);
@@ -583,8 +770,9 @@ pub fn sync_indicator_count(count: usize) -> bool {
     ok
 }
 
-/// Shows the indicator at `rect`: which workspace is current and which ones have windows.
-pub fn show_indicator(mi: usize, rect: RECT, cur: u8, populated: u32) {
+/// Shows the indicator at `rect` (sized with `indicator_window_size` for `dpi`): which workspace
+/// is current and which ones have windows.
+pub fn show_indicator(mi: usize, rect: RECT, dpi: u32, cur: u8, populated: u32) {
     let Some(ind) = INDS.get(mi).filter(|_| mi < MAX_MON) else {
         return;
     };
@@ -597,6 +785,7 @@ pub fn show_indicator(mi: usize, rect: RECT, cur: u8, populated: u32) {
     let hwnd = HWND(raw as *mut _);
     let r = [rect.left, rect.top, rect.right, rect.bottom];
     let unchanged = unsafe { IsWindowVisible(hwnd).as_bool() }
+        && ind.dpi.load(Ordering::Relaxed) == dpi
         && ind.s_cur.load(Ordering::Relaxed) == cur as u32
         && ind.s_pop.load(Ordering::Relaxed) == populated
         && ind
@@ -606,6 +795,10 @@ pub fn show_indicator(mi: usize, rect: RECT, cur: u8, populated: u32) {
             .all(|(a, v)| a.load(Ordering::Relaxed) == v);
     if unchanged {
         return;
+    }
+    ind.dpi.store(dpi, Ordering::Relaxed);
+    for (a, v) in ind.rect.iter().zip(r) {
+        a.store(v, Ordering::Relaxed);
     }
     unsafe {
         let _ = SetWindowPos(
@@ -617,14 +810,11 @@ pub fn show_indicator(mi: usize, rect: RECT, cur: u8, populated: u32) {
             rect.bottom - rect.top,
             SWP_NOACTIVATE | SWP_NOZORDER,
         );
-        let _ = InvalidateRect(Some(hwnd), None, true);
+        render_indicator(hwnd, ind);
         let _ = ShowWindow(hwnd, SW_SHOWNA);
     }
     ind.s_cur.store(cur as u32, Ordering::Relaxed);
     ind.s_pop.store(populated, Ordering::Relaxed);
-    for (a, v) in ind.rect.iter().zip(r) {
-        a.store(v, Ordering::Relaxed);
-    }
 }
 
 pub fn hide_indicator() {
@@ -662,5 +852,79 @@ pub fn destroy_indicator() {
             let _ = DestroyWindow(hwnd);
         }
         reset_hover(ind);
+    }
+}
+
+#[cfg(test)]
+mod indicator_tests {
+    use super::*;
+
+    #[test]
+    fn indicator_follows_the_design_proportions() {
+        // 100%: 28 px pill + 8 px top margin reserved, 8 px shadow room below, 200 px pill
+        assert_eq!(indicator_bar_height(96), 36);
+        assert_eq!(indicator_window_size(96), (224, 44));
+        assert_eq!(PILL_W, 200.0);
+        // scales with the monitor DPI
+        assert_eq!(indicator_bar_height(192), 72);
+    }
+
+    #[test]
+    fn every_column_maps_to_its_dot_and_the_active_one_is_wider() {
+        // workspace 3 (index 2) is current: it is 24 wide, so later dots shift right by 12
+        let cur = 2;
+        for i in 0..DOTS {
+            let (left, width) = dot_span(i, cur);
+            let mid = (left + width / 2.0) as i32;
+            assert_eq!(dot_at_x(mid, 96, cur), i, "dot {i}");
+        }
+        assert_eq!(dot_span(2, cur).1, ACTIVE_W);
+        assert_eq!(dot_span(3, cur).0 - dot_span(2, cur).0, ACTIVE_W + GAP);
+        assert_eq!(dot_span(1, cur).0 - dot_span(0, cur).0, DOT + GAP);
+        // outside the pill nothing is hit
+        assert_eq!(dot_at_x(0, 96, cur), -1);
+        assert_eq!(dot_at_x(indicator_window_size(96).0, 96, cur), -1);
+    }
+
+    #[test]
+    fn pill_is_white_dots_use_the_accent_and_the_background_is_transparent() {
+        let m = metrics(96);
+        let (w, h) = indicator_window_size(96);
+        let accent = (0x00, 0x8C, 0xFF);
+        let px = paint_dots(w, h, m, 0, 0b10, &[0.0; DOTS as usize], accent);
+        let at = |x: i32, y: i32| px[(y * w + x) as usize];
+        let cy = (TOP + PILL_H / 2.0) as i32;
+        // far corner: fully transparent (click-through)
+        assert_eq!(at(0, 0) >> 24, 0);
+        // just inside the pill's left edge, outside the active ring: opaque white
+        let pad_x = (SIDE + 1.0) as i32;
+        assert_eq!(at(pad_x, cy), 0xFFFF_FFFF);
+        // the current workspace (first) is the accent colour
+        let (left, width) = dot_span(0, 0);
+        assert_eq!(at((left + width / 2.0) as i32, cy), 0xFF00_8CFF);
+        // an occupied dot too; an empty one is a faint tint over white
+        let (l1, w1) = dot_span(1, 0);
+        assert_eq!(at((l1 + w1 / 2.0) as i32, cy), 0xFF00_8CFF);
+        let (l2, w2) = dot_span(2, 0);
+        let empty = at((l2 + w2 / 2.0) as i32, cy);
+        assert_eq!(empty >> 24, 0xFF);
+        assert!(
+            empty & 0xFF > 0xE0 && (empty >> 16) & 0xFF > 0xC0,
+            "{empty:#x}"
+        );
+        // the shadow below the pill is translucent, not opaque
+        let below = (m.px(TOP + PILL_H) + 2.0) as i32;
+        let a = at(w / 2, below) >> 24;
+        assert!(a > 0 && a < 0xA0, "shadow alpha {a:#x}");
+    }
+
+    #[test]
+    fn accent_can_be_any_colour() {
+        let m = metrics(96);
+        let (w, h) = indicator_window_size(96);
+        let px = paint_dots(w, h, m, 0, 0, &[0.0; DOTS as usize], (0xFF, 0xCC, 0x00));
+        let (left, width) = dot_span(0, 0);
+        let c = px[(((TOP + PILL_H / 2.0) as i32) * w + (left + width / 2.0) as i32) as usize];
+        assert_eq!(c, 0xFFFF_CC00);
     }
 }

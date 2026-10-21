@@ -5,6 +5,7 @@
 #>
 $ErrorActionPreference = 'Stop'
 Set-Location (Split-Path -Parent $PSScriptRoot)
+. (Join-Path $PSScriptRoot 'vcenv.ps1')
 
 function Step($title, [scriptblock]$cmd) {
     Write-Host "== $title" -ForegroundColor Cyan
@@ -13,7 +14,7 @@ function Step($title, [scriptblock]$cmd) {
 }
 
 Step 'cargo fmt --check'  { cargo fmt --all -- --check }
-Step 'cargo clippy'       { cargo clippy --all-targets -- -D warnings }
-Step 'cargo test'         { cargo test --all-targets }
-Step 'cargo build --release' { cargo build --release }
+Step 'cargo clippy'       { cargo clippy --locked --all-targets -- -D warnings }
+Step 'cargo test'         { cargo test --locked --all-targets }
+Step 'cargo build --release' { cargo build --locked --release }
 Write-Host 'All checks passed.' -ForegroundColor Green

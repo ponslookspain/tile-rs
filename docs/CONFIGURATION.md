@@ -25,21 +25,24 @@ These keys go at the top of the file, before any `[section]`.
 | `inner_gap` | `10` | Pixels between neighbouring windows. `0`–`200`. |
 | `outer_gap` | `10` | Pixels around the screen edges. `0`–`200`. The old `gap` still sets both. |
 | `animations` | `true` | Smooth movement of windows when the layout changes. |
-| `snapshot_animations` | `true` | Stretch frozen window images during mouse resize and eligible layout/workspace transitions. Enables draggable gaps in Spiral and Master/stack when `inner_gap > 0`: actual windows keep their sizes until release; Escape cancels. Hardware Direct2D rendering with GDI fallback. Overlapping, occluded or oversized captures disable gap dragging; native window edges remain available. Also available in the launcher. See [window motion](WINDOW-MOTION.md). |
 | `animation_ms` | `140` | Duration of the animation, `0`–`1000` ms. `0` turns animations off. Short moves take proportionally less time. |
+| `animation_fps_limit` | `60` | Maximum layout animation and live tile resize rate, `15`–`240` FPS, also bounded by the monitor refresh rate. Set `30` to reduce resize work in heavy applications; `144` permits more frequent updates on a high refresh rate screen. Actual repaint rate depends on the application. Edit in the config and reload it from the tray. See [window motion](WINDOW-MOTION.md). |
 | `easing` | `"out_cubic"` | Animation curve: `linear`, `out_quad`, `out_cubic`, `out_quart`, `in_out_cubic`. |
 | `resize_step` | `40` | Pixels per key press of the grow/shrink hotkeys, `1`–`500`. A held key uses smaller, instant steps. |
 | `fullscreen_windows` | `"minimize"` | What to do with a window that runs fullscreen or borderless fullscreen (a game, a video player): `"minimize"` hides it while its workspace is not shown and restores it when you switch back; `"ignore"` leaves it completely alone. |
-| `media_windows` | `"float"` | What to do with a window that has a photo or video open (a viewer / player showing a media file, e.g. `holiday.jpg - Photos` or `clip.mp4 - VLC media player`): `"float"` leaves it as the app opened it (a movable window you can put anywhere), `"tile"` tiles it like any other window. Fullscreen playback is still handled by `fullscreen_windows`. |
+| `media_windows` | `"float"` | `"float"` leaves recognized photo/video viewers completely unmanaged, including fullscreen viewers. This includes Telegram's Qt media viewer with its English or Russian title; its main window and chats remain eligible for tiling. `"tile"` allows ordinary media windows into the layout; genuine fullscreen windows still follow `fullscreen_windows`. Explicit application rules take precedence over this media heuristic. |
 | `border` | `true` | Draw a border around the focused tiled window (drawn by tile-rs itself, so it works for every window). |
 | `border_color` | `"#8dbcff"` | Border colour, `"#rrggbb"`. |
 | `border_width` | `2` | Border thickness in pixels, `0`–`20`. |
-| `min_tile_width` | `480` | Comfortable minimum tile width; the master tile is narrowed to keep the rest at least this wide. |
+| `min_tile_width` | `480` | Minimum tile width in every layout, together with confirmed application minimums. Splits reserve room for all neighbours. |
 | `min_tile_height` | `320` | Comfortable minimum tile height. |
-| `max_tiles` | `0` | Maximum tiles per workspace; `0` = chosen automatically from the screen size. |
-| `auto_overflow` | `true` | When a workspace is full, open a new window on the next workspace and switch to it. |
+| `max_tiles` | `0` | Maximum tiles per workspace; `0` uses the actual capacity of the selected layout, screen shape, gaps and window minimums. An explicit limit also applies with overflow disabled. |
+| `auto_overflow` | `true` | When the actual layout cannot fit another window, try the following workspaces and follow the admitted window. If disabled or no workspace fits, leave the window floating and log the reason instead of squeezing a neighbour below its minimum. Toggle float or reload settings to retry an automatic float. |
 | `workspace_indicator` | `true` | Minimal workspace dots at the top of each monitor. The active dot is blue with an outline, occupied workspaces glow blue, and empty dots are dim. Click a dot to switch that monitor. |
 | `workspace_indicator_size` | `"medium"` | Visual dot and click target size: `"small"`, `"medium"`, or `"large"`. This can also be changed in the launcher. |
+| `accent_color` | `"#008cff"` | Accent colour of the workspace indicator (`#RRGGBB`): the current workspace, occupied and empty dots and the ring around the current one are drawn in it. Also available in the settings launcher. |
+| `smart_gaps` | `false` | Drop the inner and outer gaps when a workspace holds a single window, so it fills the screen. |
+| `master_count` | `1` | Master-stack only: how many windows share the master (left) column, 1-8. The `master_count_inc` / `master_count_dec` hotkeys change and save it. |
 | `focus_follows_mouse` | `false` | Move focus to the tiled window under the mouse pointer when the pointer moves onto it. This option is also available in the settings launcher. |
 
 ## Hotkeys
@@ -83,6 +86,12 @@ you which one and carries on with the rest.
 | `quit` | Quit; all windows are brought back to the current workspace. |
 | `retile` | Re-apply the layout and reset all sizes to equal halves. |
 | `cycle_layout` | Switch to the next tiling layout (spiral → master-stack → grid → columns → spiral) and save it. |
+| `toggle_monocle` | Show the focused window alone on the whole screen; the others of the workspace stay stacked underneath and `focus_*` cycles through them. Press again to restore the layout (not saved, per workspace). |
+| `focus_last` | Focus the window that was focused before the current one, switching workspace if needed. |
+| `workspace_back_and_forth` | Return to the workspace the active monitor showed before the current one. |
+| `master_count_inc` / `master_count_dec` | Master-stack: put one more / one fewer window in the master column. |
+| `focus_next_monitor`, `focus_prev_monitor` | Move keyboard focus to the next / previous monitor (no default key; bind it in `[hotkeys]`). |
+| `move_to_next_monitor`, `move_to_prev_monitor` | Send the focused tiled window to the next / previous monitor, into the workspace that monitor is showing (no default key). |
 | `reload_config` | Re-read `config.toml`. |
 | `edit_config` | Open `config.toml` in Notepad. |
 
@@ -103,6 +112,10 @@ An unknown action name is an error (it is reported on reload, with the name).
 | `toggle_float` | `alt+shift+f` |
 | `close` | `alt+shift+q` |
 | `cycle_layout` | `ctrl+alt+l` |
+| `toggle_monocle` | `alt+m` |
+| `focus_last` | `alt+z` |
+| `workspace_back_and_forth` | `alt+shift+z` |
+| `master_count_inc` / `master_count_dec` | `alt+period` / `alt+comma` |
 | `pause` | `ctrl+alt+p`, `alt+shift+p` |
 | `quit` | `ctrl+alt+q` |
 
@@ -110,7 +123,8 @@ No default keys: `grow_height`, `shrink_height`, `retile`, `reload_config`, `edi
 (present as commented examples in the generated file).
 
 An older `config.toml` is updated in place on start-up: missing `toggle_float`, `close`,
-`cycle_layout`, `quit`, `workspace_next`, `workspace_prev`, `move_to_next_workspace` and
+`cycle_layout`, `toggle_monocle`, `focus_last`, `workspace_back_and_forth`, `master_count_inc`,
+`master_count_dec`, `quit`, `workspace_next`, `workspace_prev`, `move_to_next_workspace` and
 `move_to_prev_workspace` bindings are added (a commented-out or removed one is left alone).
 
 ## Window rules
@@ -132,16 +146,37 @@ Each `[[rules]]` block describes one rule. The **first** matching rule wins.
 | `process` | Executable name, with or without `.exe` (`"Telegram"`, `"chrome.exe"`). Exact, case-insensitive. |
 | `class` | Window class name. Exact, case-insensitive. (`tile-rs.exe list` prints classes.) |
 | `title` | A part of the window title. Case-insensitive. |
-| `action` | `"float"`: never tile this window. `"tile"`: tile it even if `media_windows = "float"` would leave it floating. |
+| `action` | `"float"`: leave the window completely unmanaged, including fullscreen. `"tile"`: override media/PiP and non-resizable heuristics; a genuine fullscreen window still follows `fullscreen_windows`. |
 | `workspace` | `1`–`9`: new windows of this app open on that workspace. |
 
 A rule needs at least one of `process`, `class`, `title`, and all given fields must match.
 Use `tile-rs.exe list` to see what the windows on your screen are called.
 
 Windows that are never tiled regardless of rules: invisible or minimized windows, dialogs
-(owned windows), tool windows, windows that cannot be resized, the taskbar and desktop, windows
+(owned windows), child/no-activate/tool windows, the taskbar and desktop, windows
 you have maximized yourself, and the windows of elevated (administrator) processes while tile-rs
 itself is not running as administrator.
+
+Known console hosts are eligible even when their native style omits the usual resizable flag.
+Match the window host (`conhost`, `OpenConsole`, `WindowsTerminal`) rather than assuming that
+the HWND belongs to `cmd` or `powershell`. Embedded terminal panes have no independent top-level window.
+Minimizing, temporarily hiding or maximizing a managed window preserves its workspace and order.
+Restoring it makes it eligible for that workspace again; it does not become a newly opened window.
+
+## Window diagnostics
+
+The tray's **Export window diagnostics** saves `%LOCALAPPDATA%\tile-rs\window-diagnostics.json`.
+It records the running manager's assignments, placement generations, requested/observed frames,
+confirmed minimums, automatic floating reasons and native classification facts. Window titles are
+excluded by default. `tile-rs.exe diagnose --titles` explicitly requests titles in that live export.
+
+`tile-rs.exe diagnose --output C:\path\windows.json` takes a read-only native snapshot in a short-lived
+process. Its `manager_state_available` is false: use the tray export for the running manager's internal
+state. Add `--titles` only when the window titles are needed. Diagnostics never start another tiling loop.
+Placement details in the log are enabled with `TILE_RS_PROFILE=1`; ordinary decisions and errors include
+Unix millisecond timestamps. HWND/PID/thread checks and retained process handles reject stale process
+cache entries; if both destroy/create notifications are missed, same-thread HWND reuse cannot always
+be distinguished from the original window.
 
 ## Example: a compact personal config
 

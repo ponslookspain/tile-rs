@@ -6,6 +6,89 @@ follows [Semantic Versioning](https://semver.org) (see [docs/RELEASING.md](docs/
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-10-21
+
+### Added
+- Redesigned settings launcher: light soft-dashboard look with white rounded cards, an icon
+  sidebar, authored outline icons, pill buttons and the blue accent; the live layout miniature
+  follows the layout, gap and master count; one keycap per hotkey binding; light window caption.
+- Settings launcher: hotkey editor (record a combination by pressing it, add a second one, clear,
+  reset all, conflict warnings), application rules editor with a picker of running windows, `smart_gaps`
+  and `master_count` settings, an unsaved-changes indicator and a one-time welcome card with the
+  main shortcuts. The logic lives in `launcher_model.rs`, independent of the UI toolkit.
+- `tile-rs.exe --restore-windows` brings back windows left parked off-screen after a hard kill.
+- About card (with the Slint attribution) in Settings -> Advanced.
+- Monocle (`toggle_monocle`, `alt+m`): show the focused window alone on the whole screen and
+  cycle through the workspace's windows with `focus_*`; press again to restore the layout.
+- Several master windows in master-stack (`master_count`, `master_count_inc` / `master_count_dec`);
+  growing a stack window with `grow_width` now narrows the master column.
+- `focus_last` (`alt+z`) and `workspace_back_and_forth` (`alt+shift+z`).
+- `focus_next_monitor`/`focus_prev_monitor` and `move_to_next_monitor`/`move_to_prev_monitor`
+  actions, and a `smart_gaps` option that removes the gaps around a lone window.
+- Suspend animations for 15 s when frames repeatedly take far longer than the frame interval
+  (slow machines), and trim the working set after 20 s of idleness.
+
+### Changed
+- Resize real application windows during edge and divider gestures, without screenshot overlays.
+  Coalesce each window's pending target, pace slow clients independently and apply final sizes
+  immediately on release. Divider dragging no longer depends on snapshot capture or settings.
+- Remove snapshot rendering and its launcher toggle; existing `snapshot_animations` keys are ignored.
+- Cap animation work at a configurable 60 FPS by default; cache display refresh queries and
+  avoid monitor-list copies, redundant border paints and divider-window recreation.
+- Coalesce deferred motion events between lifecycle barriers and bound replay work so callback
+  bursts yield to frame scheduling. Bound retained motion keys and profiling samples.
+- Reuse dependency caches across CI/release jobs, lock dependency resolution in build scripts,
+  and reuse the packaged executable when building the release installer.
+- Tests that change the shared config now serialize on one lock, so `cargo test` is reliable
+  without `--test-threads=1`; the build scripts load the MSVC environment themselves
+  (`scripts/vcenv.ps1`).
+- Smaller executable (15.75 MB to 9.8 MB): Slint is built with software rendering only, the
+  release profile uses `opt-level = "s"` and `panic = "abort"` (the panic hook still restores
+  parked windows).
+- Submit every animation frame as one `DeferWindowPos` batch (shrinking tiles first) so a layout
+  changes within a single composition frame, and time frames to the display refresh from DWM
+  timing info instead of a free-running periodic timer (kept periodic when `animation_fps_limit`
+  is below the refresh rate).
+
+### Fixed
+- Restore the automatic per-workspace tile limit (derived from the monitor's work area and the
+  minimum tile size, 2 to 8 tiles): with `auto_overflow` on, the next window now opens on the next
+  workspace instead of being squeezed in. The workspace indicator dots are slightly larger.
+- Redesign the workspace indicator as a white pill with soft shadows (8 px padding and gap, a
+  24x12 capsule for the current workspace, 12x12 dots for the others, an outer ring around the
+  current one), anti-aliased and scaled per monitor DPI. Its colours come from the new
+  `accent_color` setting (hex, also in the settings launcher). It reserves 36 px at the top of the
+  work area (28 px pill + 8 px margin) at 100% scale.
+- Park inactive-workspace windows at their own off-screen spot instead of the one Windows uses for
+  minimized windows, track them (with original positions) in a persisted list, and restore them
+  from it after a panic or crash on the next start.
+- Keep every placement inside the work area of its monitor, move windows onto the destination
+  monitor before sizing them (avoids DPI rescaling missing the target), and ask new windows for
+  their minimum size before layout so tiles are sized for them up front.
+- Confirm client tracking minimums before learning rejected sizes, preserving neighbours' minimums
+  in every layout and using actual layout capacity for workspace overflow or an explained float fallback.
+- Resolve media and explicit floating rules before fullscreen workspace assignment, recognize
+  Telegram's English/Russian media viewer and browser PiP, and admit supported console host windows.
+- Preserve window workspace/order across temporary hide, minimize and maximize states; reconcile
+  late titles and restored windows, and keep manual floating consistent across event and scan paths.
+- Add timestamped decisions and read-only JSON window diagnostics through the tray or `diagnose`.
+- Discard learned window minimums and stale placement state after a successful settings reload,
+  so lowering the configured minimum size permits smaller tiles without restarting the manager.
+- Keep divider gestures active when clients clamp sizes or DWM reports delayed geometry; learn
+  confirmed minimum-size feedback without rolling the layout back. Keep captured handles highlighted
+  outside their bounds and clip input surfaces to actual gaps instead of covering client content.
+- Keep frame-border offsets stable during live resize and skip redundant native geometry/size
+  notifications, including moves that preserve the application's viewport size.
+- Restore surviving windows on divider cancellation and prevent expected live geometry events
+  from cancelling the gesture; the captured handle follows the moving gap.
+- Avoid desktop rescans for unrelated hidden/created/destroyed windows; bound reconciliation
+  retries when clients repeatedly reject an unchanged position and stop extending debounce
+  deadlines indefinitely during sustained event bursts.
+- Run tray update checks off the manager thread, suppress duplicate requests, reject incomplete
+  or unsuccessful HTTP responses, and compare prerelease versions correctly.
+- Save launcher/layout settings and migration backups through complete sibling files before
+  replacement, preserving the previous file when writing or replacement fails.
+
 ## [0.5.0] - 2026-10-18
 
 ### Added
@@ -214,7 +297,8 @@ First working prototype.
 - Tray icon with menu, autostart, single-instance guard, first-run dialog.
 - `config.toml`: gap, animations, hotkeys, per-application rules (float / workspace).
 
-[Unreleased]: https://github.com/ponslookspain/tile-rs/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/ponslookspain/tile-rs/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/ponslookspain/tile-rs/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/ponslookspain/tile-rs/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/ponslookspain/tile-rs/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/ponslookspain/tile-rs/compare/v0.2.0...v0.3.0

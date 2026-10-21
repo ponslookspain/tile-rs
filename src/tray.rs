@@ -7,8 +7,8 @@ use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, POINT, WPARAM
 use windows::Win32::Graphics::Gdi::{CreateBitmap, DeleteObject, HGDIOBJ};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::Shell::{
-    ShellExecuteW, Shell_NotifyIconW, NIF_ICON, NIF_MESSAGE, NIF_TIP, NIM_ADD, NIM_DELETE,
-    NIM_MODIFY, NOTIFYICONDATAW,
+    ShellExecuteW, Shell_NotifyIconW, NIF_ICON, NIF_INFO, NIF_MESSAGE, NIF_TIP, NIIF_INFO, NIM_ADD,
+    NIM_DELETE, NIM_MODIFY, NIN_BALLOONUSERCLICK, NOTIFYICONDATAW,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     AppendMenuW, CreateIconIndirect, CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyIcon,
@@ -24,6 +24,8 @@ use crate::config::{self, Action};
 const WM_TRAY: u32 = WM_APP + 1;
 const WM_LAUNCHER_RELOAD: u32 = WM_APP + 2;
 const WM_LAUNCHER_QUIT: u32 = WM_APP + 3;
+const WM_DIAGNOSTICS: u32 = WM_APP + 4;
+const WM_DIAGNOSTICS_WITH_TITLES: u32 = WM_APP + 5;
 const TRAY_UID: u32 = 1;
 
 static TRAY_HWND: AtomicIsize = AtomicIsize::new(0);
@@ -37,6 +39,7 @@ const M_RELOAD: usize = 4;
 const M_EDIT: usize = 5;
 const M_FOLDER: usize = 6;
 const M_LOG: usize = 7;
+const M_DIAGNOSTICS: usize = 12;
 const M_AUTOSTART: usize = 8;
 const M_HOTKEYS: usize = 9;
 const M_UPDATE: usize = 11;
@@ -149,6 +152,39 @@ pub fn update() {
     }
 }
 
+/// Show a non-modal release notification using the manager's existing tray icon.
+pub fn notify_update(version: &str) {
+    let raw = TRAY_HWND.load(Ordering::Relaxed);
+    if raw == 0 {
+        return;
+    }
+    let mut data = NOTIFYICONDATAW {
+        cbSize: std::mem::size_of::<NOTIFYICONDATAW>() as u32,
+        hWnd: HWND(raw as *mut _),
+        uID: TRAY_UID,
+        uFlags: NIF_INFO,
+        dwInfoFlags: NIIF_INFO,
+        ..Default::default()
+    };
+    for (dest, ch) in data
+        .szInfoTitle
+        .iter_mut()
+        .take(63)
+        .zip("tile-rs: доступно обновление".encode_utf16())
+    {
+        *dest = ch;
+    }
+    let message = format!(
+        "Версия {version} готова. Нажмите, чтобы открыть Check update и установить обновление."
+    );
+    for (dest, ch) in data.szInfo.iter_mut().take(255).zip(message.encode_utf16()) {
+        *dest = ch;
+    }
+    unsafe {
+        let _ = Shell_NotifyIconW(NIM_MODIFY, &data);
+    }
+}
+
 /// Ask the running manager process to reload the config after the launcher saved it.
 pub fn request_manager_reload() -> bool {
     post_manager_message(WM_LAUNCHER_RELOAD)
@@ -157,6 +193,14 @@ pub fn request_manager_reload() -> bool {
 /// Ask the running manager process to quit from the launcher.
 pub fn request_manager_quit() -> bool {
     post_manager_message(WM_LAUNCHER_QUIT)
+}
+
+pub fn request_manager_diagnostics(include_titles: bool) -> bool {
+    post_manager_message(if include_titles {
+        WM_DIAGNOSTICS_WITH_TITLES
+    } else {
+        WM_DIAGNOSTICS
+    })
 }
 
 fn post_manager_message(message: u32) -> bool {
@@ -267,6 +311,7 @@ fn show_menu(hwnd: HWND) {
         item(menu, M_HOTKEYS, "Show hotkeys", false);
         item(menu, M_FOLDER, "Open config folder", false);
         item(menu, M_LOG, "Open log", false);
+        item(menu, M_DIAGNOSTICS, "Export window diagnostics", false);
         item(menu, M_UPDATE, "Check for updates", false);
         let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
         item(
@@ -299,6 +344,7 @@ fn show_menu(hwnd: HWND) {
             M_PAUSE => crate::dispatch(Action::Pause),
             M_RETILE => crate::dispatch(Action::Retile),
             M_RELOAD => crate::dispatch(Action::ReloadConfig),
+            M_DIAGNOSTICS => crate::export_diagnostics(false),
             M_EDIT => crate::dispatch(Action::EditConfig),
             M_HOTKEYS => show_hotkeys(),
             M_FOLDER => open(
@@ -362,6 +408,10 @@ fn show_hotkeys() {
 }
 
 unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+    if msg == WM_DIAGNOSTICS || msg == WM_DIAGNOSTICS_WITH_TITLES {
+        crate::export_diagnostics(msg == WM_DIAGNOSTICS_WITH_TITLES);
+        return LRESULT(0);
+    }
     if msg == WM_LAUNCHER_RELOAD {
         crate::reload_config();
         return LRESULT(0);
@@ -372,6 +422,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
     }
     if msg == WM_TRAY {
         match lparam.0 as u32 {
+            NIN_BALLOONUSERCLICK => crate::launcher::show_updates(),
             WM_RBUTTONUP => show_menu(hwnd),
             WM_LBUTTONDBLCLK => crate::dispatch(Action::Pause),
             _ => {}
