@@ -151,9 +151,14 @@ is handed back to your applications.
 tile-rs.exe              start and open the settings launcher
 tile-rs.exe --autostart  start silently (what the autostart entry uses)
 tile-rs.exe list         show which windows would be tiled, and why others are not
+tile-rs.exe diagnose     export window diagnostics from the running manager
 tile-rs.exe tile         arrange the current windows once and exit
 tile-rs.exe --version
 ```
+
+The tray's **Export window diagnostics** saves a JSON snapshot beside the log without window
+titles. `diagnose --titles` includes titles explicitly. For a separate read-only native snapshot,
+use `diagnose --output C:\path\windows.json`; see [diagnostic details](docs/CONFIGURATION.md#window-diagnostics).
 
 ## Configuration
 

@@ -114,14 +114,55 @@ pub fn place(
     }
 }
 
-/// Master-stack: window 0 (the master) takes a left column whose width is `ratios[0]` (0.5 by
-/// default); the other windows share the right column in equal-height bands. Dragging the master's
-/// right edge changes `ratios[0]`, exactly like the spiral's first split.
+/// Monocle: every one of the `n` windows gets the whole area (they are stacked on top of each
+/// other and the focused one is raised).
+pub fn monocle(area: RECT, n: usize, gaps: impl Into<Gaps>) -> (Vec<RECT>, Vec<RECT>) {
+    let r = inner(area, gaps.into().outer);
+    (vec![r; n], vec![r; n])
+}
+
+/// Stacks `count` windows in equal-height bands inside `col`, pushing their tiles and regions.
+fn push_bands(
+    tiles: &mut Vec<RECT>,
+    regions: &mut Vec<RECT>,
+    col: RECT,
+    region: RECT,
+    count: usize,
+    gap: i32,
+) {
+    let band = ((col.bottom - col.top - (count as i32 - 1) * gap).max(1) / count as i32).max(1);
+    for i in 0..count {
+        let top = col.top + (band + gap) * i as i32;
+        let bottom = if i == count - 1 {
+            col.bottom
+        } else {
+            top + band
+        };
+        tiles.push(RECT { top, bottom, ..col });
+        regions.push(region);
+    }
+}
+
+/// Master-stack: the first `master_count` windows (the masters, 1 by default) share a left column
+/// whose width is `ratios[0]` (0.5 by default); the other windows share the right column in
+/// equal-height bands. Dragging the master column's right edge changes `ratios[0]`, exactly like
+/// the spiral's first split. With no more windows than masters, the masters fill the whole area.
 pub fn master_stack(
     area: RECT,
     n: usize,
     ratios: &[f32],
     gaps: impl Into<Gaps>,
+) -> (Vec<RECT>, Vec<RECT>) {
+    master_stack_with(area, n, ratios, gaps, crate::config::master_count())
+}
+
+/// `master_stack` with an explicit number of master windows.
+fn master_stack_with(
+    area: RECT,
+    n: usize,
+    ratios: &[f32],
+    gaps: impl Into<Gaps>,
+    masters: usize,
 ) -> (Vec<RECT>, Vec<RECT>) {
     let gaps = gaps.into();
     let mut tiles = Vec::with_capacity(n);
@@ -130,9 +171,9 @@ pub fn master_stack(
         return (tiles, regions);
     }
     let r = inner(area, gaps.outer);
-    if n == 1 {
-        tiles.push(r);
-        regions.push(r);
+    let masters = masters.min(n);
+    if n == 1 || masters >= n {
+        push_bands(&mut tiles, &mut regions, r, r, n, gaps.inner);
         return (tiles, regions);
     }
     let ratio = ratios
@@ -141,33 +182,21 @@ pub fn master_stack(
         .unwrap_or(0.5)
         .clamp(MIN_RATIO, MAX_RATIO);
     let mid = r.left + ((r.right - r.left - gaps.inner).max(1) as f32 * ratio) as i32;
-    let master = RECT {
-        left: r.left,
-        top: r.top,
-        right: mid,
-        bottom: r.bottom,
-    };
+    let master = RECT { right: mid, ..r };
     let stack = RECT {
         left: mid + gaps.inner,
-        top: r.top,
-        right: r.right,
-        bottom: r.bottom,
+        ..r
     };
-    tiles.push(master);
-    regions.push(r); // the master was cut out of the whole area
-    let m = n - 1;
-    let band = ((stack.bottom - stack.top - (m as i32 - 1) * gaps.inner).max(1) / m as i32).max(1);
-    for i in 0..m {
-        let top = stack.top + (band + gaps.inner) * i as i32;
-        let bottom = if i == m - 1 { stack.bottom } else { top + band };
-        tiles.push(RECT {
-            left: stack.left,
-            top,
-            right: stack.right,
-            bottom,
-        });
-        regions.push(stack); // every stack window shares the right column
-    }
+    // every master was cut out of the whole area, every stack window out of the right column
+    push_bands(&mut tiles, &mut regions, master, r, masters, gaps.inner);
+    push_bands(
+        &mut tiles,
+        &mut regions,
+        stack,
+        stack,
+        n - masters,
+        gaps.inner,
+    );
     (tiles, regions)
 }
 
@@ -241,12 +270,9 @@ pub fn columns(area: RECT, n: usize, gaps: impl Into<Gaps>) -> (Vec<RECT>, Vec<R
     (tiles.clone(), tiles)
 }
 
-/// Like `place`, but keeps every tile usable:
-///  * the spiral uses `spiral_fitted` (master shrink + the observed per-window minimum sizes);
-///  * master-stack narrows the master so the stacked column keeps the comfortable minimum width;
-///  * grid and columns place equal tiles (their count is already capped by the workspace budget).
-///
-/// `mins` (application-enforced minimum sizes) is only honoured by the spiral so far.
+/// Fits the chosen layout to every application's and the configured minimum size.
+/// When those constraints cannot coexist, returns an ordinary non-overlapping layout;
+/// callers must use `layout_is_valid` before applying it or admitting another window.
 pub fn place_fitted(
     layout: Layout,
     area: RECT,
@@ -257,21 +283,252 @@ pub fn place_fitted(
     gaps: impl Into<Gaps>,
 ) -> (Vec<RECT>, Vec<RECT>) {
     let gaps = gaps.into();
-    let (min_w, _min_h) = min;
     let n = windows.len();
-    match layout {
-        Layout::Spiral => spiral_fitted(area, windows, ratios, mins, min.0, min.1, gaps),
-        Layout::MasterStack if n >= 2 => {
-            let span = (area.right - area.left - 2 * gaps.outer - gaps.inner).max(1) as f32;
-            let mut rs = ratios.to_vec();
-            rs.resize(1, 0.5);
-            // the stacked column must stay at least `min_w` wide: keep ratio[0] below 1 - min_w/span
-            let need = (min_w.max(0) as f32 / span).clamp(0.0, 1.0);
-            let upper = (1.0 - need).clamp(MIN_RATIO, MAX_RATIO);
-            rs[0] = rs[0].clamp(MIN_RATIO, MAX_RATIO).min(upper);
-            master_stack(area, n, &rs, gaps)
+    if layout == Layout::Spiral {
+        return spiral_fitted(area, windows, ratios, mins, min.0, min.1, gaps);
+    }
+    let required = window_minimums(windows, mins, min);
+    let r = inner(area, gaps.outer);
+    let fitted = match layout {
+        Layout::MasterStack if n >= 2 => fitted_master_stack(r, &required, ratios, gaps.inner),
+        Layout::Grid if n >= 2 => fitted_grid(r, &required, gaps.inner),
+        Layout::Columns if n >= 2 => fitted_columns(r, &required, gaps.inner),
+        _ => None,
+    };
+    fitted.unwrap_or_else(|| safe_fallback(layout, area, n, ratios, gaps))
+}
+
+fn window_minimums(
+    windows: &[isize],
+    mins: &HashMap<isize, (i32, i32)>,
+    min: (i32, i32),
+) -> Vec<(i32, i32)> {
+    windows
+        .iter()
+        .map(|h| {
+            let app = mins.get(h).copied().unwrap_or_default();
+            (min.0.max(app.0).max(1), min.1.max(app.1).max(1))
+        })
+        .collect()
+}
+
+/// Verifies capacity from actual fitted rectangles, rather than from screen area alone.
+pub fn layout_is_valid(
+    area: RECT,
+    windows: &[isize],
+    tiles: &[RECT],
+    mins: &HashMap<isize, (i32, i32)>,
+    min: (i32, i32),
+    gaps: impl Into<Gaps>,
+) -> bool {
+    let gaps = gaps.into();
+    let r = inner(area, gaps.outer);
+    if tiles.len() != windows.len() {
+        return false;
+    }
+    let required = window_minimums(windows, mins, min);
+    tiles.iter().zip(required).all(|(t, (mw, mh))| {
+        t.left >= r.left
+            && t.top >= r.top
+            && t.right <= r.right
+            && t.bottom <= r.bottom
+            && t.right - t.left >= mw
+            && t.bottom - t.top >= mh
+    }) && tiles.iter().enumerate().all(|(i, a)| {
+        tiles[i + 1..].iter().all(|b| {
+            a.right.saturating_add(gaps.inner) <= b.left
+                || b.right.saturating_add(gaps.inner) <= a.left
+                || a.bottom.saturating_add(gaps.inner) <= b.top
+                || b.bottom.saturating_add(gaps.inner) <= a.top
+        })
+    })
+}
+
+/// Equal bands where possible, with space reserved for every band that needs more.
+fn fit_bands(span: i32, minimums: &[i32]) -> Option<Vec<i32>> {
+    if minimums.is_empty() || minimums.iter().map(|v| i64::from(*v)).sum::<i64>() > i64::from(span)
+    {
+        return None;
+    }
+    let mut sizes = vec![0; minimums.len()];
+    let mut remaining = span;
+    loop {
+        let count = sizes.iter().filter(|v| **v == 0).count();
+        if count == 0 {
+            return Some(sizes);
         }
-        _ => place(layout, area, n, ratios, gaps),
+        let share = remaining / count as i32;
+        let mut fixed = false;
+        for (i, minimum) in minimums.iter().enumerate() {
+            if sizes[i] == 0 && *minimum > share {
+                sizes[i] = *minimum;
+                remaining -= *minimum;
+                fixed = true;
+            }
+        }
+        if !fixed {
+            let mut remainder = remaining % count as i32;
+            for size in sizes.iter_mut().filter(|v| **v == 0) {
+                *size = share + i32::from(remainder > 0);
+                remainder = (remainder - 1).max(0);
+            }
+            return Some(sizes);
+        }
+    }
+}
+
+fn fitted_columns(r: RECT, required: &[(i32, i32)], gap: i32) -> Option<(Vec<RECT>, Vec<RECT>)> {
+    if required.iter().any(|(_, h)| *h > r.bottom - r.top) {
+        return None;
+    }
+    let widths: Vec<i32> = required.iter().map(|(w, _)| *w).collect();
+    let widths = fit_bands(
+        r.right - r.left - gap * (required.len() as i32 - 1),
+        &widths,
+    )?;
+    let mut left = r.left;
+    let tiles: Vec<RECT> = widths
+        .into_iter()
+        .map(|width| {
+            let tile = RECT {
+                left,
+                top: r.top,
+                right: left + width,
+                bottom: r.bottom,
+            };
+            left = tile.right + gap;
+            tile
+        })
+        .collect();
+    Some((tiles.clone(), tiles))
+}
+
+fn fitted_master_stack(
+    r: RECT,
+    required: &[(i32, i32)],
+    ratios: &[f32],
+    gap: i32,
+) -> Option<(Vec<RECT>, Vec<RECT>)> {
+    let masters = crate::config::master_count();
+    if masters >= required.len() {
+        return None; // everything is a master: the plain fallback fills the area
+    }
+    let height = r.bottom - r.top;
+    let span = r.right - r.left - gap;
+    let (master_req, stack_req) = required.split_at(masters);
+    let master_width = master_req.iter().map(|(w, _)| *w).max()?;
+    let stack_width = stack_req.iter().map(|(w, _)| *w).max()?;
+    if master_width.saturating_add(stack_width) > span {
+        return None;
+    }
+    let band_heights = |req: &[(i32, i32)]| {
+        let heights: Vec<i32> = req.iter().map(|(_, h)| *h).collect();
+        fit_bands(height - gap * (heights.len() as i32 - 1), &heights)
+    };
+    let master_heights = band_heights(master_req)?;
+    let stack_heights = band_heights(stack_req)?;
+    let desired = (span as f32 * ratios.first().copied().unwrap_or(0.5).clamp(0.0, 1.0)) as i32;
+    let mid = r.left + desired.clamp(master_width, span - stack_width);
+    let master = RECT { right: mid, ..r };
+    let stack = RECT {
+        left: mid + gap,
+        ..r
+    };
+    let mut tiles = Vec::with_capacity(required.len());
+    let mut regions = Vec::with_capacity(required.len());
+    for (col, heights, region) in [(master, master_heights, r), (stack, stack_heights, stack)] {
+        let mut top = r.top;
+        for height in heights {
+            tiles.push(RECT {
+                top,
+                bottom: top + height,
+                ..col
+            });
+            regions.push(region);
+            top += height + gap;
+        }
+    }
+    Some((tiles, regions))
+}
+
+fn fitted_grid(r: RECT, required: &[(i32, i32)], gap: i32) -> Option<(Vec<RECT>, Vec<RECT>)> {
+    let n = required.len();
+    (1..=n)
+        .filter_map(|cols| {
+            let rows = n.div_ceil(cols);
+            let mut widths = vec![1; cols];
+            let mut heights = vec![1; rows];
+            for (i, (w, h)) in required.iter().enumerate() {
+                widths[i % cols] = widths[i % cols].max(*w);
+                heights[i / cols] = heights[i / cols].max(*h);
+            }
+            let widths = fit_bands(r.right - r.left - gap * (cols as i32 - 1), &widths)?;
+            let heights = fit_bands(r.bottom - r.top - gap * (rows as i32 - 1), &heights)?;
+            let aspect = (r.right - r.left - gap * (cols as i32 - 1)) as f64
+                / cols as f64
+                / ((r.bottom - r.top - gap * (rows as i32 - 1)) as f64 / rows as f64);
+            let score = (aspect / 1.5).log2().abs() + 2.0 * (rows * cols - n) as f64 / n as f64;
+            let mut tiles = Vec::with_capacity(n);
+            let mut top = r.top;
+            for height in heights {
+                let mut left = r.left;
+                for width in &widths {
+                    if tiles.len() == n {
+                        break;
+                    }
+                    tiles.push(RECT {
+                        left,
+                        top,
+                        right: left + width,
+                        bottom: top + height,
+                    });
+                    left += width + gap;
+                }
+                top += height + gap;
+            }
+            Some((tiles, score))
+        })
+        .min_by(|a, b| a.1.total_cmp(&b.1))
+        .map(|(tiles, _)| (tiles.clone(), tiles))
+}
+
+fn safe_fallback(
+    layout: Layout,
+    area: RECT,
+    n: usize,
+    ratios: &[f32],
+    gaps: Gaps,
+) -> (Vec<RECT>, Vec<RECT>) {
+    let result = place(layout, area, n, ratios, gaps);
+    let windows: Vec<isize> = (0..n as isize).collect();
+    if layout_is_valid(area, &windows, &result.0, &HashMap::new(), (1, 1), gaps) {
+        return result;
+    }
+    // Even an impossible minimum or gap configuration must never produce inverted tiles.
+    // The caller's validation still rejects these rectangles against the original constraints.
+    if area.right - area.left >= n as i32 && area.bottom > area.top {
+        columns(area, n, 0)
+    } else if area.bottom - area.top >= n as i32 && area.right > area.left {
+        let heights = vec![1; n];
+        let Some(heights) = fit_bands(area.bottom - area.top, &heights) else {
+            return (Vec::new(), Vec::new());
+        };
+        let mut top = area.top;
+        let tiles: Vec<RECT> = heights
+            .into_iter()
+            .map(|height| {
+                let tile = RECT {
+                    top,
+                    bottom: top + height,
+                    ..area
+                };
+                top += height;
+                tile
+            })
+            .collect();
+        (tiles.clone(), tiles)
+    } else {
+        (Vec::new(), Vec::new())
     }
 }
 
@@ -281,8 +538,16 @@ pub fn place_fitted(
 pub fn split_for_layout(layout: Layout, k: usize, n: usize, width: bool) -> Option<(usize, f32)> {
     match layout {
         Layout::Spiral => split_for(k, n, width),
-        // in master-stack only the master's width (split 0) is adjustable; the bands are equal
-        Layout::MasterStack if width && k == 0 && n >= 2 => Some((0, 1.0)),
+        // in master-stack only the master column's width (split 0) is adjustable; the bands are
+        // equal. Growing a stack window shrinks the master column and vice versa.
+        Layout::MasterStack if width && n >= 2 && crate::config::master_count() < n => Some((
+            0,
+            if k < crate::config::master_count() {
+                1.0
+            } else {
+                -1.0
+            },
+        )),
         _ => None,
     }
 }
@@ -305,7 +570,7 @@ pub fn apply_resize_for(
     }
 }
 
-/// Drag-resize for master-stack: moving the master's right edge (or a stack window's left edge)
+/// Drag-resize for master-stack: moving a master's right edge (or a stack window's left edge)
 /// changes the master's width ratio; anything else is ignored (the bands are equal).
 fn master_stack_resize(
     ratios: &mut Vec<f32>,
@@ -317,7 +582,7 @@ fn master_stack_resize(
 ) -> bool {
     let gaps = gaps.into();
     let n = tiles.len();
-    if n < 2 || k >= n || regions.is_empty() {
+    if n < 2 || k >= n || regions.is_empty() || crate::config::master_count() >= n {
         return false;
     }
     ratios.resize(1, 0.5);
@@ -325,7 +590,7 @@ fn master_stack_resize(
     let span = (q.right - q.left - gaps.inner).max(1);
     let t = tiles[k];
     let moved = |a: i32, b: i32| (a - b).abs() > 3;
-    let edge = if k == 0 {
+    let edge = if k < crate::config::master_count() {
         if !moved(new.right, t.right) {
             return false;
         }
@@ -336,7 +601,8 @@ fn master_stack_resize(
         }
         new.left - gaps.inner
     };
-    let r = ((edge - q.left) as f32 / span as f32).clamp(MIN_RATIO, MAX_RATIO);
+    let r = ((edge - q.left) as f32 / span as f32)
+        .clamp(MIN_RATIO.min(ratios[0]), MAX_RATIO.max(ratios[0]));
     if (r - ratios[0]).abs() > 0.002 {
         ratios[0] = r;
         true
@@ -382,7 +648,7 @@ pub fn apply_resize(
         } else {
             (edge - q.top) as f32 / ((q.bottom - q.top - gaps.inner).max(1)) as f32
         }
-        .clamp(MIN_RATIO, MAX_RATIO);
+        .clamp(MIN_RATIO.min(ratios[j]), MAX_RATIO.max(ratios[j]));
         if (r - ratios[j]).abs() > 0.002 {
             ratios[j] = r;
             changed = true;
@@ -413,20 +679,15 @@ pub fn apply_resize(
     changed
 }
 
+#[cfg(test)]
 fn tiles_at_least(tiles: &[RECT], min_w: i32, min_h: i32) -> bool {
     tiles
         .iter()
         .all(|t| (t.right - t.left) >= min_w && (t.bottom - t.top) >= min_h)
 }
 
-/// Like `spiral`, but keeps every tile usable:
-///  * the first (master) split is narrowed (down to a floor) so the rest of the screen has more
-///    room, which keeps the smallest tiles from collapsing when there are many windows;
-///  * the tiles of windows that cannot shrink below their own minimum size (`mins`) are grown, the
-///    neighbours give up the space instead, so such a window does not overlap them.
-///
-/// `min_w`/`min_h` is the comfortable minimum tile; `mins` maps a window handle to the minimum
-/// size that window's application enforces. `gaps` is passed through to `spiral`/`apply_resize`.
+/// Fits every split from the minimum extent of its whole remaining subtree.
+/// This reserves the neighbours' minimums before growing an individual tile.
 pub fn spiral_fitted(
     area: RECT,
     windows: &[isize],
@@ -437,77 +698,61 @@ pub fn spiral_fitted(
     gaps: impl Into<Gaps>,
 ) -> (Vec<RECT>, Vec<RECT>) {
     let gaps = gaps.into();
-    let n = windows.len();
-    let mut rs = ratios.to_vec();
-    rs.resize(n.saturating_sub(1), 0.5);
-
-    // narrow the master tile while that makes the other tiles fit the comfortable minimum; the
-    // master itself never goes below `min_w`
-    if n >= 2 {
-        let master_span = (area.right - area.left - 2 * gaps.outer - gaps.inner).max(1);
-        let floor = (min_w as f32 / master_span as f32).clamp(MIN_RATIO, 0.5);
-        let mut r0 = rs[0].clamp(floor, MAX_RATIO);
-        while r0 > floor {
-            let mut trial = rs.clone();
-            trial[0] = r0;
-            if tiles_at_least(&spiral(area, n, &trial, gaps).0, min_w, min_h) {
-                break;
-            }
-            r0 = (r0 - 0.02).max(floor);
-        }
-        rs[0] = r0;
+    let required = window_minimums(windows, mins, (min_w, min_h));
+    let n = required.len();
+    if n == 0 {
+        return (Vec::new(), Vec::new());
     }
-
-    let mut out = spiral(area, n, &rs, gaps);
-    // each pass grows the tiles that are still too small; a few passes are enough in practice
-    for _ in 0..4 {
-        let (tiles, regions) = (out.0.clone(), out.1.clone());
-        let mut changed = false;
-        for (k, h) in windows.iter().enumerate() {
-            let Some(&(mw, mh)) = mins.get(h) else {
-                continue;
-            };
-            let t = tiles[k];
-            let dw = (mw - (t.right - t.left)).max(0);
-            let dh = (mh - (t.bottom - t.top)).max(0);
-            if dw == 0 && dh == 0 {
-                continue;
-            }
-            // move only the edges that actually belong to a split of this window
-            let last = k == n - 1;
-            let mut d = t;
-            if dw > 0 {
-                if k.is_multiple_of(2) {
-                    if last {
-                        d.left -= dw;
-                    } else {
-                        d.right += dw;
-                    }
-                } else {
-                    d.left -= dw;
-                }
-            }
-            if dh > 0 {
-                if k % 2 == 1 {
-                    if !last {
-                        d.bottom += dh;
-                    } else if k >= 3 {
-                        d.top -= dh;
-                    }
-                } else if k >= 1 {
-                    d.top -= dh;
-                }
-            }
-            if apply_resize(&mut rs, &tiles, &regions, k, d, gaps) {
-                changed = true;
-            }
-        }
-        if !changed {
+    let mut subtree = required.clone();
+    for i in (0..n - 1).rev() {
+        let (w, h) = required[i];
+        let (tail_w, tail_h) = subtree[i + 1];
+        subtree[i] = if i.is_multiple_of(2) {
+            (
+                w.saturating_add(gaps.inner).saturating_add(tail_w),
+                h.max(tail_h),
+            )
+        } else {
+            (
+                w.max(tail_w),
+                h.saturating_add(gaps.inner).saturating_add(tail_h),
+            )
+        };
+    }
+    let mut r = inner(area, gaps.outer);
+    if subtree[0].0 > r.right - r.left || subtree[0].1 > r.bottom - r.top {
+        return safe_fallback(Layout::Spiral, area, n, ratios, gaps);
+    }
+    let mut tiles = Vec::with_capacity(n);
+    let mut regions = Vec::with_capacity(n);
+    for i in 0..n {
+        regions.push(r);
+        if i == n - 1 {
+            tiles.push(r);
             break;
         }
-        out = spiral(area, n, &rs, gaps);
+        let ratio = ratios.get(i).copied().unwrap_or(0.5).clamp(0.0, 1.0);
+        if i.is_multiple_of(2) {
+            let span = r.right - r.left - gaps.inner;
+            let width =
+                ((span as f32 * ratio) as i32).clamp(required[i].0, span - subtree[i + 1].0);
+            tiles.push(RECT {
+                right: r.left + width,
+                ..r
+            });
+            r.left += width + gaps.inner;
+        } else {
+            let span = r.bottom - r.top - gaps.inner;
+            let height =
+                ((span as f32 * ratio) as i32).clamp(required[i].1, span - subtree[i + 1].1);
+            tiles.push(RECT {
+                bottom: r.top + height,
+                ..r
+            });
+            r.top += height + gaps.inner;
+        }
     }
-    out
+    (tiles, regions)
 }
 
 /// Which split controls the width (or height) of window `k` among `n` windows, and in which
@@ -756,7 +1001,7 @@ mod tests {
     }
 
     #[test]
-    fn the_master_tile_is_narrowed_so_every_tile_fits_the_comfortable_minimum() {
+    fn descendant_splits_reserve_every_tiles_comfortable_minimum() {
         // many windows: with equal halves the last tiles are narrower than the comfortable minimum
         let windows: Vec<isize> = (0..6).map(|i| 100 + i).collect();
         let (plain, _) = spiral(AREA, 6, &[], GAP);
@@ -766,8 +1011,9 @@ mod tests {
             "with equal halves a tile is too narrow: {plain:?}"
         );
         assert!(tiles_at_least(&fitted, 480, 320), "{fitted:?}");
-        // the master is narrower than in the plain layout, the rest is wider
-        assert!(fitted[0].right < plain[0].right);
+        // The master need not move when adjusting descendant splits is sufficient.
+        assert_eq!(fitted[0], plain[0]);
+        assert_ne!(fitted, plain);
         // still a valid, non-overlapping spiral
         assert!(fitted[0].right <= fitted[1].left, "{fitted:?}");
     }
@@ -1097,6 +1343,45 @@ mod tests {
     }
 
     #[test]
+    fn master_stack_with_two_masters_splits_both_columns() {
+        let r = inner(AREA, GAP);
+        let (t, regions) = master_stack_with(AREA, 4, &[], GAP, 2);
+        assert_eq!(t.len(), 4);
+        // both masters share the left column, the two others the right one
+        assert_eq!(t[0].left, r.left);
+        assert_eq!(t[0].left, t[1].left);
+        assert_eq!(t[0].right, t[1].right);
+        assert_eq!(t[2].left, t[3].left);
+        assert!(t[0].right < t[2].left);
+        assert_eq!(t[0].top, r.top);
+        assert_eq!(t[1].bottom, r.bottom);
+        assert!(t[0].bottom < t[1].top);
+        assert_eq!(regions[0], r);
+        assert_eq!(regions[1], r);
+        assert_eq!(regions[2], regions[3]);
+    }
+
+    #[test]
+    fn master_stack_with_all_masters_fills_the_area() {
+        let r = inner(AREA, GAP);
+        let (t, _) = master_stack_with(AREA, 2, &[], GAP, 3);
+        assert_eq!(t.len(), 2);
+        assert_eq!(t[0].left, r.left);
+        assert_eq!(t[0].right, r.right);
+        assert_eq!(t[1].right, r.right);
+        assert_eq!(t[1].bottom, r.bottom);
+    }
+
+    #[test]
+    fn monocle_gives_every_window_the_whole_area() {
+        let r = inner(AREA, GAP);
+        let (t, regions) = monocle(AREA, 3, GAP);
+        assert_eq!(t, vec![r; 3]);
+        assert_eq!(regions, vec![r; 3]);
+        assert!(monocle(AREA, 0, GAP).0.is_empty());
+    }
+
+    #[test]
     fn grid_two_by_two_for_four_windows() {
         let (t, _) = grid(AREA, 4, GAP);
         assert_eq!(t[0].top, t[1].top);
@@ -1134,7 +1419,11 @@ mod tests {
             split_for_layout(Layout::MasterStack, 0, 3, true),
             Some((0, 1.0))
         );
-        assert_eq!(split_for_layout(Layout::MasterStack, 1, 3, true), None);
+        // a stack window drives the same split, in the opposite direction
+        assert_eq!(
+            split_for_layout(Layout::MasterStack, 1, 3, true),
+            Some((0, -1.0))
+        );
         assert_eq!(split_for_layout(Layout::MasterStack, 0, 3, false), None);
         assert_eq!(split_for_layout(Layout::MasterStack, 0, 1, true), None);
         assert_eq!(split_for_layout(Layout::Grid, 0, 4, true), None);
@@ -1194,8 +1483,8 @@ mod tests {
     }
 
     #[test]
-    fn place_fitted_master_stack_keeps_a_wide_stack() {
-        // a very large comfortable minimum forces the master to narrow so the stack stays usable
+    fn impossible_master_stack_minimum_is_rejected_without_sacrificing_the_master() {
+        // Two columns cannot both be 2000px wide on this monitor.
         let windows = [1isize, 2, 3];
         let (t, _) = place_fitted(
             Layout::MasterStack,
@@ -1206,10 +1495,271 @@ mod tests {
             (2000, 0),
             GAP,
         );
-        let stack_w = t[1].right - t[1].left;
-        let master_w = t[0].right - t[0].left;
-        assert!(stack_w >= 1998, "stack width {stack_w} < 2000");
-        assert!(master_w < stack_w, "the master narrowed to make room");
+        assert!(!layout_is_valid(
+            AREA,
+            &windows,
+            &t,
+            &HashMap::new(),
+            (2000, 0),
+            GAP
+        ));
+        assert!(layout_is_valid(
+            AREA,
+            &windows,
+            &t,
+            &HashMap::new(),
+            (1, 1),
+            GAP
+        ));
+    }
+
+    #[test]
+    fn every_fitted_layout_reserves_each_applications_minimum() {
+        let windows = [10, 20, 30];
+        let mins = HashMap::from([(10, (1200, 300)), (20, (700, 500)), (30, (500, 500))]);
+        for layout in [
+            Layout::Spiral,
+            Layout::MasterStack,
+            Layout::Grid,
+            Layout::Columns,
+        ] {
+            let (tiles, regions) = place_fitted(
+                layout,
+                AREA,
+                &windows,
+                &[0.88, 0.88],
+                &mins,
+                (480, 320),
+                GAP,
+            );
+            assert_eq!(regions.len(), windows.len());
+            assert!(
+                layout_is_valid(AREA, &windows, &tiles, &mins, (480, 320), GAP),
+                "{layout:?}: {tiles:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_wide_application_cannot_take_its_neighbours_minimum_width() {
+        let area = RECT {
+            left: 0,
+            top: 0,
+            right: 3440,
+            bottom: 1440,
+        };
+        let windows = [10, 20];
+        let mins = HashMap::from([(10, (2750, 500))]);
+        for layout in [
+            Layout::Spiral,
+            Layout::MasterStack,
+            Layout::Grid,
+            Layout::Columns,
+        ] {
+            let (tiles, _) = place_fitted(layout, area, &windows, &[0.88], &mins, (480, 320), GAP);
+            assert!(
+                layout_is_valid(area, &windows, &tiles, &mins, (480, 320), GAP),
+                "{layout:?}: {tiles:?}"
+            );
+            assert!(tiles[1].right - tiles[1].left >= 480);
+        }
+    }
+
+    #[test]
+    fn impossible_constraints_are_explicit_for_every_layout() {
+        let windows = [10, 20, 30];
+        let mins = HashMap::from([(10, (4000, 2000))]);
+        for layout in [
+            Layout::Spiral,
+            Layout::MasterStack,
+            Layout::Grid,
+            Layout::Columns,
+        ] {
+            let (tiles, _) = place_fitted(layout, AREA, &windows, &[], &mins, (480, 320), GAP);
+            assert!(!layout_is_valid(
+                AREA,
+                &windows,
+                &tiles,
+                &mins,
+                (480, 320),
+                GAP
+            ));
+            assert!(layout_is_valid(
+                AREA,
+                &windows,
+                &tiles,
+                &HashMap::new(),
+                (1, 1),
+                GAP
+            ));
+        }
+    }
+
+    #[test]
+    fn capacity_depends_on_layout_and_monitor_shape() {
+        let area = RECT {
+            left: -1000,
+            top: 0,
+            right: 0,
+            bottom: 2000,
+        };
+        let windows = [10, 20, 30];
+        let mins = HashMap::new();
+        let (columns, _) =
+            place_fitted(Layout::Columns, area, &windows, &[], &mins, (480, 320), GAP);
+        assert!(!layout_is_valid(
+            area,
+            &windows,
+            &columns,
+            &mins,
+            (480, 320),
+            GAP
+        ));
+        let (grid, _) = place_fitted(Layout::Grid, area, &windows, &[], &mins, (480, 320), GAP);
+        assert!(layout_is_valid(
+            area,
+            &windows,
+            &grid,
+            &mins,
+            (480, 320),
+            GAP
+        ));
+    }
+
+    #[test]
+    fn fitted_ratios_stay_unchanged_when_all_minimums_already_fit() {
+        let windows = [10, 20, 30];
+        for layout in [Layout::Spiral, Layout::MasterStack] {
+            let plain = place(layout, AREA, windows.len(), &[0.4, 0.6], GAP).0;
+            let fitted = place_fitted(
+                layout,
+                AREA,
+                &windows,
+                &[0.4, 0.6],
+                &HashMap::new(),
+                (100, 100),
+                GAP,
+            )
+            .0;
+            assert_eq!(plain, fitted);
+        }
+    }
+
+    #[test]
+    fn excessive_gaps_do_not_generate_inverted_or_overlapping_fallbacks() {
+        let area = RECT {
+            left: 0,
+            top: 0,
+            right: 100,
+            bottom: 100,
+        };
+        let windows = [10, 20, 30];
+        let gaps = Gaps {
+            outer: 90,
+            inner: 90,
+        };
+        for layout in [
+            Layout::Spiral,
+            Layout::MasterStack,
+            Layout::Grid,
+            Layout::Columns,
+        ] {
+            let (tiles, _) = place_fitted(
+                layout,
+                area,
+                &windows,
+                &[],
+                &HashMap::new(),
+                (480, 320),
+                gaps,
+            );
+            assert!(!layout_is_valid(
+                area,
+                &windows,
+                &tiles,
+                &HashMap::new(),
+                (480, 320),
+                gaps
+            ));
+            assert!(layout_is_valid(
+                area,
+                &windows,
+                &tiles,
+                &HashMap::new(),
+                (1, 1),
+                0
+            ));
+        }
+    }
+
+    #[test]
+    fn validator_rejects_missing_tiles_bounds_and_insufficient_separation() {
+        let area = RECT {
+            left: 0,
+            top: 0,
+            right: 1020,
+            bottom: 500,
+        };
+        let windows = [10, 20];
+        let mins = HashMap::new();
+        let left = RECT {
+            left: 10,
+            top: 10,
+            right: 500,
+            bottom: 490,
+        };
+        let right = RECT {
+            left: 510,
+            top: 10,
+            right: 1010,
+            bottom: 490,
+        };
+        assert!(layout_is_valid(
+            area,
+            &windows,
+            &[left, right],
+            &mins,
+            (480, 320),
+            GAP
+        ));
+        assert!(!layout_is_valid(
+            area,
+            &windows,
+            &[left],
+            &mins,
+            (480, 320),
+            GAP
+        ));
+        assert!(!layout_is_valid(
+            area,
+            &windows,
+            &[left, RECT { left: 505, ..right }],
+            &mins,
+            (480, 320),
+            GAP
+        ));
+        assert!(!layout_is_valid(
+            area,
+            &windows,
+            &[
+                left,
+                RECT {
+                    right: 1021,
+                    ..right
+                }
+            ],
+            &mins,
+            (480, 320),
+            GAP
+        ));
+        assert!(!layout_is_valid(
+            area,
+            &windows,
+            &[RECT { right: 520, ..left }, right],
+            &mins,
+            (480, 320),
+            GAP
+        ));
     }
 
     #[test]
@@ -1237,5 +1787,46 @@ mod tests {
             },
         );
         assert_eq!(s, a);
+    }
+
+    #[test]
+    fn adjusting_an_ultrawide_split_does_not_jump_back_to_legacy_ratio_limits() {
+        let area = RECT {
+            left: 0,
+            top: 0,
+            right: 7680,
+            bottom: 1440,
+        };
+        for layout in [Layout::Spiral, Layout::MasterStack] {
+            for (start, delta) in [(0.93, -50), (0.07, 50)] {
+                let mut ratios = vec![start];
+                let (tiles, regions) = place_fitted(
+                    layout,
+                    area,
+                    &[1, 2],
+                    &ratios,
+                    &HashMap::new(),
+                    (480, 320),
+                    10,
+                );
+                let mut requested = tiles[0];
+                requested.right += delta;
+                assert!(apply_resize_for(
+                    layout,
+                    &mut ratios,
+                    &tiles,
+                    &regions,
+                    0,
+                    requested,
+                    10
+                ));
+                assert!((ratios[0] - start).abs() < 0.01);
+                assert!(if delta < 0 {
+                    ratios[0] < start
+                } else {
+                    ratios[0] > start
+                });
+            }
+        }
     }
 }

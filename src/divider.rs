@@ -1,7 +1,8 @@
 //! Input surfaces for adjustable tile gaps; real windows resize on frame ticks.
 use crate::config::Layout;
-use crate::geometry::{place, Gaps, MAX_RATIO, MIN_RATIO};
+use crate::geometry::{layout_is_valid, place_fitted, Gaps};
 use std::cell::{Cell, RefCell};
+use std::collections::HashMap;
 use windows::core::w;
 use windows::Win32::Foundation::{COLORREF, HINSTANCE, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
 use windows::Win32::Graphics::Gdi::{
@@ -207,39 +208,82 @@ impl Resize {
             );
         }
         let start = self.ratios[j];
-        let requested = (start + delta as f32 / span.max(1) as f32).clamp(MIN_RATIO, MAX_RATIO);
-        let calculate = |ratio| {
-            let mut ratios = self.ratios.clone();
-            ratios[j] = ratio;
-            let (tiles, regions) = place(
-                self.layout,
-                self.area,
-                self.windows.len(),
-                &ratios,
-                self.gaps,
-            );
-            (ratios, tiles, regions)
-        };
-        let fits = |tiles: &[RECT]| {
-            tiles
-                .iter()
-                .zip(&self.minimums)
-                .all(|(r, (w, h))| r.right - r.left >= *w && r.bottom - r.top >= *h)
-        };
-        let candidate = calculate(requested);
-        if fits(&candidate.1) {
-            return candidate;
+        let mut ratios = self.ratios.clone();
+        ratios[j] = (start + delta as f32 / span.max(1) as f32).clamp(0.0, 1.0);
+        let minimums: HashMap<_, _> = self
+            .windows
+            .iter()
+            .copied()
+            .zip(self.minimums.iter().copied())
+            .collect();
+        // Use the same minimum-aware layout as ordinary tiling. A proportional
+        // 12% floor is not a pixel minimum on an ultrawide display, and a plain
+        // equal-band layout can invalidate an already fitted master/stack.
+        let (tiles, regions) = place_fitted(
+            self.layout,
+            self.area,
+            &self.windows,
+            &ratios,
+            &minimums,
+            (1, 1),
+            self.gaps,
+        );
+        if !layout_is_valid(
+            self.area,
+            &self.windows,
+            &tiles,
+            &minimums,
+            (1, 1),
+            self.gaps,
+        ) {
+            return self.last_target();
         }
-        let (mut good, mut bad) = (start, requested);
-        for _ in 0..20 {
-            let mid = (good + bad) * 0.5;
-            if fits(&calculate(mid).1) {
-                good = mid;
+        self.effective_target(tiles, regions)
+    }
+
+    fn effective_target(
+        &self,
+        tiles: Vec<RECT>,
+        regions: Vec<RECT>,
+    ) -> (Vec<f32>, Vec<RECT>, Vec<RECT>) {
+        let mut ratios = self.ratios.clone();
+        // Commit the effective split, not the out-of-range mouse request: retile
+        // and the next gesture must reproduce the exact clamped geometry.
+        let count = if self.layout == Layout::MasterStack {
+            1
+        } else {
+            ratios.len()
+        };
+        for (k, ratio) in ratios.iter_mut().enumerate().take(count) {
+            let (t, q) = (tiles[k], regions[k]);
+            let (edge, span) = if self.layout == Layout::MasterStack || k.is_multiple_of(2) {
+                (t.right - q.left, q.right - q.left - self.gaps.inner)
             } else {
-                bad = mid;
+                (t.bottom - q.top, q.bottom - q.top - self.gaps.inner)
+            };
+            *ratio = ((edge as f32 + 0.25) / span.max(1) as f32).clamp(0.0, 1.0);
+        }
+        (ratios, tiles, regions)
+    }
+
+    /// Capture loss must finish at the last sampled, clamped position, not at
+    /// a new cursor position belonging to another application.
+    pub fn last_target(&self) -> (Vec<f32>, Vec<RECT>, Vec<RECT>) {
+        let mut regions = self.regions.clone();
+        let mut remaining = regions[0];
+        for (i, tile) in self.preview.iter().enumerate() {
+            regions[i] = remaining;
+            if self.layout == Layout::MasterStack {
+                if i == 0 {
+                    remaining.left = tile.right + self.gaps.inner;
+                }
+            } else if i.is_multiple_of(2) {
+                remaining.left = tile.right + self.gaps.inner;
+            } else {
+                remaining.top = tile.bottom + self.gaps.inner;
             }
         }
-        calculate(good)
+        self.effective_target(self.preview.clone(), regions)
     }
 }
 
@@ -319,7 +363,7 @@ pub fn tick() {
             if GetCursorPos(&mut point).is_ok() {
                 crate::update_divider(point);
             } else {
-                crate::end_divider(false);
+                crate::settle_divider();
             }
         }
     }
@@ -492,7 +536,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
         WM_CAPTURECHANGED | WM_CANCELMODE => {
             if CAPTURE.with(|c| c.get() == hwnd) {
                 release();
-                crate::end_divider(false);
+                crate::settle_divider();
             }
         }
         WM_PAINT => {
@@ -512,6 +556,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::geometry::place;
 
     #[test]
     fn captured_highlight_survives_mouse_leaving_a_clamped_split() {
@@ -649,7 +694,7 @@ mod tests {
                 for (r, (w, h)) in tiles.iter().zip(&s.minimums) {
                     assert!(r.right - r.left >= *w && r.bottom - r.top >= *h);
                 }
-                assert!(ratios.iter().all(|r| (MIN_RATIO..=MAX_RATIO).contains(r)));
+                assert!(ratios.iter().all(|r| (0.0..=1.0).contains(r)));
                 s.preview = tiles;
                 assert_eq!(s.target(s.origin).1, s.tiles);
             }
@@ -667,5 +712,190 @@ mod tests {
         assert!(tiles[1..].iter().all(|r| r.right - r.left >= 100));
         let heights: Vec<_> = tiles[1..].iter().map(|r| r.bottom - r.top).collect();
         assert!(heights.iter().max().unwrap() - heights.iter().min().unwrap() <= 1);
+    }
+
+    #[test]
+    fn ultrawide_drag_clamps_at_pixel_minimum_and_commits_without_snapback() {
+        for width in [3440, 5120, 7680] {
+            for layout in [Layout::Spiral, Layout::MasterStack] {
+                let mut resize = gesture(layout, 2, 0);
+                resize.area.right = resize.area.left + width;
+                resize.area.bottom = resize.area.top + 1440;
+                resize.minimums = vec![(480, 320); 2];
+                (resize.tiles, resize.regions) = place_fitted(
+                    layout,
+                    resize.area,
+                    &resize.windows,
+                    &resize.ratios,
+                    &HashMap::new(),
+                    (480, 320),
+                    resize.gaps,
+                );
+                resize.preview = resize.tiles.clone();
+                let handle =
+                    handles(0, layout, &resize.tiles, &resize.regions, resize.gaps.inner)[0];
+                resize.origin.x = handle.rect.left;
+                for direction in [-1, 1] {
+                    let at_limit = POINT {
+                        x: resize.origin.x + direction * 100_000,
+                        ..resize.origin
+                    };
+                    let (ratios, tiles, _) = resize.target(at_limit);
+                    let constrained = if direction < 0 { 0 } else { 1 };
+                    assert_eq!(tiles[constrained].right - tiles[constrained].left, 480);
+                    assert_eq!(
+                        resize
+                            .target(POINT {
+                                x: at_limit.x + direction * 10_000,
+                                ..at_limit
+                            })
+                            .1,
+                        tiles
+                    );
+                    let restored = place_fitted(
+                        layout,
+                        resize.area,
+                        &resize.windows,
+                        &ratios,
+                        &HashMap::new(),
+                        (480, 320),
+                        resize.gaps,
+                    )
+                    .0;
+                    assert_eq!(restored, tiles, "release must preserve the clamped split");
+                    if width == 7680 {
+                        assert!(if direction < 0 {
+                            ratios[0] < 0.12
+                        } else {
+                            ratios[0] > 0.88
+                        });
+                    }
+                }
+                assert_eq!(resize.target(resize.origin).1, resize.tiles);
+            }
+        }
+    }
+
+    #[test]
+    fn master_divider_preserves_unequal_minimum_fitted_stack_heights() {
+        let mut resize = gesture(Layout::MasterStack, 3, 0);
+        resize.area.right = 5120;
+        resize.area.bottom = 1440;
+        resize.minimums = vec![(480, 320), (480, 900), (480, 320)];
+        let minimums: HashMap<_, _> = resize
+            .windows
+            .iter()
+            .copied()
+            .zip(resize.minimums.iter().copied())
+            .collect();
+        (resize.tiles, resize.regions) = place_fitted(
+            resize.layout,
+            resize.area,
+            &resize.windows,
+            &resize.ratios,
+            &minimums,
+            (1, 1),
+            resize.gaps,
+        );
+        resize.preview = resize.tiles.clone();
+        for delta in [-100_000, -1, 1, 100_000] {
+            let (_, tiles, _) = resize.target(POINT {
+                x: resize.origin.x + delta,
+                ..resize.origin
+            });
+            assert!(layout_is_valid(
+                resize.area,
+                &resize.windows,
+                &tiles,
+                &minimums,
+                (1, 1),
+                resize.gaps
+            ));
+            for (tile, original) in tiles.iter().zip(&resize.tiles).skip(1) {
+                assert_eq!(tile.top, original.top);
+                assert_eq!(tile.bottom, original.bottom);
+            }
+        }
+    }
+
+    #[test]
+    fn capture_loss_keeps_the_preview_even_if_new_constraints_cannot_fit() {
+        let mut resize = gesture(Layout::Spiral, 3, 0);
+        let (_, preview, _) = resize.target(POINT {
+            x: resize.origin.x + 100,
+            ..resize.origin
+        });
+        resize.preview = preview.clone();
+        resize.minimums[0] = (100_000, 100_000);
+        let (ratios, tiles, regions) = resize.target(POINT {
+            x: resize.origin.x + 100_000,
+            ..resize.origin
+        });
+        assert_eq!(tiles, preview);
+        assert_eq!(
+            place(Layout::Spiral, resize.area, 3, &ratios, resize.gaps).0,
+            tiles
+        );
+        assert_eq!(regions.len(), tiles.len());
+    }
+
+    #[test]
+    fn settled_preview_reproduces_all_splits_with_unequal_minimums() {
+        for layout in [Layout::Spiral, Layout::MasterStack] {
+            for count in 2..=6 {
+                for split in 0..if layout == Layout::MasterStack {
+                    1
+                } else {
+                    count - 1
+                } {
+                    let mut resize = gesture(layout, count, split);
+                    resize.area.right = 7680;
+                    resize.area.bottom = 2160;
+                    resize.minimums = (0..count)
+                        .map(|i| (480 + (i % 2) as i32 * 100, 160 + (i % 3) as i32 * 60))
+                        .collect();
+                    let minimums: HashMap<_, _> = resize
+                        .windows
+                        .iter()
+                        .copied()
+                        .zip(resize.minimums.iter().copied())
+                        .collect();
+                    (resize.tiles, resize.regions) = place_fitted(
+                        layout,
+                        resize.area,
+                        &resize.windows,
+                        &resize.ratios,
+                        &minimums,
+                        (1, 1),
+                        resize.gaps,
+                    );
+                    resize.preview = resize.tiles.clone();
+                    for delta in [-100_000, -10, 10, 100_000] {
+                        let point = POINT {
+                            x: resize.origin.x + if resize.handle.vertical { delta } else { 0 },
+                            y: resize.origin.y + if resize.handle.vertical { 0 } else { delta },
+                        };
+                        let (_, preview, regions) = resize.target(point);
+                        resize.preview = preview.clone();
+                        let (ratios, settled, settled_regions) = resize.last_target();
+                        assert_eq!(settled, preview);
+                        assert_eq!(settled_regions, regions);
+                        assert_eq!(
+                            place_fitted(
+                                layout,
+                                resize.area,
+                                &resize.windows,
+                                &ratios,
+                                &minimums,
+                                (1, 1),
+                                resize.gaps
+                            )
+                            .0,
+                            preview
+                        );
+                    }
+                }
+            }
+        }
     }
 }

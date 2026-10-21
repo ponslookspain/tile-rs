@@ -7,6 +7,7 @@ param([switch]$SkipBuild)
 
 $ErrorActionPreference = 'Stop'
 Set-Location (Split-Path -Parent $PSScriptRoot)
+. (Join-Path $PSScriptRoot 'vcenv.ps1')
 
 if (-not $SkipBuild) {
     cargo build --locked --release

@@ -193,6 +193,7 @@ export component MainWindow inherits Window {
     in-out property <string> min_tile_height: "320";
     in-out property <string> max_tiles: "0";
     in-out property <string> border_color: "#8dbcff";
+    in-out property <string> accent_color: "#008cff";
     in-out property <string> border_width: "2";
     in-out property <int> fullscreen_windows: 0;
     in-out property <int> media_windows: 0;
@@ -396,7 +397,7 @@ export component MainWindow inherits Window {
                     if page == 2: VerticalLayout {
                         spacing: 12px;
                         SettingCard {
-                            card-height: 218px;
+                            card-height: 226px;
                             VerticalLayout {
                                 padding: 14px;
                                 spacing: 9px;
@@ -425,7 +426,8 @@ export component MainWindow inherits Window {
                                         Text { text: size_name; color: #e3e9ec; font-size: 10px; horizontal-alignment: center; vertical-alignment: center; }
                                         TouchArea { clicked => { indicator_size = index; } }
                                     }
-                                    Text { text: "Активный · занятый · пустой"; color: #829099; font-size: 10px; vertical-alignment: center; }
+                                    Text { text: "Акцент (#RRGGBB)"; color: #829099; font-size: 10px; vertical-alignment: center; }
+                                    NumberField { label: ""; value <=> accent_color; field-width: 96px; }
                                 }
                             }
                         }

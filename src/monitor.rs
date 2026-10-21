@@ -162,12 +162,57 @@ pub fn work(mi: usize) -> RECT {
     })
 }
 
+/// Effective DPI of monitor `mi` (96 when it cannot be read).
+pub fn dpi(mi: usize) -> u32 {
+    use windows::Win32::UI::HiDpi::{GetDpiForMonitor, MDT_EFFECTIVE_DPI};
+    let handle = with_cached(|list| {
+        list.get(mi.min(list.len().saturating_sub(1)))
+            .map(|m| m.handle)
+    });
+    let (mut x, mut y) = (0u32, 0u32);
+    match handle {
+        Some(h) if unsafe { GetDpiForMonitor(h, MDT_EFFECTIVE_DPI, &mut x, &mut y) }.is_ok() => {
+            x.max(96)
+        }
+        _ => 96,
+    }
+}
+
 /// The work area (taskbar excluded) of the primary monitor.
 pub fn primary_work() -> RECT {
     with_cached(|list| {
         list.get(primary_index(list))
             .map(|m| m.work)
             .unwrap_or_default()
+    })
+}
+
+/// Shifts `r` into `area`; a rectangle larger than `area` is shrunk to it.
+pub fn clamp_into(r: RECT, area: RECT) -> RECT {
+    let w = (r.right - r.left).min(area.right - area.left).max(0);
+    let h = (r.bottom - r.top).min(area.bottom - area.top).max(0);
+    let left = r.left.clamp(area.left, (area.right - w).max(area.left));
+    let top = r.top.clamp(area.top, (area.bottom - h).max(area.top));
+    RECT {
+        left,
+        top,
+        right: left + w,
+        bottom: top + h,
+    }
+}
+
+/// `r` kept inside the work area of the monitor that holds its centre, so a placement request
+/// can never push a window past a screen edge. A rectangle centred on no monitor is an
+/// intentional off-screen placement (parking) and is left alone.
+pub fn clamp_to_work(r: RECT) -> RECT {
+    let centre = POINT {
+        x: r.left + (r.right - r.left) / 2,
+        y: r.top + (r.bottom - r.top) / 2,
+    };
+    with_cached(|list| {
+        list.iter()
+            .find(|m| contains(m.full, centre))
+            .map_or(r, |m| clamp_into(r, m.work))
     })
 }
 
@@ -220,6 +265,41 @@ mod tests {
         assert_eq!(nearest(&mons, POINT { x: -500, y: 500 }), 0);
         // far right belongs to the second monitor
         assert_eq!(nearest(&mons, POINT { x: 5000, y: 500 }), 1);
+    }
+
+    #[test]
+    fn clamp_keeps_rects_on_screen() {
+        let area = RECT {
+            left: 0,
+            top: 0,
+            right: 1000,
+            bottom: 600,
+        };
+        let r = |l, t, rt, b| RECT {
+            left: l,
+            top: t,
+            right: rt,
+            bottom: b,
+        };
+        let eq = |a: RECT, b: RECT| {
+            (a.left, a.top, a.right, a.bottom) == (b.left, b.top, b.right, b.bottom)
+        };
+        assert!(eq(
+            clamp_into(r(100, 100, 400, 300), area),
+            r(100, 100, 400, 300)
+        ));
+        assert!(eq(
+            clamp_into(r(900, 500, 1200, 700), area),
+            r(700, 400, 1000, 600)
+        ));
+        assert!(eq(
+            clamp_into(r(-50, -20, 250, 180), area),
+            r(0, 0, 300, 200)
+        ));
+        assert!(eq(
+            clamp_into(r(-100, 0, 1400, 900), area),
+            r(0, 0, 1000, 600)
+        ));
     }
 
     #[test]

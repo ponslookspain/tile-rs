@@ -36,7 +36,11 @@ thread_local! {
 }
 
 pub fn log(msg: impl AsRef<str>) {
-    let msg = msg.as_ref();
+    let timestamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis();
+    let msg = format!("[{timestamp}] {}", msg.as_ref());
     LOG.with(|l| {
         let mut sink = l.borrow_mut();
         if sink.file.is_none() {

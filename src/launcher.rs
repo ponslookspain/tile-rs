@@ -242,6 +242,15 @@ fn populate(ui: &MainWindow, cfg: &config::Config) {
     ui.set_min_tile_width(cfg.min_tile_width.to_string().into());
     ui.set_min_tile_height(cfg.min_tile_height.to_string().into());
     ui.set_max_tiles(cfg.max_tiles.to_string().into());
+    ui.set_accent_color(
+        format!(
+            "#{:02x}{:02x}{:02x}",
+            cfg.accent_color & 0xff,
+            (cfg.accent_color >> 8) & 0xff,
+            (cfg.accent_color >> 16) & 0xff
+        )
+        .into(),
+    );
     ui.set_border_color(
         format!(
             "#{:02x}{:02x}{:02x}",
@@ -402,6 +411,7 @@ fn save(ui: &MainWindow) {
     };
     let easing = ui.get_easing().to_string();
     let border_color = ui.get_border_color().to_string();
+    let accent_color = ui.get_accent_color().to_string();
     let pairs: Vec<(&str, String)> = vec![
         ("layout", format!("\"{}\"", layout.name())),
         ("inner_gap", ui.get_inner_gap().to_string()),
@@ -425,6 +435,7 @@ fn save(ui: &MainWindow) {
         ),
         ("border", ui.get_highlight_window().to_string()),
         ("border_color", format!("\"{border_color}\"")),
+        ("accent_color", format!("\"{accent_color}\"")),
         ("border_width", ui.get_border_width().to_string()),
         (
             "fullscreen_windows",

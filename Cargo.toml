@@ -14,7 +14,9 @@ publish = false
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 toml = "0.8"
-slint = "1.18.1"
+# Only the settings window uses Slint: software rendering (no OpenGL stack) is plenty for a form,
+# and the tray icon is drawn by tile-rs itself.
+slint = { version = "1.18.1", default-features = false, features = ["std", "backend-winit", "renderer-software", "accessibility", "compat-1-2"] }
 
 [build-dependencies]
 winres = "0.1"
@@ -31,6 +33,7 @@ features = [
     "Win32_Security_Cryptography",
     "Win32_System_Console",
     "Win32_System_LibraryLoader",
+    "Win32_System_Performance",
     "Win32_System_Registry",
     "Win32_System_Threading",
     "Win32_UI_Shell",
@@ -41,7 +44,8 @@ features = [
 ]
 
 [profile.release]
-opt-level = 3
+opt-level = "s"
 lto = true
 codegen-units = 1
 strip = true
+panic = "abort"

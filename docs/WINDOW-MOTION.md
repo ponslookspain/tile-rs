@@ -38,8 +38,10 @@ surviving windows to their original geometry. Hidden, minimized or departed wind
 - During a divider gesture, a settled larger size can raise the relevant minimum and clamp the
   split without cancellation. Feedback requires observed progress; an unchanged busy window is
   not learned as a minimum. Full adaptive fitting and corrective verification resume after release. A posted
-  request is not evidence of its completion: minimum sizes are not learned from a stale large
-  frame during the verification interval. Geometry retries remain bounded per unchanged target.
+  request is not evidence of its completion: a settled larger frame must also agree with the client's
+  explicit tracking minimum before it can raise a learned limit. A timed-out client query receives
+  up to two seconds to recover; the query itself waits at most 10 ms per attempt. Geometry retries
+  remain bounded per unchanged target. Repeatedly rejecting clients float with a recorded reason.
 - Delayed location events and application-enforced sizes do not cancel divider capture. Explicit
   native move/resize starts and lifecycle changes still cancel it. Input surfaces are clipped against
   observed window bounds; the active highlight survives the cursor leaving a clamped handle.
@@ -55,6 +57,16 @@ The manager can coalesce and pace requests, but cannot guarantee 60 FPS in every
 On a slower computer, try `animation_fps_limit = 30`; turning off `animations` removes timed layout
 transitions while retaining live resize. The legacy `snapshot_animations` key is accepted and
 ignored so existing configuration files continue to load; it is no longer generated or shown.
+Saving settings through the launcher, or choosing Reload config after editing the file, clears
+previously learned size constraints before rebuilding the layout. Configured minimums are limits,
+not a command to set every window to that size; existing split ratios remain unchanged.
+
+All four layouts reserve configured and confirmed per-window minimums before placing windows.
+Admission uses a prospective valid layout, including monitor shape and gaps. If no workspace fits,
+the extra window stays floating rather than collapsing its neighbour. Temporary hide, minimize,
+maximize and cloak states preserve workspace membership; only available tiled windows occupy a tile.
+Native title-change notifications can admit a late-initialized window without reopening it.
+See [configuration and window diagnostics](CONFIGURATION.md#window-diagnostics).
 
 A website may rebuild its player when the browser crosses a responsive layout breakpoint. This
 also occurs during ordinary browser resizing with tile-rs paused. Live resizing cannot suppress

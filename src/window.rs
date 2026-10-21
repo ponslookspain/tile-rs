@@ -7,7 +7,7 @@ use std::mem::size_of;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use windows::core::{BOOL, PWSTR};
-use windows::Win32::Foundation::{CloseHandle, HANDLE, HWND, LPARAM, RECT};
+use windows::Win32::Foundation::{CloseHandle, FILETIME, HANDLE, HWND, LPARAM, RECT};
 use windows::Win32::Graphics::Dwm::{
     DwmGetWindowAttribute, DWMWA_CLOAKED, DWMWA_EXTENDED_FRAME_BOUNDS,
 };
@@ -16,13 +16,14 @@ use windows::Win32::Graphics::Gdi::{
 };
 use windows::Win32::Security::{GetTokenInformation, TokenElevation, TOKEN_ELEVATION, TOKEN_QUERY};
 use windows::Win32::System::Threading::{
-    OpenProcess, OpenProcessToken, QueryFullProcessImageNameW, PROCESS_NAME_WIN32,
+    GetProcessTimes, OpenProcess, OpenProcessToken, QueryFullProcessImageNameW, PROCESS_NAME_WIN32,
     PROCESS_QUERY_LIMITED_INFORMATION,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    EnumWindows, GetClassNameW, GetWindow, GetWindowLongW, GetWindowRect, GetWindowTextW,
-    GetWindowThreadProcessId, IsIconic, IsWindowVisible, IsZoomed, GWL_EXSTYLE, GWL_STYLE,
-    GW_OWNER, WS_CAPTION, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_POPUP, WS_THICKFRAME,
+    EnumWindows, GetAncestor, GetClassNameW, GetWindow, GetWindowLongW, GetWindowRect,
+    GetWindowTextW, GetWindowThreadProcessId, IsIconic, IsWindowVisible, IsZoomed, GA_ROOTOWNER,
+    GWL_EXSTYLE, GWL_STYLE, GW_OWNER, WS_CAPTION, WS_CHILD, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
+    WS_POPUP, WS_THICKFRAME,
 };
 
 use crate::config::{self, FullscreenWindows, MediaWindows, Rule};
@@ -145,6 +146,36 @@ fn is_media(title: &str, process: &str) -> bool {
         || (!BROWSER_PROCESSES.contains(&process) && title_has_media_ext(title))
 }
 
+fn is_telegram_viewer(title: &str, process: &str, class: &str) -> bool {
+    // Telegram's OverlayWidget uses lng_mediaview_title, not the photo's filename.
+    // Match the viewer's exact title and Qt window class, never the whole process or chats.
+    // Sources: Telegram/SourceFiles/media/view/media_view_overlay_widget.cpp and
+    // Telegram/Resources/langs/lang.strings in telegramdesktop/tdesktop.
+    process == "telegram"
+        && class.starts_with("Qt")
+        && class.contains("QWindow")
+        && matches!(title.trim(), "Media viewer" | "Просмотр медиа")
+}
+
+fn is_picture_in_picture(title: &str, process: &str, class: &str) -> bool {
+    BROWSER_PROCESSES.contains(&process)
+        && matches!(class, "Chrome_WidgetWin_1" | "MozillaDialogClass")
+        && matches!(
+            title.trim(),
+            "Picture in picture" | "Picture-in-Picture" | "Картинка в картинке"
+        )
+}
+
+fn is_terminal(class: &str, process: &str) -> bool {
+    // Legacy console hosts can omit WS_THICKFRAME while still accepting window placement.
+    // Match the actual HWND host, not the shell executing inside the terminal.
+    matches!(
+        (class, process),
+        ("ConsoleWindowClass", "conhost" | "openconsole")
+            | ("CASCADIA_HOSTING_WINDOW_CLASS", "windowsterminal")
+    )
+}
+
 #[derive(Debug)]
 pub struct Win {
     pub hwnd: HWND,
@@ -253,25 +284,12 @@ fn process_elevated(pid: u32) -> bool {
 }
 
 thread_local! {
-    /// pid -> elevated (the lookup opens the process, so cache it)
-    static ELEV_CACHE: RefCell<HashMap<u32, bool>> = RefCell::new(HashMap::new());
     /// Whether tile-rs itself runs elevated (never changes)
     static SELF_ELEVATED: std::cell::Cell<Option<bool>> = const { std::cell::Cell::new(None) };
 }
 
 fn process_elevated_cached(pid: u32) -> bool {
-    ELEV_CACHE.with(|c| {
-        let mut c = c.borrow_mut();
-        if let Some(v) = c.get(&pid) {
-            return *v;
-        }
-        let v = process_elevated(pid);
-        if c.len() > 256 {
-            c.clear();
-        }
-        c.insert(pid, v);
-        v
-    })
+    with_process_info(pid, |info| info.elevated).unwrap_or(false)
 }
 
 /// Whether tile-rs itself runs with an elevated token (a non-elevated tile-rs cannot manage the
@@ -369,7 +387,7 @@ pub fn is_fullscreen(hwnd: HWND) -> bool {
         && (vis.bottom - m.bottom).abs() <= t
 }
 
-/// Returns None if the window is tileable, otherwise the reason it is skipped.
+/// Structural exclusions cannot be overridden by a user rule.
 fn skip_reason(hwnd: HWND, title: &str, class: &str) -> Option<&'static str> {
     unsafe {
         if !IsWindowVisible(hwnd).as_bool() {
@@ -387,19 +405,16 @@ fn skip_reason(hwnd: HWND, title: &str, class: &str) -> Option<&'static str> {
         if SKIP_CLASSES.contains(&class) {
             return Some("shell/system class");
         }
+        let style = GetWindowLongW(hwnd, GWL_STYLE) as u32;
+        if style & WS_CHILD.0 != 0 {
+            return Some("child window");
+        }
         if GetWindow(hwnd, GW_OWNER).is_ok_and(|w| !w.is_invalid()) {
             return Some("owned window (dialog)");
         }
         let ex = GetWindowLongW(hwnd, GWL_EXSTYLE) as u32;
         if ex & (WS_EX_TOOLWINDOW.0 | WS_EX_NOACTIVATE.0) != 0 {
             return Some("tool/no-activate window");
-        }
-        if is_fullscreen(hwnd) {
-            return Some(FULLSCREEN_REASON);
-        }
-        let style = GetWindowLongW(hwnd, GWL_STYLE) as u32;
-        if style & WS_THICKFRAME.0 == 0 {
-            return Some("not resizable");
         }
         let mut cloaked: u32 = 0;
         if DwmGetWindowAttribute(
@@ -430,24 +445,77 @@ pub struct Collector {
     manual_float: HashSet<isize>,
 }
 
+struct ProcessInfo {
+    handle: HANDLE,
+    name: String,
+    elevated: bool,
+}
+
+impl Drop for ProcessInfo {
+    fn drop(&mut self) {
+        unsafe {
+            let _ = CloseHandle(self.handle);
+        }
+    }
+}
+
+impl ProcessInfo {
+    fn alive(&self) -> bool {
+        let mut created = FILETIME::default();
+        let mut exited = FILETIME::default();
+        let mut kernel = FILETIME::default();
+        let mut user = FILETIME::default();
+        unsafe {
+            GetProcessTimes(
+                self.handle,
+                &mut created,
+                &mut exited,
+                &mut kernel,
+                &mut user,
+            )
+        }
+        .is_ok()
+            && exited.dwLowDateTime == 0
+            && exited.dwHighDateTime == 0
+    }
+}
+
 thread_local! {
-    /// pid -> executable name (the lookup opens the process, so cache it)
-    static PROC_CACHE: RefCell<HashMap<u32, String>> = RefCell::new(HashMap::new());
+    // A retained process handle identifies the original process even after PID reuse.
+    // Reject exited handles before trusting cached name/elevation; keep the cache bounded.
+    static PROC_CACHE: RefCell<HashMap<u32, ProcessInfo>> = RefCell::new(HashMap::new());
+}
+
+fn with_process_info<T>(pid: u32, read: impl FnOnce(&ProcessInfo) -> T) -> Option<T> {
+    PROC_CACHE.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        if cache.get(&pid).is_some_and(|info| !info.alive()) {
+            cache.remove(&pid);
+        }
+        if cache.len() >= 256 && !cache.contains_key(&pid) {
+            cache.retain(|_, info| info.alive());
+            if cache.len() >= 256 {
+                cache.clear();
+            }
+        }
+        let info = match cache.entry(pid) {
+            std::collections::hash_map::Entry::Occupied(entry) => entry.into_mut(),
+            std::collections::hash_map::Entry::Vacant(entry) => {
+                let handle =
+                    unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) }.ok()?;
+                entry.insert(ProcessInfo {
+                    handle,
+                    name: process_name(pid),
+                    elevated: process_elevated(pid),
+                })
+            }
+        };
+        Some(read(info))
+    })
 }
 
 fn process_name_cached(pid: u32) -> String {
-    PROC_CACHE.with(|c| {
-        let mut c = c.borrow_mut();
-        if let Some(n) = c.get(&pid) {
-            return n.clone();
-        }
-        let n = process_name(pid);
-        if c.len() > 256 {
-            c.clear();
-        }
-        c.insert(pid, n.clone());
-        n
-    })
+    with_process_info(pid, |info| info.name.clone()).unwrap_or_default()
 }
 
 fn win_info(hwnd: HWND) -> Win {
@@ -476,6 +544,7 @@ pub enum Verdict {
 }
 
 /// What a matching config rule asked for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum RuleAction {
     /// Rule matched but only set a workspace (or nothing actionable).
     None,
@@ -516,49 +585,107 @@ pub fn classify(hwnd: HWND, rules: &[Rule]) -> Verdict {
     if !unsafe { IsWindowVisible(hwnd) }.as_bool() {
         return Verdict::Ignore;
     }
-    let mut w = win_info(hwnd);
+    let w = win_info(hwnd);
     // The Slint settings window runs in a child tile-rs process. Keep it out of the managed
     // window set so opening settings never resizes or moves the UI itself.
     if w.title == "tile-rs Settings" && process_name_cached(w.pid).eq_ignore_ascii_case("tile-rs") {
         return Verdict::Skipped(w, "tile-rs settings launcher");
     }
-    match skip_reason(hwnd, &w.title, &w.class) {
-        None => {
-            // a non-elevated tile-rs cannot move the windows of elevated processes, so they would
-            // stay frozen in their tiles: skip them instead
-            if !self_elevated() && process_elevated_cached(w.pid) {
-                return Verdict::Skipped(w, ELEVATED_REASON);
-            }
-            let media_float = config::media_windows() == MediaWindows::Float;
-            let pn = if !rules.is_empty() || media_float {
-                process_name_cached(w.pid)
-            } else {
-                String::new()
-            };
-            match apply_rules(&mut w, rules, &pn) {
-                RuleAction::Float => return Verdict::Skipped(w, "rule: float"),
-                RuleAction::Tile => return Verdict::Tileable(w),
-                RuleAction::None => {}
-            }
-            if media_float && is_media(&w.title, &pn) {
-                return Verdict::Skipped(w, MEDIA_REASON);
-            }
-            Verdict::Tileable(w)
-        }
-        Some(r) if r == FULLSCREEN_REASON => {
-            if config::fullscreen_windows() == FullscreenWindows::Ignore {
-                Verdict::Skipped(w, r)
-            } else {
-                // a rule may assign it to a workspace
-                let pn = process_name_cached(w.pid);
-                apply_rules(&mut w, rules, &pn);
-                Verdict::Fullscreen(w)
-            }
-        }
-        // keep only titled ones in the skip list to keep `list` output readable
-        Some(r) if !w.title.is_empty() => Verdict::Skipped(w, r),
-        Some(_) => Verdict::Ignore,
+    if let Some(reason) = skip_reason(hwnd, &w.title, &w.class) {
+        return if w.title.is_empty() {
+            Verdict::Ignore
+        } else {
+            Verdict::Skipped(w, reason)
+        };
     }
+    if !self_elevated() && process_elevated_cached(w.pid) {
+        return Verdict::Skipped(w, ELEVATED_REASON);
+    }
+    let pn = process_name_cached(w.pid);
+    let style = unsafe { GetWindowLongW(hwnd, GWL_STYLE) } as u32;
+    classify_eligible(
+        w,
+        &pn,
+        rules,
+        is_fullscreen(hwnd),
+        style & WS_THICKFRAME.0 != 0,
+        config::media_windows(),
+        config::fullscreen_windows(),
+    )
+}
+
+fn classify_eligible(
+    mut w: Win,
+    process: &str,
+    rules: &[Rule],
+    fullscreen: bool,
+    resizable: bool,
+    media_policy: MediaWindows,
+    fullscreen_policy: FullscreenWindows,
+) -> Verdict {
+    let action = apply_rules(&mut w, rules, process);
+    let media = is_media(&w.title, process) || is_telegram_viewer(&w.title, process, &w.class);
+    let pip = is_picture_in_picture(&w.title, process, &w.class);
+    if let Some(reason) = floating_reason(action, media, pip, media_policy) {
+        return Verdict::Skipped(w, reason);
+    }
+    // Rules/media are resolved before fullscreen admission: a floating viewer must not
+    // acquire a fullscreen workspace. A tile rule never resizes a genuine fullscreen game.
+    if fullscreen {
+        return if fullscreen_policy == FullscreenWindows::Ignore {
+            Verdict::Skipped(w, FULLSCREEN_REASON)
+        } else {
+            Verdict::Fullscreen(w)
+        };
+    }
+    if !resizable && action != RuleAction::Tile && !is_terminal(&w.class, process) {
+        return Verdict::Skipped(w, "not resizable");
+    }
+    Verdict::Tileable(w)
+}
+
+fn floating_reason(
+    action: RuleAction,
+    media: bool,
+    pip: bool,
+    media_policy: MediaWindows,
+) -> Option<&'static str> {
+    match action {
+        RuleAction::Float => Some("rule: float"),
+        RuleAction::Tile => None,
+        RuleAction::None if pip => Some("picture-in-picture: floating"),
+        RuleAction::None if media && media_policy == MediaWindows::Float => Some(MEDIA_REASON),
+        RuleAction::None => None,
+    }
+}
+
+/// Shared by event admission and full enumeration, including fullscreen windows.
+pub fn classify_with_manual(hwnd: HWND, rules: &[Rule], manual_float: &HashSet<isize>) -> Verdict {
+    match classify(hwnd, rules) {
+        Verdict::Tileable(w) | Verdict::Fullscreen(w)
+            if manual_float.contains(&(hwnd.0 as isize)) =>
+        {
+            Verdict::Skipped(w, MANUAL_REASON)
+        }
+        verdict => verdict,
+    }
+}
+
+/// Policy exclusions also apply to temporarily hidden/minimized windows. Their native
+/// availability must not keep an old workspace assignment alive after a float rule changes.
+pub fn policy_excludes(hwnd: HWND, rules: &[Rule]) -> bool {
+    let mut window = win_info(hwnd);
+    let process = process_name_cached(window.pid);
+    let action = apply_rules(&mut window, rules, &process);
+    let media = is_media(&window.title, &process)
+        || is_telegram_viewer(&window.title, &process, &window.class);
+    floating_reason(
+        action,
+        media,
+        is_picture_in_picture(&window.title, &process, &window.class),
+        config::media_windows(),
+    )
+    .is_some()
 }
 
 unsafe extern "system" fn enum_proc(hwnd: HWND, lparam: LPARAM) -> BOOL {
@@ -575,17 +702,9 @@ unsafe extern "system" fn enum_proc(hwnd: HWND, lparam: LPARAM) -> BOOL {
             return BOOL(1);
         }
     }
-    match classify(hwnd, &c.rules) {
+    match classify_with_manual(hwnd, &c.rules, &c.manual_float) {
         Verdict::Ignore => {}
-        Verdict::Tileable(w) => {
-            if c.manual_float.contains(&(w.hwnd.0 as isize)) {
-                if c.keep_skipped {
-                    c.skipped.push((w, MANUAL_REASON));
-                }
-            } else {
-                c.tileable.push(w);
-            }
-        }
+        Verdict::Tileable(w) => c.tileable.push(w),
         Verdict::Fullscreen(w) => c.fullscreen.push(w),
         Verdict::Skipped(w, r) => {
             if c.keep_skipped {
@@ -618,9 +737,395 @@ pub fn collect(keep_skipped: bool, manual_float: &HashSet<isize>) -> Collector {
     c
 }
 
+fn rect_json(rect: Option<RECT>) -> serde_json::Value {
+    rect.map(|r| serde_json::json!([r.left, r.top, r.right, r.bottom]))
+        .unwrap_or(serde_json::Value::Null)
+}
+
+/// Read-only native facts and the same classification used by event admission.
+/// Titles are omitted unless explicitly requested by the diagnostic caller.
+pub fn diagnostic_snapshot(
+    hwnd: HWND,
+    rules: &[Rule],
+    manual_float: &HashSet<isize>,
+    include_title: bool,
+) -> serde_json::Value {
+    let w = win_info(hwnd);
+    let process = process_name_cached(w.pid);
+    let title_lc = w.title.to_lowercase();
+    let rule = rules
+        .iter()
+        .position(|rule| rule_matches(rule, &w, &process, &title_lc));
+    let (verdict, reason, workspace) = match classify_with_manual(hwnd, rules, manual_float) {
+        Verdict::Tileable(w) => ("tileable", None, w.rule_ws),
+        Verdict::Fullscreen(w) => ("fullscreen", Some(FULLSCREEN_REASON), w.rule_ws),
+        Verdict::Skipped(w, reason) => ("skipped", Some(reason), w.rule_ws),
+        Verdict::Ignore => ("ignored", skip_reason(hwnd, &w.title, &w.class), None),
+    };
+    let mut native = RECT::default();
+    let native = unsafe { GetWindowRect(hwnd, &mut native) }
+        .is_ok()
+        .then_some(native);
+    let mut cloaked = 0u32;
+    let cloaked = unsafe {
+        DwmGetWindowAttribute(
+            hwnd,
+            DWMWA_CLOAKED,
+            &mut cloaked as *mut _ as *mut _,
+            size_of::<u32>() as u32,
+        )
+    }
+    .is_ok()
+    .then_some(cloaked);
+    serde_json::json!({
+        "hwnd": hwnd.0 as isize,
+        "pid": w.pid,
+        "thread_id": unsafe { GetWindowThreadProcessId(hwnd, None) },
+        "process": process,
+        "class": w.class,
+        "title": include_title.then_some(w.title),
+        "owner": unsafe { GetWindow(hwnd, GW_OWNER) }.ok().map(|owner| owner.0 as isize),
+        "root_owner": unsafe { GetAncestor(hwnd, GA_ROOTOWNER) }.0 as isize,
+        "style": unsafe { GetWindowLongW(hwnd, GWL_STYLE) } as u32,
+        "ex_style": unsafe { GetWindowLongW(hwnd, GWL_EXSTYLE) } as u32,
+        "visible": unsafe { IsWindowVisible(hwnd) }.as_bool(),
+        "minimized": unsafe { IsIconic(hwnd) }.as_bool(),
+        "maximized": unsafe { IsZoomed(hwnd) }.as_bool(),
+        "cloaked": cloaked,
+        "elevated": process_elevated_cached(w.pid),
+        "manager_elevated": self_elevated(),
+        "native_rect": rect_json(native),
+        "visible_rect": rect_json(visible_rect(hwnd)),
+        "verdict": verdict,
+        "reason": reason,
+        "matched_rule": rule.map(|index| index + 1),
+        "rule_workspace": workspace.map(|workspace| workspace + 1),
+        "manual_float": manual_float.contains(&(hwnd.0 as isize)),
+    })
+}
+
+/// Snapshot visible top-level windows without moving, resizing, focusing or starting them.
+pub fn diagnostic_snapshots(
+    rules: &[Rule],
+    manual_float: &HashSet<isize>,
+    include_titles: bool,
+) -> Vec<serde_json::Value> {
+    struct Context<'a> {
+        rules: &'a [Rule],
+        manual_float: &'a HashSet<isize>,
+        include_titles: bool,
+        windows: Vec<serde_json::Value>,
+    }
+    unsafe extern "system" fn snapshot_proc(hwnd: HWND, data: LPARAM) -> BOOL {
+        let context = &mut *(data.0 as *mut Context<'_>);
+        if IsWindowVisible(hwnd).as_bool() {
+            context.windows.push(diagnostic_snapshot(
+                hwnd,
+                context.rules,
+                context.manual_float,
+                context.include_titles,
+            ));
+        }
+        BOOL(1)
+    }
+    let mut context = Context {
+        rules,
+        manual_float,
+        include_titles,
+        windows: Vec::new(),
+    };
+    unsafe {
+        let _ = EnumWindows(Some(snapshot_proc), LPARAM(&mut context as *mut _ as isize));
+    }
+    context.windows
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn sample_window(title: &str, class: &str) -> Win {
+        Win {
+            hwnd: HWND::default(),
+            title: title.into(),
+            class: class.into(),
+            pid: 1,
+            rule_ws: None,
+        }
+    }
+
+    fn rule(action: &str) -> Rule {
+        Rule {
+            process: None,
+            class: None,
+            title: Some("fixture".into()),
+            action: Some(action.into()),
+            workspace: Some(3),
+        }
+    }
+
+    #[test]
+    fn floating_rules_and_media_are_resolved_before_fullscreen_admission() {
+        let float = [rule("float")];
+        assert!(matches!(
+            classify_eligible(
+                sample_window("fixture", "Game"),
+                "game",
+                &float,
+                true,
+                true,
+                MediaWindows::Tile,
+                FullscreenWindows::Minimize
+            ),
+            Verdict::Skipped(_, "rule: float")
+        ));
+        assert!(matches!(
+            classify_eligible(
+                sample_window("Media viewer", "Qt663QWindowIcon"),
+                "telegram",
+                &[],
+                true,
+                true,
+                MediaWindows::Float,
+                FullscreenWindows::Minimize
+            ),
+            Verdict::Skipped(_, MEDIA_REASON)
+        ));
+        assert!(matches!(
+            classify_eligible(
+                sample_window("movie", "Player"),
+                "vlc",
+                &[],
+                true,
+                true,
+                MediaWindows::Float,
+                FullscreenWindows::Minimize
+            ),
+            Verdict::Skipped(_, MEDIA_REASON)
+        ));
+        let tile = [rule("tile")];
+        assert!(matches!(
+            classify_eligible(
+                sample_window("fixture", "Game"),
+                "game",
+                &tile,
+                true,
+                true,
+                MediaWindows::Float,
+                FullscreenWindows::Minimize
+            ),
+            Verdict::Fullscreen(_)
+        ));
+        assert!(matches!(
+            classify_eligible(
+                sample_window("fixture", "Game"),
+                "game",
+                &tile,
+                true,
+                true,
+                MediaWindows::Float,
+                FullscreenWindows::Ignore
+            ),
+            Verdict::Skipped(_, FULLSCREEN_REASON)
+        ));
+    }
+
+    #[test]
+    fn telegram_viewer_profile_keeps_main_window_and_chats_tileable() {
+        for title in ["Media viewer", "Просмотр медиа"] {
+            assert!(is_telegram_viewer(title, "telegram", "Qt663QWindowIcon"));
+        }
+        for title in [
+            "Telegram",
+            "Alice — Telegram",
+            "Media viewer — Telegram",
+            "Просмотр медиа — Telegram",
+        ] {
+            assert!(!is_telegram_viewer(title, "telegram", "Qt663QWindowIcon"));
+            assert!(matches!(
+                classify_eligible(
+                    sample_window(title, "Qt663QWindowIcon"),
+                    "telegram",
+                    &[],
+                    false,
+                    true,
+                    MediaWindows::Float,
+                    FullscreenWindows::Minimize
+                ),
+                Verdict::Tileable(_)
+            ));
+        }
+        assert!(!is_telegram_viewer(
+            "Media viewer",
+            "otherapp",
+            "Qt663QWindowIcon"
+        ));
+        assert!(!is_telegram_viewer(
+            "Media viewer",
+            "telegram",
+            "Chrome_WidgetWin_1"
+        ));
+    }
+
+    #[test]
+    fn browser_pip_requires_a_known_process_class_and_exact_title() {
+        assert!(is_picture_in_picture(
+            "Picture in picture",
+            "chrome",
+            "Chrome_WidgetWin_1"
+        ));
+        assert!(is_picture_in_picture(
+            "Picture-in-Picture",
+            "firefox",
+            "MozillaDialogClass"
+        ));
+        assert!(!is_picture_in_picture(
+            "Picture in picture - Google Chrome",
+            "chrome",
+            "Chrome_WidgetWin_1"
+        ));
+        assert!(!is_picture_in_picture(
+            "Picture in picture",
+            "otherapp",
+            "Chrome_WidgetWin_1"
+        ));
+        assert!(!is_picture_in_picture(
+            "Picture in picture",
+            "chrome",
+            "OtherClass"
+        ));
+    }
+
+    #[test]
+    fn console_hosts_and_explicit_tile_can_override_only_the_resizable_heuristic() {
+        for (class, process) in [
+            ("ConsoleWindowClass", "conhost"),
+            ("ConsoleWindowClass", "openconsole"),
+            ("CASCADIA_HOSTING_WINDOW_CLASS", "windowsterminal"),
+        ] {
+            assert!(matches!(
+                classify_eligible(
+                    sample_window("fixture", class),
+                    process,
+                    &[],
+                    false,
+                    false,
+                    MediaWindows::Float,
+                    FullscreenWindows::Minimize
+                ),
+                Verdict::Tileable(_)
+            ));
+        }
+        assert!(matches!(
+            classify_eligible(
+                sample_window("fixture", "ConsoleWindowClass"),
+                "otherapp",
+                &[],
+                false,
+                false,
+                MediaWindows::Float,
+                FullscreenWindows::Minimize
+            ),
+            Verdict::Skipped(_, "not resizable")
+        ));
+        assert!(matches!(
+            classify_eligible(
+                sample_window("fixture", "FixedWindow"),
+                "otherapp",
+                &[rule("tile")],
+                false,
+                false,
+                MediaWindows::Float,
+                FullscreenWindows::Minimize
+            ),
+            Verdict::Tileable(Win {
+                rule_ws: Some(2),
+                ..
+            })
+        ));
+    }
+
+    struct Fixture(HWND);
+
+    impl Fixture {
+        fn new(owner: Option<HWND>) -> Self {
+            use windows::Win32::UI::WindowsAndMessaging::{CreateWindowExW, WS_VISIBLE};
+            Self(unsafe {
+                CreateWindowExW(
+                    Default::default(),
+                    windows::core::w!("STATIC"),
+                    windows::core::w!("tile-rs classification fixture"),
+                    WS_POPUP | WS_VISIBLE,
+                    -25000,
+                    -25000,
+                    400,
+                    300,
+                    owner,
+                    None,
+                    None,
+                    None,
+                )
+                .unwrap()
+            })
+        }
+    }
+
+    impl Drop for Fixture {
+        fn drop(&mut self) {
+            unsafe {
+                let _ = windows::Win32::UI::WindowsAndMessaging::DestroyWindow(self.0);
+            }
+        }
+    }
+
+    #[test]
+    fn native_owned_dialog_stays_excluded_even_with_tile_rule() {
+        let owner = Fixture::new(None);
+        let dialog = Fixture::new(Some(owner.0));
+        assert!(matches!(
+            classify(dialog.0, &[rule("tile")]),
+            Verdict::Skipped(_, "owned window (dialog)")
+        ));
+    }
+
+    #[test]
+    fn event_and_enumeration_admission_both_honor_manual_float() {
+        let window = Fixture::new(None);
+        let rules = vec![rule("tile")];
+        let manual = HashSet::from([window.0 .0 as isize]);
+        assert!(matches!(classify(window.0, &rules), Verdict::Tileable(_)));
+        assert!(matches!(
+            classify_with_manual(window.0, &rules, &manual),
+            Verdict::Skipped(_, MANUAL_REASON)
+        ));
+        let mut collector = Collector {
+            tileable: Vec::new(),
+            fullscreen: Vec::new(),
+            skipped: Vec::new(),
+            keep_skipped: true,
+            rules,
+            manual_float: manual,
+        };
+        unsafe {
+            let _ = enum_proc(window.0, LPARAM(&mut collector as *mut _ as isize));
+        }
+        assert!(collector.tileable.is_empty() && collector.fullscreen.is_empty());
+        assert_eq!(collector.skipped[0].1, MANUAL_REASON);
+    }
+
+    #[test]
+    fn diagnostic_snapshot_reports_facts_without_exposing_titles_by_default() {
+        let window = Fixture::new(None);
+        let snapshot = diagnostic_snapshot(window.0, &[rule("tile")], &HashSet::new(), false);
+        assert!(snapshot["title"].is_null());
+        assert_eq!(snapshot["verdict"], "tileable");
+        assert_eq!(snapshot["matched_rule"], 1);
+        assert_eq!(snapshot["rule_workspace"], 3);
+        assert_eq!(snapshot["pid"], std::process::id());
+        assert!(snapshot["native_rect"].is_array());
+        let with_title = diagnostic_snapshot(window.0, &[], &HashSet::new(), true);
+        assert_eq!(with_title["title"], "tile-rs classification fixture");
+    }
 
     #[test]
     fn media_titles_are_detected_with_a_boundary() {

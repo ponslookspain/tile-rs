@@ -53,8 +53,21 @@ pub enum Action {
     Retile,
     /// Switch to the next tiling layout (spiral -> master-stack -> grid -> columns -> spiral).
     CycleLayout,
+    /// Move keyboard focus to the next / previous monitor.
+    FocusMonitor(i8),
+    /// Send the focused window to the next / previous monitor.
+    MoveToMonitor(i8),
     ReloadConfig,
     EditConfig,
+    /// Show the focused window alone on the whole screen (the rest stay stacked underneath);
+    /// press again to go back to the normal layout of the workspace.
+    ToggleMonocle,
+    /// Focus the window that was focused before the current one (switching workspace if needed).
+    FocusLast,
+    /// Switch the active monitor back to the workspace it showed before the current one.
+    WorkspaceBack,
+    /// Add (+1) / remove (-1) a window in the master column of master-stack.
+    MasterCount(i8),
 }
 
 /// What to do with a window that runs fullscreen / borderless fullscreen (a game, a video
@@ -157,6 +170,7 @@ struct RawConfig {
     resize_step: Option<u32>,
     border: Option<bool>,
     border_color: Option<String>,
+    accent_color: Option<String>,
     border_width: Option<u32>,
     min_tile_width: Option<i32>,
     min_tile_height: Option<i32>,
@@ -165,6 +179,8 @@ struct RawConfig {
     workspace_indicator: Option<bool>,
     workspace_indicator_size: Option<String>,
     focus_follows_mouse: Option<bool>,
+    smart_gaps: Option<bool>,
+    master_count: Option<u32>,
     #[serde(default)]
     hotkeys: BTreeMap<String, OneOrMany>,
     #[serde(default)]
@@ -194,6 +210,8 @@ pub struct Config {
     pub border: bool,
     /// Border colour as a Windows COLORREF (0x00BBGGRR).
     pub border_color: u32,
+    /// Accent colour of the workspace indicator as a COLORREF (0x00BBGGRR).
+    pub accent_color: u32,
     /// Border thickness in pixels (0 = no border).
     pub border_width: u32,
     /// Comfortable minimum tile size; the spiral shrinks the master tile to keep tiles at least
@@ -209,6 +227,10 @@ pub struct Config {
     pub workspace_indicator_size: IndicatorSize,
     /// Focus the window under the mouse pointer when it moves over a tiled window.
     pub focus_follows_mouse: bool,
+    /// No gaps around a lone window.
+    pub smart_gaps: bool,
+    /// Windows in the master column of master-stack (1 = the classic single master).
+    pub master_count: u32,
     /// (action, "alt+shift+h")
     pub bindings: Vec<(Action, String)>,
     pub rules: Vec<Rule>,
@@ -252,6 +274,9 @@ resize_step = 40
 # Border around the focused tiled window (drawn by tile-rs itself).
 border = true
 border_color = "#8dbcff"
+
+# Accent colour of the workspace indicator (#RRGGBB).
+accent_color = "#008cff"
 border_width = 2
 
 # Comfortable minimum tile size: when windows would get smaller, tile-rs narrows the left (master)
@@ -269,6 +294,13 @@ workspace_indicator_size = "medium" # small, medium, large
 # Move focus to the window under the mouse pointer when it moves onto a tiled window.
 focus_follows_mouse = false
 
+# Drop the gaps when a workspace holds a single window, so it fills the screen.
+smart_gaps = false
+
+# Master-stack: how many windows share the left (master) column. Change it on the fly with the
+# master_count_inc / master_count_dec hotkeys.
+master_count = 1
+
 # Windows that run fullscreen or borderless fullscreen (games, video players): "minimize" hides
 # them while their workspace is not shown and restores them when you switch back; "ignore" leaves
 # them completely alone.
@@ -276,7 +308,8 @@ fullscreen_windows = "minimize"
 
 # Windows with a photo or video open (a viewer / player showing a media file): "float" leaves the
 # window as the app opened it (a movable window you can put anywhere), "tile" treats it like any
-# other window. Fullscreen playback is still handled by fullscreen_windows above.
+# other window. Floating media stays unmanaged even in fullscreen; with "tile", fullscreen
+# playback follows fullscreen_windows above and is never resized into a tile.
 media_windows = "float"
 
 [hotkeys]
@@ -299,6 +332,11 @@ minimize      = "alt+shift+m"
 toggle_float  = "alt+shift+f"
 close         = "alt+shift+q"
 cycle_layout  = "ctrl+alt+l"
+toggle_monocle = "alt+m"
+focus_last    = "alt+z"
+workspace_back_and_forth = "alt+shift+z"
+master_count_inc = "alt+period"
+master_count_dec = "alt+comma"
 pause         = ["ctrl+alt+p", "alt+shift+p"]
 quit          = "ctrl+alt+q"
 # Optional (also available from the tray menu):
@@ -389,6 +427,11 @@ pub fn migrate(text: &str) -> Option<String> {
         hot.push(r#"quit          = "ctrl+alt+q""#.into());
     }
     for (key, spec) in [
+        ("toggle_monocle", "alt+m"),
+        ("focus_last", "alt+z"),
+        ("workspace_back_and_forth", "alt+shift+z"),
+        ("master_count_inc", "alt+period"),
+        ("master_count_dec", "alt+comma"),
         ("workspace_next", "alt+shift+period"),
         ("workspace_prev", "alt+shift+comma"),
         ("move_to_next_workspace", "ctrl+alt+period"),
@@ -448,6 +491,10 @@ pub fn migrate(text: &str) -> Option<String> {
         top.push("# Coloured border around the focused tiled window.".into());
         top.push("border = true".into());
     }
+    if !has("accent_color") {
+        top.push("# Accent colour of the workspace indicator (#RRGGBB).".into());
+        top.push("accent_color = \"#008cff\"".into());
+    }
     if !has("border_color") {
         top.push("border_color = \"#8dbcff\"".into());
     }
@@ -474,6 +521,14 @@ pub fn migrate(text: &str) -> Option<String> {
     }
     if !has("workspace_indicator_size") {
         top.push("workspace_indicator_size = \"medium\" # small, medium, large".into());
+    }
+    if !has("smart_gaps") {
+        top.push("# Drop the gaps when a workspace holds a single window.".into());
+        top.push("smart_gaps = false".into());
+    }
+    if !has("master_count") {
+        top.push("# Master-stack: windows in the master column.".into());
+        top.push("master_count = 1".into());
     }
     if !has("focus_follows_mouse") {
         top.push("# Focus the window under the mouse pointer when it moves onto it.".into());
@@ -627,6 +682,20 @@ fn parse_action(name: &str) -> Option<Action> {
             .filter(|n| (1..=WS_COUNT).contains(n))
             .map(|n| n - 1)
     };
+    match n.as_str() {
+        "workspace_next" => return Some(Action::WorkspaceNext),
+        "focus_next_monitor" => return Some(Action::FocusMonitor(1)),
+        "focus_prev_monitor" => return Some(Action::FocusMonitor(-1)),
+        "move_to_next_monitor" => return Some(Action::MoveToMonitor(1)),
+        "move_to_prev_monitor" => return Some(Action::MoveToMonitor(-1)),
+        "workspace_prev" => return Some(Action::WorkspacePrev),
+        // exact names must come before the `focus_` / `workspace_` prefix handlers below
+        "focus_last" => return Some(Action::FocusLast),
+        "workspace_back_and_forth" => return Some(Action::WorkspaceBack),
+        "move_to_next_workspace" => return Some(Action::MoveToNext),
+        "move_to_prev_workspace" => return Some(Action::MoveToPrev),
+        _ => {}
+    }
     if let Some(d) = n.strip_prefix("focus_") {
         return dir(d).map(Action::Focus);
     }
@@ -634,13 +703,6 @@ fn parse_action(name: &str) -> Option<Action> {
         return dir(d).map(Action::Swap);
     }
     // "next"/"prev" are not numbers, so they must be matched before the numbered prefixes
-    match n.as_str() {
-        "workspace_next" => return Some(Action::WorkspaceNext),
-        "workspace_prev" => return Some(Action::WorkspacePrev),
-        "move_to_next_workspace" => return Some(Action::MoveToNext),
-        "move_to_prev_workspace" => return Some(Action::MoveToPrev),
-        _ => {}
-    }
     if let Some(i) = n.strip_prefix("move_to_workspace_") {
         return ws(i).map(Action::MoveTo);
     }
@@ -671,6 +733,9 @@ fn parse_action(name: &str) -> Option<Action> {
         "quit" => Some(Action::Quit),
         "retile" => Some(Action::Retile),
         "cycle_layout" => Some(Action::CycleLayout),
+        "toggle_monocle" => Some(Action::ToggleMonocle),
+        "master_count_inc" => Some(Action::MasterCount(1)),
+        "master_count_dec" => Some(Action::MasterCount(-1)),
         "reload_config" => Some(Action::ReloadConfig),
         "edit_config" => Some(Action::EditConfig),
         _ => None,
@@ -848,6 +913,8 @@ pub fn parse(text: &str) -> Result<Config, String> {
     }
     let border = raw.border.unwrap_or(true);
     let border_color = parse_color(raw.border_color.as_deref().unwrap_or("#8dbcff"))?;
+    let accent_color = parse_color(raw.accent_color.as_deref().unwrap_or("#008cff"))
+        .map_err(|_| "accent_color: expected a colour like \"#008cff\"".to_string())?;
     let border_width = raw.border_width.unwrap_or(2);
     if border_width > 20 {
         return Err(format!(
@@ -879,6 +946,8 @@ pub fn parse(text: &str) -> Result<Config, String> {
         }
     };
     let focus_follows_mouse = raw.focus_follows_mouse.unwrap_or(false);
+    let smart_gaps = raw.smart_gaps.unwrap_or(false);
+    let master_count = raw.master_count.unwrap_or(1).clamp(1, MAX_MASTER_COUNT);
     let mut bindings = Vec::new();
     for (name, v) in raw.hotkeys {
         let action =
@@ -930,6 +999,7 @@ pub fn parse(text: &str) -> Result<Config, String> {
         resize_step,
         border,
         border_color,
+        accent_color,
         border_width,
         min_tile_width,
         min_tile_height,
@@ -938,6 +1008,8 @@ pub fn parse(text: &str) -> Result<Config, String> {
         workspace_indicator,
         workspace_indicator_size,
         focus_follows_mouse,
+        smart_gaps,
+        master_count,
         bindings,
         rules: raw.rules,
     })
@@ -1029,6 +1101,11 @@ pub fn border() -> Option<u32> {
     with_cfg(|c| c.border.then_some(c.border_color))
 }
 
+/// The workspace indicator accent colour (COLORREF).
+pub fn accent_color_value() -> u32 {
+    with_cfg(|c| c.accent_color)
+}
+
 /// The configured border colour (COLORREF), whether or not the border is enabled.
 pub fn border_color_value() -> u32 {
     with_cfg(|c| c.border_color)
@@ -1061,6 +1138,25 @@ pub fn workspace_indicator() -> bool {
 }
 
 /// Whether moving the pointer over a tiled window focuses it.
+/// Tests share the process-wide config: hold this while a test changes it.
+#[cfg(test)]
+pub fn test_lock() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// Upper bound of `master_count` (more would leave the stack column empty on normal screens).
+pub const MAX_MASTER_COUNT: u32 = 8;
+
+/// Windows in the master column of master-stack (always at least 1).
+pub fn master_count() -> usize {
+    with_cfg(|c| c.master_count.max(1) as usize)
+}
+
+pub fn smart_gaps() -> bool {
+    with_cfg(|c| c.smart_gaps)
+}
+
 pub fn focus_follows_mouse() -> bool {
     with_cfg(|c| c.focus_follows_mouse)
 }
@@ -1194,6 +1290,31 @@ mod tests {
     }
 
     #[test]
+    fn master_count_is_clamped_and_new_actions_parse() {
+        assert_eq!(parse("").unwrap().master_count, 1);
+        assert_eq!(parse("master_count = 3").unwrap().master_count, 3);
+        assert_eq!(parse("master_count = 0").unwrap().master_count, 1);
+        assert_eq!(
+            parse("master_count = 99").unwrap().master_count,
+            MAX_MASTER_COUNT
+        );
+        for (name, action) in [
+            ("toggle_monocle", Action::ToggleMonocle),
+            ("focus_last", Action::FocusLast),
+            ("workspace_back_and_forth", Action::WorkspaceBack),
+            ("master_count_inc", Action::MasterCount(1)),
+            ("master_count_dec", Action::MasterCount(-1)),
+        ] {
+            assert_eq!(parse_action(name), Some(action));
+        }
+        let c = parse(&default_config()).unwrap();
+        assert!(c
+            .bindings
+            .iter()
+            .any(|(a, s)| *a == Action::ToggleMonocle && s == "alt+m"));
+    }
+
+    #[test]
     fn legacy_snapshot_switch_is_ignored_and_never_added_to_new_configs() {
         for enabled in [true, false] {
             let c = parse(&format!(
@@ -1262,7 +1383,7 @@ mod tests {
         let once = migrate(OLD_CONFIG).unwrap();
         assert!(migrate(&once).is_none(), "second run must change nothing");
         // a key the user commented out or turned off is not re-added
-        let custom = "layout = \"spiral\"\ngap = 5\nanimations = false\n# animation_ms = 99\neasing = \"linear\"\nfullscreen_windows = \"ignore\"\nmedia_windows = \"tile\"\nresize_step = 10\nborder = false\n# border_color = \"#112233\"\nborder_width = 3\nmin_tile_width = 400\nmin_tile_height = 300\nmax_tiles = 6\nauto_overflow = false\nworkspace_indicator = false\nworkspace_indicator_size = \"small\"\nfocus_follows_mouse = true\n\n[hotkeys]\n# grow_width = \"alt+plus\"\n# shrink_width = \"alt+minus\"\nminimize = \"alt+shift+m\"\ntoggle_float = \"alt+shift+f\"\nclose = \"alt+shift+q\"\ncycle_layout = \"ctrl+alt+l\"\nquit = \"ctrl+alt+q\"\nworkspace_next = \"alt+shift+period\"\nworkspace_prev = \"alt+shift+comma\"\nmove_to_next_workspace = \"ctrl+alt+period\"\nmove_to_prev_workspace = \"ctrl+alt+comma\"\n";
+        let custom = "layout = \"spiral\"\ngap = 5\nanimations = false\n# animation_ms = 99\neasing = \"linear\"\nfullscreen_windows = \"ignore\"\nmedia_windows = \"tile\"\nresize_step = 10\nborder = false\n# border_color = \"#112233\"\nborder_width = 3\nmin_tile_width = 400\nmin_tile_height = 300\nmax_tiles = 6\nauto_overflow = false\nworkspace_indicator = false\nworkspace_indicator_size = \"small\"\nfocus_follows_mouse = true\nsmart_gaps = false\nmaster_count = 2\naccent_color = \"#008cff\"\n\n[hotkeys]\n# grow_width = \"alt+plus\"\n# shrink_width = \"alt+minus\"\nminimize = \"alt+shift+m\"\ntoggle_float = \"alt+shift+f\"\nclose = \"alt+shift+q\"\ncycle_layout = \"ctrl+alt+l\"\ntoggle_monocle = \"alt+m\"\nfocus_last = \"alt+z\"\nworkspace_back_and_forth = \"alt+shift+z\"\nmaster_count_inc = \"alt+period\"\nmaster_count_dec = \"alt+comma\"\nquit = \"ctrl+alt+q\"\nworkspace_next = \"alt+shift+period\"\nworkspace_prev = \"alt+shift+comma\"\nmove_to_next_workspace = \"ctrl+alt+period\"\nmove_to_prev_workspace = \"ctrl+alt+comma\"\n";
         let custom = format!("animation_fps_limit = 30\nsnapshot_animations = false\n{custom}");
         assert!(migrate(&custom).is_none());
         assert!(!parse(&custom).unwrap().animations);
@@ -1319,6 +1440,34 @@ mod tests {
         assert!(err.contains("out_cubic"), "{err}");
         assert!(parse("easing = \"wobble\"").is_err());
         assert_eq!(parse("easing = \"linear\"").unwrap().easing, Easing::Linear);
+    }
+
+    #[test]
+    fn accent_color_parses_with_a_default() {
+        assert_eq!(parse("").unwrap().accent_color, 0xFF8C00); // #008cff as COLORREF (BGR)
+        assert_eq!(
+            parse("accent_color = \"#ffcc00\"").unwrap().accent_color,
+            0x00CCFF
+        );
+        assert!(parse("accent_color = \"yellow\"").is_err());
+    }
+
+    #[test]
+    fn monitor_actions_and_smart_gaps_parse() {
+        let c = parse(
+            "smart_gaps = true\n[hotkeys]\nfocus_next_monitor = \"alt+m\"\nmove_to_prev_monitor = \"alt+shift+m\"\n",
+        )
+        .unwrap();
+        assert!(c.smart_gaps);
+        assert!(c
+            .bindings
+            .iter()
+            .any(|(a, s)| *a == Action::FocusMonitor(1) && s == "alt+m"));
+        assert!(c
+            .bindings
+            .iter()
+            .any(|(a, s)| *a == Action::MoveToMonitor(-1) && s == "alt+shift+m"));
+        assert!(!parse("").unwrap().smart_gaps);
     }
 
     #[test]

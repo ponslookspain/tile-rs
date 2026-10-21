@@ -5,6 +5,7 @@
 #>
 $ErrorActionPreference = 'Stop'
 Set-Location (Split-Path -Parent $PSScriptRoot)
+. (Join-Path $PSScriptRoot 'vcenv.ps1')
 
 function Step($title, [scriptblock]$cmd) {
     Write-Host "== $title" -ForegroundColor Cyan

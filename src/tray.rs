@@ -24,6 +24,8 @@ use crate::config::{self, Action};
 const WM_TRAY: u32 = WM_APP + 1;
 const WM_LAUNCHER_RELOAD: u32 = WM_APP + 2;
 const WM_LAUNCHER_QUIT: u32 = WM_APP + 3;
+const WM_DIAGNOSTICS: u32 = WM_APP + 4;
+const WM_DIAGNOSTICS_WITH_TITLES: u32 = WM_APP + 5;
 const TRAY_UID: u32 = 1;
 
 static TRAY_HWND: AtomicIsize = AtomicIsize::new(0);
@@ -37,6 +39,7 @@ const M_RELOAD: usize = 4;
 const M_EDIT: usize = 5;
 const M_FOLDER: usize = 6;
 const M_LOG: usize = 7;
+const M_DIAGNOSTICS: usize = 12;
 const M_AUTOSTART: usize = 8;
 const M_HOTKEYS: usize = 9;
 const M_UPDATE: usize = 11;
@@ -192,6 +195,14 @@ pub fn request_manager_quit() -> bool {
     post_manager_message(WM_LAUNCHER_QUIT)
 }
 
+pub fn request_manager_diagnostics(include_titles: bool) -> bool {
+    post_manager_message(if include_titles {
+        WM_DIAGNOSTICS_WITH_TITLES
+    } else {
+        WM_DIAGNOSTICS
+    })
+}
+
 fn post_manager_message(message: u32) -> bool {
     unsafe {
         let Ok(hwnd) = windows::Win32::UI::WindowsAndMessaging::FindWindowW(
@@ -300,6 +311,7 @@ fn show_menu(hwnd: HWND) {
         item(menu, M_HOTKEYS, "Show hotkeys", false);
         item(menu, M_FOLDER, "Open config folder", false);
         item(menu, M_LOG, "Open log", false);
+        item(menu, M_DIAGNOSTICS, "Export window diagnostics", false);
         item(menu, M_UPDATE, "Check for updates", false);
         let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
         item(
@@ -332,6 +344,7 @@ fn show_menu(hwnd: HWND) {
             M_PAUSE => crate::dispatch(Action::Pause),
             M_RETILE => crate::dispatch(Action::Retile),
             M_RELOAD => crate::dispatch(Action::ReloadConfig),
+            M_DIAGNOSTICS => crate::export_diagnostics(false),
             M_EDIT => crate::dispatch(Action::EditConfig),
             M_HOTKEYS => show_hotkeys(),
             M_FOLDER => open(
@@ -395,6 +408,10 @@ fn show_hotkeys() {
 }
 
 unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+    if msg == WM_DIAGNOSTICS || msg == WM_DIAGNOSTICS_WITH_TITLES {
+        crate::export_diagnostics(msg == WM_DIAGNOSTICS_WITH_TITLES);
+        return LRESULT(0);
+    }
     if msg == WM_LAUNCHER_RELOAD {
         crate::reload_config();
         return LRESULT(0);
