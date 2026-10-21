@@ -242,4 +242,12 @@ Current multi-monitor implementation status and manual verification steps are tr
 
 ## License
 
-[MIT](LICENSE)
+[MIT](LICENSE). The settings window is built with [Slint](https://slint.dev) under the Slint
+Royalty-Free Desktop, Mobile and Web Applications License (a "Made with Slint" credit is shown in
+Settings -> Advanced -> About).
+
+## Troubleshooting
+
+If tile-rs is killed (Task Manager, power loss) while windows of other workspaces are parked
+off-screen, they come back the next time tile-rs starts. To bring them back without starting it:
+`tile-rs.exe --restore-windows`.

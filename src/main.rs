@@ -5222,6 +5222,19 @@ fn main() {
                 );
             }
         }
+        Some("--restore-windows") => {
+            // Rescue command for after a hard kill (Task Manager, power loss): bring back windows
+            // that were left parked off-screen, without starting the window manager.
+            unsafe {
+                let _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+            }
+            recover_parked();
+            let mut out = console_out();
+            let _ = writeln!(
+                out,
+                "Windows parked off-screen by tile-rs were brought back."
+            );
+        }
         Some("--version") | Some("-V") => {
             let mut out = console_out();
             let _ = writeln!(out, "tile-rs {}", env!("CARGO_PKG_VERSION"));
@@ -5244,6 +5257,7 @@ fn main() {
                 out,
                 "  tile-rs.exe tile         arrange the current windows once and exit"
             );
+            let _ = writeln!(out, "  tile-rs.exe --restore-windows  bring back windows left off-screen after a crash or kill");
             let _ = writeln!(out, "  tile-rs.exe --version    print the version");
             let _ = writeln!(out, "\nConfig: {}", config::config_path().display());
         }

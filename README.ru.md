@@ -237,4 +237,12 @@ tile-rs слушает события окон Windows (`SetWinEventHook`), хр
 
 ## Лицензия
 
-[MIT](LICENSE)
+[MIT](LICENSE). Окно настроек построено на [Slint](https://slint.dev) по лицензии Slint
+Royalty-Free Desktop, Mobile and Web Applications License (значок «Made with Slint» показан в
+Настройки -> Дополнительно -> О программе).
+
+## Если что-то пошло не так
+
+Если tile-rs завершили принудительно (Диспетчер задач, отключение питания), пока окна других
+рабочих столов были убраны за экран, они вернутся при следующем запуске. Чтобы вернуть их, не
+запуская программу: `tile-rs.exe --restore-windows`.

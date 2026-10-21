@@ -7,6 +7,8 @@ follows [Semantic Versioning](https://semver.org) (see [docs/RELEASING.md](docs/
 ## [Unreleased]
 
 ### Added
+- `tile-rs.exe --restore-windows` brings back windows left parked off-screen after a hard kill.
+- About card (with the Slint attribution) in Settings -> Advanced.
 - Monocle (`toggle_monocle`, `alt+m`): show the focused window alone on the whole screen and
   cycle through the workspace's windows with `focus_*`; press again to restore the layout.
 - Several master windows in master-stack (`master_count`, `master_count_inc` / `master_count_dec`);

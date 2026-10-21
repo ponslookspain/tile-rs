@@ -1,4 +1,4 @@
-import { ComboBox, LineEdit, TextEdit, ScrollView } from "std-widgets.slint";
+import { ComboBox, LineEdit, TextEdit, ScrollView, AboutSlint } from "std-widgets.slint";
 
 // Shared native UI tokens; motion follows the animation preference.
 export global AppTheme {
@@ -511,6 +511,17 @@ export component MainWindow inherits Window {
                                 Text { text: "Расширенные параметры"; color: #edf2f4; font-size: 14px; font-weight: 600; height: 20px; }
                                 Text { text: "Правила приложений и параметры, которые редко меняются, остаются в config.toml."; color: AppTheme.muted; font-size: 12px; }
                                 Text { text: "v" + app_version + " · Windows x64"; color: #829099; font-size: 10px; }
+                            }
+                        }
+                        SettingCard {
+                            card-height: 190px;
+                            VerticalLayout {
+                                padding: 14px;
+                                spacing: 6px;
+                                Text { text: "О программе"; color: #edf2f4; font-size: 14px; font-weight: 600; height: 20px; }
+                                Text { text: "tile-rs v" + app_version + " · открытый исходный код, лицензия MIT"; color: AppTheme.muted; font-size: 12px; height: 18px; }
+                                Text { text: "Окно настроек построено на Slint (Royalty-Free License)."; color: AppTheme.muted; font-size: 12px; height: 18px; }
+                                AboutSlint { height: 100px; }
                             }
                         }
                     }
