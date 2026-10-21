@@ -16,6 +16,7 @@ mod divider;
 mod event_queue;
 mod geometry;
 mod launcher;
+mod launcher_model;
 mod live_resize;
 mod monitor;
 mod overlay;

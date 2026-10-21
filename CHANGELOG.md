@@ -7,6 +7,10 @@ follows [Semantic Versioning](https://semver.org) (see [docs/RELEASING.md](docs/
 ## [Unreleased]
 
 ### Added
+- Settings launcher: hotkey editor (record a combination by pressing it, add a second one, clear,
+  reset all, conflict warnings), application rules editor with a picker of running windows, `smart_gaps`
+  and `master_count` settings, an unsaved-changes indicator and a one-time welcome card with the
+  main shortcuts. The logic lives in `launcher_model.rs`, independent of the UI toolkit.
 - `tile-rs.exe --restore-windows` brings back windows left parked off-screen after a hard kill.
 - About card (with the Slint attribution) in Settings -> Advanced.
 - Monocle (`toggle_monocle`, `alt+m`): show the focused window alone on the whole screen and

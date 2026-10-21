@@ -9,6 +9,14 @@ export global AppTheme {
     out property <color> muted: #a2b0bf;
 }
 
+export struct HotkeyRowData {
+    action: string,
+    label: string,
+    group: string,
+    keys: string,
+    conflict: bool,
+}
+
 component NavItem inherits Rectangle {
     in property <string> title;
     in property <bool> selected: false;
@@ -197,7 +205,20 @@ export component MainWindow inherits Window {
     in-out property <string> border_width: "2";
     in-out property <int> fullscreen_windows: 0;
     in-out property <int> media_windows: 0;
-    in-out property <string> hotkeys: "";
+    in-out property <bool> smart_gaps: false;
+    in-out property <string> master_count: "1";
+    // hotkey editor: one row per action; `recording` is the row waiting for a key press (-1: none)
+    in-out property <[HotkeyRowData]> hotkey_rows;
+    in-out property <int> recording: -1;
+    in-out property <bool> recording_append: false;
+    // application rules: readable descriptions, and the running windows a rule can be made from
+    in-out property <[string]> rule_rows;
+    in-out property <[string]> app_choices;
+    in-out property <int> rule_app_index: 0;
+    in-out property <int> rule_kind_index: 0;
+    property <[string]> rule_kinds: ["Не тайлить (плавающее окно)", "Открывать на рабочем столе 1", "Открывать на рабочем столе 2", "Открывать на рабочем столе 3", "Открывать на рабочем столе 4", "Открывать на рабочем столе 5", "Открывать на рабочем столе 6", "Открывать на рабочем столе 7", "Открывать на рабочем столе 8", "Открывать на рабочем столе 9"];
+    in-out property <bool> dirty: false;
+    in-out property <bool> show_welcome: false;
     in-out property <string> status: "Настройки загружены";
 
     in property <string> app_version;
@@ -207,12 +228,43 @@ export component MainWindow inherits Window {
     in-out property <string> update_version;
     in-out property <string> update_message: "Проверьте, появилась ли новая версия tile-rs.";
     in-out property <string> release_notes;
-    changed animations => { AppTheme.motion = animations; }
+    changed animations => { AppTheme.motion = animations; dirty = true; }
+    changed layout_index => { dirty = true; }
+    changed indicator_size => { dirty = true; }
+    changed auto_overflow => { dirty = true; }
+    changed show_indicator => { dirty = true; }
+    changed focus_follows_mouse => { dirty = true; }
+    changed highlight_window => { dirty = true; }
+    changed autostart => { dirty = true; }
+    changed inner_gap => { dirty = true; }
+    changed outer_gap => { dirty = true; }
+    changed animation_ms => { dirty = true; }
+    changed easing => { dirty = true; }
+    changed resize_step => { dirty = true; }
+    changed min_tile_width => { dirty = true; }
+    changed min_tile_height => { dirty = true; }
+    changed max_tiles => { dirty = true; }
+    changed border_color => { dirty = true; }
+    changed accent_color => { dirty = true; }
+    changed border_width => { dirty = true; }
+    changed fullscreen_windows => { dirty = true; }
+    changed media_windows => { dirty = true; }
+    changed smart_gaps => { dirty = true; }
+    changed master_count => { dirty = true; }
+    changed hotkey_rows => { dirty = true; }
+    changed rule_rows => { dirty = true; }
     callback install_update();
     callback open_release();
     callback check_updates();
     callback open_github();
     callback save();
+    callback key_captured(int, bool, string, bool, bool, bool, bool);
+    callback clear_keys(int);
+    callback reset_hotkeys();
+    callback add_rule();
+    callback delete_rule(int);
+    callback refresh_apps();
+    callback dismiss_welcome();
     callback open_config();
     callback open_log();
     callback quit_manager();
@@ -232,7 +284,7 @@ export component MainWindow inherits Window {
                 LayoutPreview { width: 36px; height: 36px; }
                 Text { text: "tile-rs"; color: #f3f6f8; font-size: 23px; font-weight: 700; vertical-alignment: center; }
                 Text { text: "ВАШЕ ПРОСТРАНСТВО. ВАШ РИТМ."; color: #87939b; font-size: 12px; vertical-alignment: center; horizontal-stretch: 1; }
-                ActionButton { label: update_state == 2 ? "Доступна " + update_version : "Check update"; primary: update_state == 2; button-width: 172px; activated => { page = 6; root.check_updates(); } }
+                ActionButton { label: update_state == 2 ? "Доступна " + update_version : "Check update"; primary: update_state == 2; button-width: 172px; activated => { page = 7; root.check_updates(); } }
                 ActionButton { label: "GitHub ↗"; button-width: 84px; activated => { root.open_github(); } }
             }
         }
@@ -249,7 +301,7 @@ export component MainWindow inherits Window {
                     padding-right: 12px;
                     spacing: 5px;
                     Text { text: "ПАРАМЕТРЫ"; color: #75828a; font-size: 9px; font-weight: 700; height: 26px; vertical-alignment: center; }
-                    for item[index] in ["Общие", "Раскладка", "Рабочие столы", "Поведение окон", "Горячие клавиши", "Дополнительно", "Обновления"]: NavItem {
+                    for item[index] in ["Общие", "Раскладка", "Рабочие столы", "Поведение окон", "Горячие клавиши", "Приложения", "Дополнительно", "Обновления"]: NavItem {
                         title: item;
                         selected: page == index;
                         activated => { page = index; }
@@ -278,7 +330,7 @@ export component MainWindow inherits Window {
                     HorizontalLayout {
                         height: 38px;
                         Text {
-                            text: ["Общие", "Раскладка", "Рабочие столы", "Поведение окон", "Горячие клавиши", "Дополнительно", "Обновления"][page];
+                            text: ["Общие", "Раскладка", "Рабочие столы", "Поведение окон", "Горячие клавиши", "Приложения", "Дополнительно", "Обновления"][page];
                             color: #f3f6f8;
                             font-size: 22px;
                             font-weight: 700;
@@ -287,10 +339,10 @@ export component MainWindow inherits Window {
                         }
                         ActionButton { label: "Сохранить"; primary: true; button-width: 104px; activated => { root.save(); } }
                     }
-                    Text { text: status; color: #89969d; font-size: 12px; height: 18px; }
+                    Text { text: dirty ? "● Есть несохранённые изменения · " + status : status; color: dirty ? #f0c987 : #89969d; font-size: 12px; height: 18px; }
 
                     Text {
-                        text: ["Всё на своих местах — от раскладки до движения окон.", "Настройте размеры окон и свободное пространство.", "Меньше переключений. Больше порядка.", "Определите, как приложения ведут себя на рабочем столе.", "Ваши действия — в одном сочетании клавиш.", "Автозапуск, конфигурация и диагностика.", "Новые возможности приходят прямо в приложение."][page];
+                        text: ["Всё на своих местах — от раскладки до движения окон.", "Настройте размеры окон и свободное пространство.", "Меньше переключений. Больше порядка.", "Определите, как приложения ведут себя на рабочем столе.", "Ваши действия — в одном сочетании клавиш.", "Как tile-rs ведёт себя с конкретными программами.", "Автозапуск, конфигурация и диагностика.", "Новые возможности приходят прямо в приложение."][page];
                         color: AppTheme.muted; font-size: 12px; height: 24px;
                     }
                     ScrollView {
@@ -391,6 +443,16 @@ export component MainWindow inherits Window {
                                 ToggleRow { label: "Переносить новые окна на следующий рабочий стол, если текущий заполнен"; checked: auto_overflow; changed(value) => { auto_overflow = value; } }
                             }
                         }
+                        SettingCard {
+                            card-height: 150px;
+                            VerticalLayout {
+                                padding: 14px;
+                                spacing: 6px;
+                                Text { text: "Одно окно и главная колонка"; color: #edf2f4; font-size: 14px; font-weight: 600; height: 20px; }
+                                ToggleRow { label: "Убирать отступы, если на рабочем столе одно окно"; checked: smart_gaps; changed(value) => { smart_gaps = value; } }
+                                NumberField { label: "Окон в главной колонке (раскладка master-stack, 1–8)"; value <=> master_count; field-width: 140px; }
+                            }
+                        }
                         Text { text: "Все четыре раскладки доступны. Изменения применяются кнопкой «Сохранить»."; color: #849199; font-size: 12px; height: 20px; }
                     }
 
@@ -478,16 +540,80 @@ export component MainWindow inherits Window {
                     }
 
                     if page == 4: VerticalLayout {
-                        spacing: 9px;
-                        Text { text: "Изменяйте сочетания в формате action = key. Несколько сочетаний можно задать списком TOML."; color: AppTheme.muted; font-size: 12px; height: 18px; }
-                        TextEdit {
-                            text: hotkeys;
-                            height: 380px;
-                            edited(text) => { hotkeys = text; }
+                        spacing: 6px;
+                        HorizontalLayout {
+                            spacing: 8px;
+                            Text {
+                                text: recording >= 0 ? "Нажмите сочетание клавиш. Esc — отмена, Backspace — убрать сочетание." : "«Записать» заменяет сочетание, «+» добавляет ещё одно, «✕» убирает. Сохраните изменения кнопкой вверху.";
+                                color: recording >= 0 ? AppTheme.accent : AppTheme.muted;
+                                font-size: 12px;
+                                vertical-alignment: center;
+                                horizontal-stretch: 1;
+                                wrap: word-wrap;
+                            }
+                            ActionButton { label: "Сбросить все"; button-width: 120px; activated => { root.reset_hotkeys(); } }
+                        }
+                        key_capture := FocusScope {
+                            width: 0px;
+                            height: 0px;
+                            key-pressed(event) => {
+                                if (root.recording >= 0) {
+                                    root.key_captured(root.recording, root.recording_append, event.text, event.modifiers.alt, event.modifiers.control, event.modifiers.shift, event.modifiers.meta);
+                                    return accept;
+                                }
+                                return reject;
+                            }
+                        }
+                        for row[index] in hotkey_rows: Rectangle {
+                            height: 40px;
+                            border-radius: 6px;
+                            background: recording == index ? #24313f : transparent;
+                            HorizontalLayout {
+                                spacing: 8px;
+                                padding-left: 8px;
+                                Text { text: row.label; color: #cbd6e2; font-size: 12px; vertical-alignment: center; width: 250px; }
+                                Text {
+                                    text: recording == index ? "нажмите клавиши…" : (row.keys == "" ? "не назначено" : row.keys);
+                                    color: row.conflict ? #ff9b8a : (row.keys == "" ? #75828a : #e3ecf5);
+                                    font-size: 12px;
+                                    vertical-alignment: center;
+                                    horizontal-stretch: 1;
+                                }
+                                Text { text: row.conflict ? "⚠ уже занято" : ""; color: #ff9b8a; font-size: 11px; vertical-alignment: center; width: 84px; }
+                                ActionButton { label: "Записать"; button-width: 88px; activated => { root.recording = index; root.recording_append = false; key_capture.focus(); } }
+                                ActionButton { label: "+"; button-width: 36px; activated => { root.recording = index; root.recording_append = true; key_capture.focus(); } }
+                                ActionButton { label: "✕"; button-width: 36px; activated => { root.clear_keys(index); } }
+                            }
                         }
                     }
 
                     if page == 5: VerticalLayout {
+                        spacing: 10px;
+                        Text { text: "Правила приложений"; color: #edf2f4; font-size: 14px; font-weight: 600; height: 20px; }
+                        if rule_rows.length == 0: Text { text: "Правил пока нет. Добавьте первое из списка запущенных окон ниже."; color: AppTheme.muted; font-size: 12px; height: 20px; }
+                        for rule[index] in rule_rows: Rectangle {
+                            height: 40px;
+                            border-radius: 6px;
+                            background: #151d26;
+                            HorizontalLayout {
+                                spacing: 8px;
+                                padding-left: 10px;
+                                Text { text: rule; color: #cbd6e2; font-size: 12px; vertical-alignment: center; horizontal-stretch: 1; overflow: elide; }
+                                ActionButton { label: "Удалить"; button-width: 84px; activated => { root.delete_rule(index); } }
+                            }
+                        }
+                        Text { text: "Добавить правило для запущенной программы"; color: #edf2f4; font-size: 14px; font-weight: 600; height: 20px; }
+                        HorizontalLayout {
+                            spacing: 8px;
+                            height: 36px;
+                            ComboBox { model: app_choices; current-index <=> rule_app_index; horizontal-stretch: 1; }
+                            ComboBox { model: rule_kinds; current-index <=> rule_kind_index; width: 260px; }
+                            ActionButton { label: "Добавить"; primary: true; button-width: 96px; enabled: app_choices.length > 0; activated => { root.add_rule(); } }
+                            ActionButton { label: "Обновить список"; button-width: 130px; activated => { root.refresh_apps(); } }
+                        }
+                    }
+
+                    if page == 6: VerticalLayout {
                         spacing: 12px;
                         SettingCard {
                             card-height: 156px;
@@ -526,7 +652,7 @@ export component MainWindow inherits Window {
                         }
                     }
 
-                    if page == 6: VerticalLayout {
+                    if page == 7: VerticalLayout {
                         spacing: 16px;
                         SettingCard {
                             card-height: 246px;
@@ -574,6 +700,40 @@ export component MainWindow inherits Window {
                         Text { text: "Закрытие окна оставляет tile-rs в системном трее"; color: #77858d; font-size: 10px; vertical-alignment: center; horizontal-stretch: 1; }
                         ActionButton { label: "Выйти из tile-rs"; button-width: 112px; activated => { root.quit_manager(); } }
                     }
+                }
+            }
+        }
+    }
+
+    if show_welcome: Rectangle {
+        x: 0px;
+        y: 0px;
+        width: root.width;
+        height: root.height;
+        background: #000000c0;
+        TouchArea { }
+        Rectangle {
+            width: 560px;
+            height: 330px;
+            border-radius: 14px;
+            background: AppTheme.surface;
+            border-width: 1px;
+            border-color: #344454;
+            VerticalLayout {
+                padding: 26px;
+                spacing: 8px;
+                Text { text: "Добро пожаловать в tile-rs"; color: #f3f6f8; font-size: 20px; font-weight: 700; height: 32px; }
+                Text { text: "Окна выстраиваются сами. Основные сочетания:"; color: AppTheme.muted; font-size: 13px; height: 22px; }
+                Text { text: "Alt + H / J / K / L или стрелки — переход между окнами"; color: #cbd6e2; font-size: 13px; height: 22px; }
+                Text { text: "Alt + Shift + H / J / K / L — поменять окна местами"; color: #cbd6e2; font-size: 13px; height: 22px; }
+                Text { text: "Alt + 1…9 — рабочий стол,  Alt + Shift + 1…9 — перенести окно"; color: #cbd6e2; font-size: 13px; height: 22px; }
+                Text { text: "Alt + M — окно на весь экран,  Alt + Z — прошлое окно"; color: #cbd6e2; font-size: 13px; height: 22px; }
+                Text { text: "Alt + Shift + Q — закрыть окно,  Ctrl + Alt + L — смена раскладки"; color: #cbd6e2; font-size: 13px; height: 22px; }
+                Text { text: "Все сочетания можно изменить на вкладке «Горячие клавиши»."; color: AppTheme.muted; font-size: 12px; height: 22px; }
+                Rectangle { vertical-stretch: 1; }
+                HorizontalLayout {
+                    alignment: end;
+                    ActionButton { label: "Понятно"; primary: true; button-width: 120px; activated => { root.dismiss_welcome(); } }
                 }
             }
         }

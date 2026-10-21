@@ -432,6 +432,29 @@ fn skip_reason(hwnd: HWND, title: &str, class: &str) -> Option<&'static str> {
     None
 }
 
+/// Visible application windows as (process, class, title), one per process, for the settings
+/// launcher's "add a rule from a running window" list.
+pub fn running_apps() -> Vec<(String, String, String)> {
+    let collected = collect(true, &HashSet::new());
+    let mut seen = HashSet::new();
+    let mut apps = Vec::new();
+    let skipped = collected.skipped.iter().map(|(w, _)| w);
+    for w in collected
+        .tileable
+        .iter()
+        .chain(collected.fullscreen.iter())
+        .chain(skipped)
+    {
+        let process = process_name(w.pid);
+        if process.is_empty() || w.title.trim().is_empty() || !seen.insert(process.clone()) {
+            continue;
+        }
+        apps.push((process, w.class.clone(), w.title.clone()));
+    }
+    apps.sort_by(|a, b| a.0.cmp(&b.0));
+    apps
+}
+
 pub struct Collector {
     pub tileable: Vec<Win>,
     /// Windows that run fullscreen / borderless fullscreen (tracked per workspace).
