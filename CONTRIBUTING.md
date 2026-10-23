@@ -41,7 +41,7 @@ and a release build.
 - **Config compatibility**: an existing `config.toml` must keep working. New settings are
   optional, get a default and are added to `migrate()`; see [docs/RELEASING.md](docs/RELEASING.md).
 - **Changelog**: add a user-facing line to `## [Unreleased]` in `CHANGELOG.md`.
-- **Docs**: update `README.md`, `README.ru.md` and `docs/CONFIGURATION.md` when behaviour or settings change.
+- **Docs**: update `README.md` and `docs/CONFIGURATION.md` when behaviour or settings change.
 - **Style**: `cargo fmt`; no new clippy warnings; keep `unsafe` blocks small, next to the Windows call they wrap.
 
 ## Project layout

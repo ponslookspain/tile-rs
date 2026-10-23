@@ -36,7 +36,7 @@ if (Test-Path $stage) { Remove-Item -LiteralPath $stage -Recurse -Force }
 New-Item -ItemType Directory -Path $stage | Out-Null
 
 Copy-Item target\release\tile-rs.exe $stage
-Copy-Item README.md, README.ru.md, LICENSE, CHANGELOG.md $stage
+Copy-Item README.md, LICENSE, CHANGELOG.md $stage
 $docsStage = Join-Path $stage 'docs'
 New-Item -ItemType Directory -Path $docsStage | Out-Null
 Copy-Item docs\CONFIGURATION.md, docs\DEVELOPMENT.md, docs\RELEASING.md, docs\WINDOW-MOTION.md $docsStage

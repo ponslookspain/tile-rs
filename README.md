@@ -4,7 +4,7 @@ A small **spiral tiling window manager for Windows 10/11**, written in Rust. Ope
 arranged automatically in a spiral, you move and resize them with the keyboard or the mouse, and
 everything lives in one small `.exe` with a tray icon and a plain-text config.
 
-[Русская версия](README.ru.md) · [Configuration reference](docs/CONFIGURATION.md) ·
+[Configuration reference](docs/CONFIGURATION.md) ·
 [Development & testing](docs/DEVELOPMENT.md) · [Changelog](CHANGELOG.md) ·
 [Releasing & versioning](docs/RELEASING.md)
 
