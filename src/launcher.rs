@@ -423,13 +423,14 @@ fn welcome_marker() -> std::path::PathBuf {
 /// While the first-run tour is open, the manager notes the user's first moves in the progress
 /// file; it only does so while the marker file exists.
 fn start_tour() {
+    // emptied rather than deleted: the manager may hold it open for a moment while appending
+    let _ = std::fs::write(crate::tour_progress_path(), "");
     let _ = std::fs::write(crate::tour_marker(), "1");
-    let _ = std::fs::remove_file(crate::tour_progress_path());
 }
 
 fn end_tour() {
     let _ = std::fs::remove_file(crate::tour_marker());
-    let _ = std::fs::remove_file(crate::tour_progress_path());
+    let _ = std::fs::write(crate::tour_progress_path(), "");
 }
 
 fn push_tour(ui: &MainWindow, editor: &Editor) {
@@ -611,6 +612,8 @@ fn wire_editors(ui: &MainWindow) -> slint::Timer {
     if welcome {
         start_tour();
         push_tour(ui, &editor.borrow());
+    } else if crate::tour_marker().exists() {
+        end_tour(); // left behind by a launcher that did not exit cleanly
     }
     ui.on_dismiss_welcome({
         let weak = ui.as_weak();
@@ -622,8 +625,17 @@ fn wire_editors(ui: &MainWindow) -> slint::Timer {
             }
         }
     });
-    ui.on_pause_tiling(|| {
-        crate::tray::request_manager_pause();
+    ui.on_pause_tiling({
+        let weak = ui.as_weak();
+        move || {
+            let Some(ui) = weak.upgrade() else { return };
+            if crate::tray::request_manager_pause() {
+                ui.invoke_dismiss_welcome();
+                ui.set_status("Tiling is paused. Resume it from the tray icon menu.".into());
+            } else {
+                ui.set_status("tile-rs is not running, so there is nothing to pause".into());
+            }
+        }
     });
 
     ui.on_key_captured({
@@ -708,6 +720,36 @@ fn wire_editors(ui: &MainWindow) -> slint::Timer {
             push_apps(&ui, &ed);
         }
     });
+    ui.on_apply_preset({
+        let weak = ui.as_weak();
+        let editor = editor.clone();
+        move |preset| {
+            let Some(ui) = weak.upgrade() else { return };
+            let mut ed = editor.borrow_mut();
+            ed.rows = launcher_model::preset_rows(preset);
+            ui.set_recording(-1);
+            push_rows(&ui, &ed);
+            ed.edited = true;
+            ui.set_dirty(true);
+            ui.set_status(
+                if preset == 1 {
+                    "Hotkeys now use Ctrl + Alt"
+                } else {
+                    "Hotkeys now use Alt"
+                }
+                .into(),
+            );
+        }
+    });
+    ui.on_add_rule_from_file({
+        let weak = ui.as_weak();
+        let editor = editor.clone();
+        move || {
+            let Some(ui) = weak.upgrade() else { return };
+            let Some(process) = pick_program() else { return };
+            add_rule(&ui, &mut editor.borrow_mut(), process);
+        }
+    });
     ui.on_add_rule({
         let weak = ui.as_weak();
         let editor = editor.clone();
@@ -720,30 +762,7 @@ fn wire_editors(ui: &MainWindow) -> slint::Timer {
             else {
                 return;
             };
-            let kind = ui.get_rule_kind_index().clamp(0, 9);
-            let rule = config::Rule {
-                process: Some(process),
-                action: (kind == 0).then(|| "float".to_string()),
-                workspace: (kind > 0).then_some(kind as u8),
-                ..config::Rule::default()
-            };
-            let same = |r: &config::Rule| {
-                r.process == rule.process
-                    && r.class.is_none()
-                    && r.title.is_none()
-                    && r.action == rule.action
-                    && r.workspace == rule.workspace
-            };
-            if ed.rules.iter().any(same) {
-                ui.set_status("This rule already exists".into());
-                return;
-            }
-            ed.rules.push(rule);
-            ed.rules_dirty = true;
-            push_rules(&ui, &ed);
-            ed.edited = true;
-            ui.set_dirty(true);
-            ui.set_status("Rule added".into());
+            add_rule(&ui, &mut ed, process);
         }
     });
     ui.on_delete_rule({
@@ -838,6 +857,68 @@ fn wire_editors(ui: &MainWindow) -> slint::Timer {
         },
     );
     timer
+}
+
+/// Adds a rule for `process` (an executable name without `.exe`) with the chosen action.
+fn add_rule(ui: &MainWindow, ed: &mut Editor, process: String) {
+    let kind = ui.get_rule_kind_index().clamp(0, 9);
+    let rule = config::Rule {
+        process: Some(process),
+        action: (kind == 0).then(|| "float".to_string()),
+        workspace: (kind > 0).then_some(kind as u8),
+        ..config::Rule::default()
+    };
+    let same = |r: &config::Rule| {
+        r.process
+            .as_deref()
+            .zip(rule.process.as_deref())
+            .is_some_and(|(a, b)| a.eq_ignore_ascii_case(b))
+            && r.class.is_none()
+            && r.title.is_none()
+            && r.action == rule.action
+            && r.workspace == rule.workspace
+    };
+    if ed.rules.iter().any(same) {
+        ui.set_status("This rule already exists".into());
+        return;
+    }
+    ed.rules.push(rule);
+    ed.rules_dirty = true;
+    push_rules(ui, ed);
+    ed.edited = true;
+    ui.set_dirty(true);
+    ui.set_status("Rule added".into());
+}
+
+/// Lets the user choose a program file; returns its name without `.exe`.
+fn pick_program() -> Option<String> {
+    use windows::core::PWSTR;
+    use windows::Win32::UI::Controls::Dialogs::{
+        GetOpenFileNameW, OFN_FILEMUSTEXIST, OFN_NOCHANGEDIR, OFN_PATHMUSTEXIST, OPENFILENAMEW,
+    };
+    let mut file = vec![0u16; 1024];
+    let filter: Vec<u16> = "Programs (*.exe)\0*.exe\0\0".encode_utf16().collect();
+    let title = crate::tray::wide("Choose a program");
+    let owner = unsafe { FindWindowW(PCWSTR::null(), LAUNCHER_TITLE) }.unwrap_or_default();
+    let mut dialog = OPENFILENAMEW {
+        lStructSize: std::mem::size_of::<OPENFILENAMEW>() as u32,
+        hwndOwner: owner,
+        lpstrFilter: PCWSTR(filter.as_ptr()),
+        lpstrFile: PWSTR(file.as_mut_ptr()),
+        nMaxFile: file.len() as u32,
+        lpstrTitle: PCWSTR(title.as_ptr()),
+        Flags: OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR,
+        ..Default::default()
+    };
+    if !unsafe { GetOpenFileNameW(&mut dialog) }.as_bool() {
+        return None;
+    }
+    let end = file.iter().position(|c| *c == 0).unwrap_or(file.len());
+    let path = String::from_utf16_lossy(&file[..end]);
+    std::path::Path::new(&path)
+        .file_stem()
+        .map(|stem| stem.to_string_lossy().into_owned())
+        .filter(|stem| !stem.is_empty())
 }
 
 /// The letter, digit and punctuation keys physically held right now, independent of the keyboard

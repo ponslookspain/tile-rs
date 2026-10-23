@@ -573,7 +573,8 @@ export component MainWindow inherits Window {
     in-out property <[TourStep]> tour_steps;
     property <int> tour_done: (tour_steps.length > 0 && tour_steps[0].done ? 1 : 0) + (tour_steps.length > 1 && tour_steps[1].done ? 1 : 0) + (tour_steps.length > 2 && tour_steps[2].done ? 1 : 0);
     in-out property <string> master_hint: "";
-    in-out property <bool> show_advanced: false;
+    in-out property <bool> show_more: false;
+    property <[int]> nav_pages: [0, 4, 5, 7];
     in-out property <bool> dirty: false;
     in-out property <bool> show_welcome: false;
     in-out property <string> status: "Settings loaded";
@@ -586,8 +587,8 @@ export component MainWindow inherits Window {
     in-out property <string> update_message: "Check whether a new version of tile-rs is out.";
     in-out property <string> release_notes;
 
-    property <[string]> page_titles: ["General", "Layout", "Workspaces", "Window behaviour", "Hotkeys", "Apps", "Advanced", "Updates"];
-    property <[string]> page_subtitles: ["How windows are arranged and how they move", "Tile sizes, limits and the main column", "Workspace dots and focus", "Fullscreen apps and the focus border", "One key combination per action", "How tile-rs treats particular apps", "Start with Windows, files and about", "New versions of tile-rs arrive here"];
+    property <[string]> page_titles: ["General", "Layout", "Workspaces", "Window behaviour", "Hotkeys", "Apps", "Advanced", "About & updates"];
+    property <[string]> page_subtitles: ["How windows are arranged and how they move", "Tile sizes, limits and the main column", "Workspace dots and focus", "Fullscreen apps and the focus border", "One key combination per action", "How tile-rs treats particular apps", "Start with Windows, files and about", "Version, updates and troubleshooting"];
     property <[image]> page_icons: [@image-url("icons/dashboard.svg"), @image-url("icons/layout.svg"), @image-url("icons/desktops.svg"), @image-url("icons/window.svg"), @image-url("icons/keyboard.svg"), @image-url("icons/apps.svg"), @image-url("icons/adjustments.svg"), @image-url("icons/download.svg")];
     property <[string]> layout_names: ["Spiral", "Main window", "Grid", "Columns"];
     property <[string]> layout_hints: ["Each new window splits the last one", "One big window, the rest beside it", "Equal cells", "Side by side"];
@@ -626,6 +627,8 @@ export component MainWindow inherits Window {
     callback key_captured(int, bool, string, bool, bool, bool, bool);
     callback clear_keys(int);
     callback reset_hotkeys();
+    callback apply_preset(int);
+    callback add_rule_from_file();
     callback add_rule();
     callback delete_rule(int);
     callback refresh_apps();
@@ -655,12 +658,14 @@ export component MainWindow inherits Window {
                     Text { text: "tile-rs"; color: AppTheme.ink; font-size: 21px; font-weight: 700; vertical-alignment: center; }
                 }
                 Rectangle { height: 22px; }
-                for item[index] in page_titles: NavItem {
-                    title: item;
-                    icon: page_icons[index];
-                    selected: page == index;
-                    badge: index == 7 && update_state == 2;
-                    activated => { page = index; }
+                // four pages; the rarely used settings of pages 1-3 live under "More options" on
+                // General, and page 6 (startup, files) is shown above the updates on page 7
+                for pid in nav_pages: NavItem {
+                    title: page_titles[pid];
+                    icon: page_icons[pid];
+                    selected: page == pid || (pid == 0 && page >= 1 && page <= 3) || (pid == 7 && page == 6);
+                    badge: pid == 7 && update_state == 2;
+                    activated => { page = pid; }
                 }
                 Rectangle { vertical-stretch: 1; }
                 Rectangle {
@@ -861,8 +866,18 @@ export component MainWindow inherits Window {
                         }
                     }
 
-                    // ---------- 1: layout sizes ----------
-                    if page == 1: VerticalLayout {
+                    if page == 0: Card {
+                        card-height: 80px;
+                        HorizontalLayout {
+                            padding: 20px;
+                            spacing: 12px;
+                            CardTitle { horizontal-stretch: 1; title: "More options"; subtitle: "Main column, tile sizes, workspace dots, fullscreen apps, focus border"; icon: @image-url("icons/adjustments.svg"); }
+                            ActionButton { y: (parent.height - self.height) / 2; label: show_more ? "Hide" : "Show"; kind: 2; compact: true; button-width: 120px; activated => { show_more = !show_more; } }
+                        }
+                    }
+
+                    // ---------- 1: layout sizes (General, more options) ----------
+                    if (page == 0 && show_more) || page == 1: VerticalLayout {
                         spacing: 18px;
                         HorizontalLayout {
                             spacing: 18px;
@@ -899,17 +914,13 @@ export component MainWindow inherits Window {
                             }
                         }
                         Card {
-                            card-height: show_advanced ? 224px : 80px;
+                            card-height: 212px;
                             VerticalLayout {
                                 padding: 20px;
                                 spacing: 6px;
+                                CardTitle { title: "Sizes and limits"; subtitle: "Tiles never get smaller than this"; icon: @image-url("icons/resize.svg"); }
+                                Rectangle { height: 4px; }
                                 HorizontalLayout {
-                                    spacing: 12px;
-                                    CardTitle { horizontal-stretch: 1; title: "More options"; subtitle: "Tile sizes, window limit, resize step"; icon: @image-url("icons/resize.svg"); }
-                                    ActionButton { y: (parent.height - self.height) / 2; label: show_advanced ? "Hide" : "Show"; kind: 2; compact: true; button-width: 120px; activated => { show_advanced = !show_advanced; } }
-                                }
-                                if show_advanced: Rectangle { height: 4px; }
-                                if show_advanced: HorizontalLayout {
                                     spacing: 24px;
                                     VerticalLayout {
                                         horizontal-stretch: 1;
@@ -929,7 +940,7 @@ export component MainWindow inherits Window {
                     }
 
                     // ---------- 2: workspaces ----------
-                    if page == 2: VerticalLayout {
+                    if (page == 0 && show_more) || page == 2: VerticalLayout {
                         spacing: 18px;
                         Card {
                             card-height: 300px;
@@ -990,7 +1001,7 @@ export component MainWindow inherits Window {
                     }
 
                     // ---------- 3: window behaviour ----------
-                    if page == 3: HorizontalLayout {
+                    if (page == 0 && show_more) || page == 3: HorizontalLayout {
                         spacing: 18px;
                         Card {
                             horizontal-stretch: 1;
@@ -1069,13 +1080,15 @@ export component MainWindow inherits Window {
                                 spacing: 12px;
                                 Icon { y: (parent.height - self.height) / 2; source: recording >= 0 ? @image-url("icons/record.svg") : @image-url("icons/info.svg"); tint: recording >= 0 ? AppTheme.accent : AppTheme.muted; }
                                 Text {
-                                    text: recording >= 0 ? "Press a key combination. Esc cancels, Backspace removes the keys" : "The circle records new keys, the plus adds another combination, the bin removes them";
+                                    text: recording >= 0 ? "Press a key combination. Esc cancels, Backspace removes the keys" : "Record keys with the circle. Ctrl + Alt keys clash less with other apps";
                                     color: recording >= 0 ? AppTheme.accent-ink : AppTheme.ink-2;
                                     font-size: 13px;
                                     vertical-alignment: center;
                                     horizontal-stretch: 1;
                                     overflow: elide;
                                 }
+                                ActionButton { y: (parent.height - self.height) / 2; label: "Alt keys"; kind: 2; compact: true; button-width: 110px; activated => { root.apply_preset(0); } }
+                                ActionButton { y: (parent.height - self.height) / 2; label: "Ctrl + Alt keys"; kind: 2; compact: true; button-width: 140px; activated => { root.apply_preset(1); } }
                                 ActionButton { y: (parent.height - self.height) / 2; label: "Reset all"; icon: @image-url("icons/refresh.svg"); has-icon: true; kind: 2; compact: true; button-width: 148px; activated => { root.reset_hotkeys(); } }
                             }
                         }
@@ -1222,7 +1235,7 @@ export component MainWindow inherits Window {
                             VerticalLayout {
                                 padding: 20px;
                                 spacing: 14px;
-                                CardTitle { title: "New rule"; subtitle: "Pick an open app and what to do with it"; icon: @image-url("icons/app-plus.svg"); }
+                                CardTitle { title: "New rule"; subtitle: "Pick an open app (or a program file with the file button) and what to do with it"; icon: @image-url("icons/app-plus.svg"); }
                                 HorizontalLayout {
                                     spacing: 10px;
                                     height: 38px;
@@ -1230,13 +1243,14 @@ export component MainWindow inherits Window {
                                     Select { width: 250px; model: rule_kinds; current-index <=> rule_kind_index; }
                                     ActionButton { label: "Add"; icon: @image-url("icons/plus.svg"); has-icon: true; primary: true; button-width: 128px; enabled: app_choices.length > 0; activated => { root.add_rule(); } }
                                     IconButton { y: 2px; icon: @image-url("icons/refresh.svg"); label: "Refresh the app list"; activated => { root.refresh_apps(); } }
+                                    IconButton { y: 2px; icon: @image-url("icons/file.svg"); label: "Choose a program file (.exe)"; activated => { root.add_rule_from_file(); } }
                                 }
                             }
                         }
                     }
 
                     // ---------- 6: advanced ----------
-                    if page == 6: VerticalLayout {
+                    if page == 6 || page == 7: VerticalLayout {
                         spacing: 18px;
                         Card {
                             card-height: 186px;
@@ -1413,7 +1427,7 @@ export component MainWindow inherits Window {
                 Rectangle { vertical-stretch: 1; }
                 HorizontalLayout {
                     spacing: 12px;
-                    ActionButton { label: "Not for me: pause tiling"; kind: 2; compact: true; button-width: 220px; activated => { root.pause_tiling(); root.dismiss_welcome(); } }
+                    ActionButton { label: "Not for me: pause tiling"; kind: 2; compact: true; button-width: 220px; activated => { root.pause_tiling(); } }
                     Rectangle { horizontal-stretch: 1; }
                     ActionButton { label: tour_done == 3 ? "Done" : "Skip"; primary: true; button-width: 132px; activated => { root.dismiss_welcome(); } }
                 }

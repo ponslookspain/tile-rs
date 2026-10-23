@@ -151,6 +151,40 @@ pub fn default_rows() -> Vec<Row> {
     rows_from_bindings(&bindings)
 }
 
+/// The default hotkeys on a different base modifier: 0 keeps Alt (as shipped), 1 moves every
+/// Alt combination to Ctrl + Alt, which few applications use. A moved key that would land on a
+/// combination the defaults already use (e.g. Alt+L -> Ctrl+Alt+L, the layout key) is dropped;
+/// those actions keep their other keys, such as the arrows.
+pub fn preset_rows(preset: i32) -> Vec<Row> {
+    let mut rows = default_rows();
+    if preset != 1 {
+        return rows;
+    }
+    let taken: Vec<_> = rows
+        .iter()
+        .flat_map(|r| r.keys.iter())
+        .filter(|k| k.to_ascii_lowercase().split('+').any(|p| p == "ctrl" || p == "control"))
+        .filter_map(|k| config::parse_hotkey(k).ok())
+        .collect();
+    for row in &mut rows {
+        row.keys = row
+            .keys
+            .iter()
+            .filter_map(|key| {
+                let lower = key.to_ascii_lowercase();
+                let parts: Vec<&str> = lower.split('+').collect();
+                if !parts.contains(&"alt") || parts.contains(&"ctrl") || parts.contains(&"control") {
+                    return Some(key.clone());
+                }
+                let moved = format!("ctrl+{lower}");
+                let clashes = config::parse_hotkey(&moved).is_ok_and(|v| taken.contains(&v));
+                (!clashes).then_some(moved)
+            })
+            .collect();
+    }
+    rows
+}
+
 /// `action = "keys"` lines for the `[hotkeys]` section; actions without keys are left out.
 pub fn rows_to_lines(rows: &[Row]) -> String {
     let mut out = String::new();
@@ -657,6 +691,22 @@ mod tests {
             capture_key("!", true, false, true, false),
             Capture::Reject(_)
         ));
+    }
+
+    #[test]
+    fn ctrl_alt_preset_moves_keys_without_clashes() {
+        let rows = preset_rows(1);
+        assert!(conflicts(&rows).iter().all(|c| !c), "preset must not clash");
+        let focus_left = rows.iter().find(|r| r.action == "focus_left").unwrap();
+        assert!(focus_left.keys.contains(&"ctrl+alt+left".to_string()));
+        assert!(rows
+            .iter()
+            .flat_map(|r| r.keys.iter())
+            .all(|k| !k.starts_with("alt+")));
+        // the round trip through the config text keeps every key
+        let text = format!("[hotkeys]\n{}", rows_to_lines(&rows));
+        assert!(config::parse(&text).is_ok());
+        assert_eq!(preset_rows(0), default_rows());
     }
 
     #[test]

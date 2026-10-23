@@ -2997,6 +2997,7 @@ unsafe extern "system" fn on_event(
                     let mi = s.mi(h);
                     if let Some(k) = s.last[mi].iter().position(|x| *x == h) {
                         if k < s.rects[mi].len() {
+                            s.drop_dot = None;
                             s.dragging = Some(h);
                             s.placement_failures.remove(&h);
                             s.geometry_retries.remove(&h);
@@ -3975,7 +3976,8 @@ fn focus_first_or_desktop() {
     }
 }
 
-fn focus_or_swap(dir: Dir, swap: bool) {
+/// Returns whether a window was focused or swapped.
+fn focus_or_swap(dir: Dir, swap: bool) -> bool {
     let fg = unsafe { GetForegroundWindow() }.0 as isize;
     let mut do_retile = false;
     let mut to_focus: Option<isize> = None;
@@ -4025,12 +4027,14 @@ fn focus_or_swap(dir: Dir, swap: bool) {
             to_focus = Some(s.last[mi][to]);
         }
     });
+    let acted = to_focus.is_some() || do_retile;
     if let Some(h) = to_focus {
         focus_hwnd(h);
     }
     if do_retile {
         retile();
     }
+    acted
 }
 
 /// Switch the workspace of the monitor whose indicator was clicked.
@@ -4198,9 +4202,9 @@ fn send_to_workspace(h: isize, mi: usize, n: u8) {
 fn dot_menu(mi: usize, n: u8) {
     // read before the menu takes the foreground
     let fg = unsafe { GetForegroundWindow() }.0 as isize;
-    let tracked = STATE.with(|s| {
+    let (tracked, from_mi) = STATE.with(|s| {
         let s = s.borrow();
-        s.ws.contains_key(&fg) && !s.fs_ws.contains_key(&fg)
+        (s.ws.contains_key(&fg) && !s.fs_ws.contains_key(&fg), s.mi(fg))
     });
     let open = format!("Open workspace {}", n + 1);
     let items: Vec<&str> = if tracked {
@@ -4212,15 +4216,15 @@ fn dot_menu(mi: usize, n: u8) {
         Some(0) => switch_ws_on_monitor(mi, n),
         Some(1) => {
             send_to_workspace(fg, mi, n);
-            refocus_after_menu(fg);
+            refocus_after_menu(fg, from_mi);
         }
-        _ => refocus_after_menu(fg),
+        _ => refocus_after_menu(fg, from_mi),
     }
 }
 
 /// The menu took the foreground: give it back to `h`, or, when `h` just left the screen, to the
-/// first window of its former monitor's visible workspace.
-fn refocus_after_menu(h: isize) {
+/// first window of its former monitor's (`from_mi`) visible workspace.
+fn refocus_after_menu(h: isize, from_mi: usize) {
     let target = STATE.with(|s| {
         let s = s.borrow();
         if !unsafe { IsWindow(Some(HWND(h as *mut _))) }.as_bool() {
@@ -4230,7 +4234,7 @@ fn refocus_after_menu(h: isize) {
         if s.ws.get(&h).is_none_or(|ws| *ws == s.cur[mi]) {
             Some(h)
         } else {
-            s.last[mi].first().copied()
+            s.last[from_mi.min(MON - 1)].first().copied()
         }
     });
     if let Some(target) = target {
@@ -4706,9 +4710,15 @@ pub fn tour_progress_path() -> std::path::PathBuf {
     config::config_path().with_file_name("tour-progress.txt")
 }
 
-/// Notes a tour step for the settings window, but only while its tour is open.
+/// Notes a tour step for the settings window, but only while its tour is open. A marker older
+/// than an hour was left behind by a launcher that did not exit cleanly and is ignored.
 fn tour_event(step: &str) {
-    if !tour_marker().exists() {
+    let fresh = std::fs::metadata(tour_marker())
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(|t| t.elapsed().ok())
+        .is_some_and(|age| age < std::time::Duration::from_secs(3600));
+    if !fresh {
         return;
     }
     use std::io::Write as _;
@@ -4725,12 +4735,14 @@ pub fn dispatch(a: Action) {
     end_divider(false);
     match a {
         Action::Focus(d) => {
-            focus_or_swap(d, false);
-            tour_event("focus");
+            if focus_or_swap(d, false) {
+                tour_event("focus");
+            }
         }
         Action::Swap(d) => {
-            focus_or_swap(d, true);
-            tour_event("swap");
+            if focus_or_swap(d, true) {
+                tour_event("swap");
+            }
         }
         Action::Workspace(n) => switch_ws_active(n),
         Action::MoveTo(n) => move_to_ws(n),
