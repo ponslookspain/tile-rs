@@ -4150,7 +4150,11 @@ fn send_to_workspace(h: isize, mi: usize, n: u8) {
     let hwnd = HWND(h as *mut _);
     let plan = STATE.with(|s| {
         let s = s.borrow();
-        if s.paused || n >= WS_COUNT || mi >= MON || !s.ws.contains_key(&h) || s.fs_ws.contains_key(&h)
+        if s.paused
+            || n >= WS_COUNT
+            || mi >= MON
+            || !s.ws.contains_key(&h)
+            || s.fs_ws.contains_key(&h)
         {
             return None;
         }
@@ -4210,7 +4214,10 @@ fn dot_menu(mi: usize, n: u8) {
     let fg = unsafe { GetForegroundWindow() }.0 as isize;
     let (tracked, from_mi) = STATE.with(|s| {
         let s = s.borrow();
-        (s.ws.contains_key(&fg) && !s.fs_ws.contains_key(&fg), s.mi(fg))
+        (
+            s.ws.contains_key(&fg) && !s.fs_ws.contains_key(&fg),
+            s.mi(fg),
+        )
     });
     let open = format!("Open workspace {}", n + 1);
     let items: Vec<&str> = if tracked {

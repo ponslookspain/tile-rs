@@ -6,7 +6,11 @@ follows [Semantic Versioning](https://semver.org) (see [docs/RELEASING.md](docs/
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-10-23
+
 ### Added
+- Ways to support the project: a "Support tile-rs" item in the tray menu and in About, donation
+  links in the README.
 - Drag a window onto a workspace dot to send it to that workspace; right-click a dot to open it or
   move the active window there.
 - First-run tour in the settings window that ticks off three things to try, with a way to pause
@@ -26,6 +30,7 @@ follows [Semantic Versioning](https://semver.org) (see [docs/RELEASING.md](docs/
   Shift + digit; hints show arrow keys.
 
 ### Fixed
+- Workspace dots stay above a dragged window from the first drag, not only from the second.
 - The "some hotkeys were not registered" message no longer pops up after every settings change.
 
 ## [0.6.0] - 2026-10-21
@@ -319,7 +324,8 @@ First working prototype.
 - Tray icon with menu, autostart, single-instance guard, first-run dialog.
 - `config.toml`: gap, animations, hotkeys, per-application rules (float / workspace).
 
-[Unreleased]: https://github.com/ponslookspain/tile-rs/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/ponslookspain/tile-rs/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/ponslookspain/tile-rs/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/ponslookspain/tile-rs/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/ponslookspain/tile-rs/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/ponslookspain/tile-rs/compare/v0.3.0...v0.4.0

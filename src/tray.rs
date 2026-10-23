@@ -14,10 +14,10 @@ use windows::Win32::UI::WindowsAndMessaging::{
     AppendMenuW, CreateIconIndirect, CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyIcon,
     DestroyMenu, GetCursorPos, PostMessageW, PostQuitMessage, RegisterClassW,
     RegisterWindowMessageW, SendMessageTimeoutW, SetForegroundWindow, TrackPopupMenu, HICON,
-    ICONINFO, MF_CHECKED, SMTO_ABORTIFHUNG,
-    MF_GRAYED, MF_POPUP, MF_SEPARATOR, MF_STRING, SPI_SETWORKAREA, SW_SHOWNORMAL, TPM_RETURNCMD,
-    TPM_RIGHTBUTTON, WINDOW_EX_STYLE, WM_APP, WM_DESTROY, WM_DISPLAYCHANGE, WM_LBUTTONUP,
-    WM_NULL, WM_RBUTTONUP, WM_SETTINGCHANGE, WNDCLASSW, WS_EX_TOOLWINDOW, WS_OVERLAPPED,
+    ICONINFO, MF_CHECKED, MF_GRAYED, MF_POPUP, MF_SEPARATOR, MF_STRING, SMTO_ABORTIFHUNG,
+    SPI_SETWORKAREA, SW_SHOWNORMAL, TPM_RETURNCMD, TPM_RIGHTBUTTON, WINDOW_EX_STYLE, WM_APP,
+    WM_DESTROY, WM_DISPLAYCHANGE, WM_LBUTTONUP, WM_NULL, WM_RBUTTONUP, WM_SETTINGCHANGE, WNDCLASSW,
+    WS_EX_TOOLWINDOW, WS_OVERLAPPED,
 };
 
 use crate::config::{self, Action};
@@ -280,8 +280,10 @@ pub fn request_manager_pause() -> bool {
 
 /// Whether the tile-rs manager (the tray process) is running.
 pub fn manager_running() -> bool {
-    unsafe { windows::Win32::UI::WindowsAndMessaging::FindWindowW(w!("tile-rs-tray"), PCWSTR::null()) }
-        .is_ok_and(|hwnd| !hwnd.0.is_null())
+    unsafe {
+        windows::Win32::UI::WindowsAndMessaging::FindWindowW(w!("tile-rs-tray"), PCWSTR::null())
+    }
+    .is_ok_and(|hwnd| !hwnd.0.is_null())
 }
 
 fn post_manager_message(message: u32) -> bool {

@@ -20,8 +20,8 @@ use windows::Win32::UI::HiDpi::{
     SetProcessDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    FindWindowW, MessageBoxW, SetForegroundWindow, ShowWindow, IDYES, MB_DEFBUTTON2, MB_ICONQUESTION,
-    MB_YESNO, MESSAGEBOX_RESULT, SW_RESTORE,
+    FindWindowW, MessageBoxW, SetForegroundWindow, ShowWindow, IDYES, MB_DEFBUTTON2,
+    MB_ICONQUESTION, MB_YESNO, MESSAGEBOX_RESULT, SW_RESTORE,
 };
 
 slint::include_modules!();
@@ -325,34 +325,47 @@ fn wire_updates(ui: &MainWindow) {
         let weak = ui.as_weak();
         let release = release.clone();
         move || {
-            let Some(ui) = weak.upgrade() else { return; };
-            if matches!(ui.get_update_state(), 1 | 4) { return; }
+            let Some(ui) = weak.upgrade() else {
+                return;
+            };
+            if matches!(ui.get_update_state(), 1 | 4) {
+                return;
+            }
             ui.set_update_state(1);
             ui.set_update_message("Looking up the latest release…".into());
             let weak = ui.as_weak();
             let release = release.clone();
-            if let Err(err) = thread::Builder::new().name("launcher-update-check".into()).spawn(move || {
-                let result = crate::update::check_latest();
-                let _ = weak.upgrade_in_event_loop(move |ui| match result {
-                    Ok(Some(found)) => {
-                        ui.set_update_state(2);
-                        ui.set_update_version(found.version.clone().into());
-                        ui.set_release_notes(found.notes.clone().into());
-                        ui.set_update_message("The installer opens after the download, then tile-rs restarts.".into());
-                        *release.lock().unwrap() = Some(found);
-                    }
-                    Ok(None) => {
-                        ui.set_update_state(3);
-                        ui.set_update_message("No updates. You are all set.".into());
-                        ui.set_release_notes("".into());
-                        *release.lock().unwrap() = None;
-                    }
-                    Err(err) => {
-                        ui.set_update_state(5);
-                        ui.set_update_message(format!("The check failed: {err}. Press Check to try again.").into());
-                    }
-                });
-            }) {
+            if let Err(err) = thread::Builder::new()
+                .name("launcher-update-check".into())
+                .spawn(move || {
+                    let result = crate::update::check_latest();
+                    let _ = weak.upgrade_in_event_loop(move |ui| match result {
+                        Ok(Some(found)) => {
+                            ui.set_update_state(2);
+                            ui.set_update_version(found.version.clone().into());
+                            ui.set_release_notes(found.notes.clone().into());
+                            ui.set_update_message(
+                                "The installer opens after the download, then tile-rs restarts."
+                                    .into(),
+                            );
+                            *release.lock().unwrap() = Some(found);
+                        }
+                        Ok(None) => {
+                            ui.set_update_state(3);
+                            ui.set_update_message("No updates. You are all set.".into());
+                            ui.set_release_notes("".into());
+                            *release.lock().unwrap() = None;
+                        }
+                        Err(err) => {
+                            ui.set_update_state(5);
+                            ui.set_update_message(
+                                format!("The check failed: {err}. Press Check to try again.")
+                                    .into(),
+                            );
+                        }
+                    });
+                })
+            {
                 ui.set_update_state(5);
                 ui.set_update_message(format!("Could not start the check: {err}").into());
             }
@@ -686,7 +699,8 @@ fn wire_editors(ui: &MainWindow) -> slint::Timer {
                 ui.set_recording(-1);
                 return;
             };
-            let text = launcher_model::resolve_text(&text, &held_keys(), alt || ctrl || shift || meta);
+            let text =
+                launcher_model::resolve_text(&text, &held_keys(), alt || ctrl || shift || meta);
             match launcher_model::capture_key(&text, alt, ctrl, shift, meta) {
                 Capture::Wait => {}
                 Capture::Cancel => ui.set_recording(-1),
@@ -784,7 +798,9 @@ fn wire_editors(ui: &MainWindow) -> slint::Timer {
         let editor = editor.clone();
         move || {
             let Some(ui) = weak.upgrade() else { return };
-            let Some(process) = pick_program() else { return };
+            let Some(process) = pick_program() else {
+                return;
+            };
             add_rule(&ui, &mut editor.borrow_mut(), process);
         }
     });
@@ -836,7 +852,9 @@ fn wire_editors(ui: &MainWindow) -> slint::Timer {
         let editor = editor.clone();
         move || {
             use slint::CloseRequestResponse::{HideWindow, KeepWindowShown};
-            let Some(ui) = weak.upgrade() else { return HideWindow };
+            let Some(ui) = weak.upgrade() else {
+                return HideWindow;
+            };
             let mut ed = editor.borrow_mut();
             if has_changes(&ui, &ed) && ui.get_recording() < 0 {
                 save(&ui, &mut ed);
@@ -1088,18 +1106,42 @@ fn save(ui: &MainWindow, editor: &mut Editor) {
     };
     let pairs: Vec<(&str, String)> = vec![
         ("layout", format!("\"{}\"", layout.name())),
-        ("inner_gap", num("Between windows", ui.get_inner_gap(), 0, 200)),
-        ("outer_gap", num("From screen edges", ui.get_outer_gap(), 0, 200)),
+        (
+            "inner_gap",
+            num("Between windows", ui.get_inner_gap(), 0, 200),
+        ),
+        (
+            "outer_gap",
+            num("From screen edges", ui.get_outer_gap(), 0, 200),
+        ),
         ("animations", ui.get_animations().to_string()),
-        ("animation_ms", num("Animation length", ui.get_animation_ms(), 0, 1000)),
+        (
+            "animation_ms",
+            num("Animation length", ui.get_animation_ms(), 0, 1000),
+        ),
         ("easing", format!("\"{easing}\"")),
-        ("resize_step", num("Resize step", ui.get_resize_step(), 1, 500)),
-        ("min_tile_width", num("Minimum width", ui.get_min_tile_width(), 100, 4000)),
-        ("min_tile_height", num("Minimum height", ui.get_min_tile_height(), 100, 4000)),
-        ("max_tiles", num("Windows per workspace", ui.get_max_tiles(), 0, 20)),
+        (
+            "resize_step",
+            num("Resize step", ui.get_resize_step(), 1, 500),
+        ),
+        (
+            "min_tile_width",
+            num("Minimum width", ui.get_min_tile_width(), 100, 4000),
+        ),
+        (
+            "min_tile_height",
+            num("Minimum height", ui.get_min_tile_height(), 100, 4000),
+        ),
+        (
+            "max_tiles",
+            num("Windows per workspace", ui.get_max_tiles(), 0, 20),
+        ),
         ("auto_overflow", ui.get_auto_overflow().to_string()),
         ("smart_gaps", ui.get_smart_gaps().to_string()),
-        ("master_count", num("Windows in the main column", ui.get_master_count(), 1, 8)),
+        (
+            "master_count",
+            num("Windows in the main column", ui.get_master_count(), 1, 8),
+        ),
         ("workspace_indicator", ui.get_show_indicator().to_string()),
         (
             "workspace_indicator_size",
@@ -1112,7 +1154,10 @@ fn save(ui: &MainWindow, editor: &mut Editor) {
         ("border", ui.get_highlight_window().to_string()),
         ("border_color", format!("\"{border_color}\"")),
         ("accent_color", format!("\"{accent_color}\"")),
-        ("border_width", num("Border width", ui.get_border_width(), 0, 20)),
+        (
+            "border_width",
+            num("Border width", ui.get_border_width(), 0, 20),
+        ),
         (
             "fullscreen_windows",
             format!(
@@ -1142,9 +1187,7 @@ fn save(ui: &MainWindow, editor: &mut Editor) {
         return;
     }
     if launcher_model::conflicts(&editor.rows).iter().any(|c| *c) {
-        ui.set_status(
-            "Fix the keys marked ⚠: one combination cannot be used twice".into(),
-        );
+        ui.set_status("Fix the keys marked ⚠: one combination cannot be used twice".into());
         return;
     }
     let path = config::config_path();

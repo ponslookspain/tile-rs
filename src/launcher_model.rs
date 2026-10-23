@@ -28,7 +28,11 @@ fn catalog() -> Vec<(String, String, String)> {
         ("up", "up"),
         ("right", "right"),
     ] {
-        add(&format!("focus_{dir}"), &format!("Focus the window {label}"), "Windows");
+        add(
+            &format!("focus_{dir}"),
+            &format!("Focus the window {label}"),
+            "Windows",
+        );
     }
     for (dir, label) in [
         ("left", "left"),
@@ -47,12 +51,28 @@ fn catalog() -> Vec<(String, String, String)> {
     add("grow_height", "Taller", "Size");
     add("shrink_height", "Shorter", "Size");
     add("minimize", "Minimize the window", "Windows");
-    add("toggle_float", "Float the window / tile it again", "Windows");
+    add(
+        "toggle_float",
+        "Float the window / tile it again",
+        "Windows",
+    );
     add("close", "Close the window", "Windows");
-    add("toggle_monocle", "Full screen: one window on the whole screen", "Layout");
+    add(
+        "toggle_monocle",
+        "Full screen: one window on the whole screen",
+        "Layout",
+    );
     add("cycle_layout", "Next layout", "Layout");
-    add("master_count_inc", "More windows in the main column", "Layout");
-    add("master_count_dec", "Fewer windows in the main column", "Layout");
+    add(
+        "master_count_inc",
+        "More windows in the main column",
+        "Layout",
+    );
+    add(
+        "master_count_dec",
+        "Fewer windows in the main column",
+        "Layout",
+    );
     add("retile", "Re-arrange the windows", "Layout");
     for n in 1..=config::WS_COUNT {
         add(
@@ -86,11 +106,7 @@ fn catalog() -> Vec<(String, String, String)> {
         "Workspaces",
     );
     add("focus_last", "Back to the last window", "Windows");
-    add(
-        "focus_next_monitor",
-        "Focus the next screen",
-        "Screens",
-    );
+    add("focus_next_monitor", "Focus the next screen", "Screens");
     add("focus_prev_monitor", "Focus the previous screen", "Screens");
     add(
         "move_to_next_monitor",
@@ -179,7 +195,9 @@ pub fn preset_rows(preset: i32) -> Vec<Row> {
                 let lower = key.to_ascii_lowercase();
                 let parts: Vec<&str> = lower.split('+').collect();
                 let plain_alt = parts.contains(&"alt")
-                    && !parts.iter().any(|p| matches!(*p, "ctrl" | "control" | "win" | "super" | "meta"));
+                    && !parts
+                        .iter()
+                        .any(|p| matches!(*p, "ctrl" | "control" | "win" | "super" | "meta"));
                 if !plain_alt {
                     return Some(key.clone());
                 }
@@ -324,13 +342,27 @@ fn compact(keys: &[String], range: bool) -> String {
 pub fn welcome_items(rows: &[Row]) -> Vec<(String, String)> {
     let dirs = ["left", "up", "down", "right"];
     let numbered = |prefix: &str| -> Vec<String> {
-        (1..=config::WS_COUNT).map(|n| format!("{prefix}{n}")).collect()
+        (1..=config::WS_COUNT)
+            .map(|n| format!("{prefix}{n}"))
+            .collect()
     };
     let groups: Vec<(&str, Vec<String>, bool)> = vec![
-        ("Move to the next window", dirs.iter().map(|d| format!("focus_{d}")).collect(), false),
-        ("Swap two windows", dirs.iter().map(|d| format!("swap_{d}")).collect(), false),
+        (
+            "Move to the next window",
+            dirs.iter().map(|d| format!("focus_{d}")).collect(),
+            false,
+        ),
+        (
+            "Swap two windows",
+            dirs.iter().map(|d| format!("swap_{d}")).collect(),
+            false,
+        ),
         ("Open a workspace", numbered("workspace_"), true),
-        ("Send the window to a workspace", numbered("move_to_workspace_"), true),
+        (
+            "Send the window to a workspace",
+            numbered("move_to_workspace_"),
+            true,
+        ),
         ("Full screen and back", vec!["toggle_monocle".into()], false),
         ("Back to the last window", vec!["focus_last".into()], false),
         ("Change the layout", vec!["cycle_layout".into()], false),
@@ -726,12 +758,17 @@ mod tests {
         assert_eq!(workspace_1.keys, vec!["alt+1".to_string()]);
         // no action that had keys loses all of them
         for (before, after) in default_rows().iter().zip(&rows) {
-            assert!(before.keys.is_empty() || !after.keys.is_empty(), "{}", before.action);
+            assert!(
+                before.keys.is_empty() || !after.keys.is_empty(),
+                "{}",
+                before.action
+            );
         }
         assert!(rows
             .iter()
             .flat_map(|r| r.keys.iter())
-            .all(|k| !k.starts_with("ctrl+alt+") || default_rows().iter().any(|r| r.keys.contains(k))));
+            .all(|k| !k.starts_with("ctrl+alt+")
+                || default_rows().iter().any(|r| r.keys.contains(k))));
         // the round trip through the config text keeps every key
         let text = format!("[hotkeys]\n{}", rows_to_lines(&rows));
         assert!(config::parse(&text).is_ok());
@@ -753,7 +790,10 @@ mod tests {
         assert_eq!(resolve_text("K", &['j', 'k'], true), "k");
         // OEM keys are named the way the config parser expects
         let semi = resolve_text("ж", &[vk_char(0xba).unwrap()], true);
-        assert_eq!(capture_key(&semi, true, false, false, false), Capture::Spec("alt+semicolon".into()));
+        assert_eq!(
+            capture_key(&semi, true, false, false, false),
+            Capture::Spec("alt+semicolon".into())
+        );
         assert!(config::parse_hotkey("alt+bracketleft").is_ok());
     }
 

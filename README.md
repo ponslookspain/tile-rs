@@ -1,5 +1,9 @@
 # tile-rs
 
+[![Download](https://img.shields.io/github/v/release/ponslookspain/tile-rs?label=download&style=for-the-badge)](https://github.com/ponslookspain/tile-rs/releases/latest)
+[![Buy Me a Coffee](https://img.shields.io/badge/Buy%20me%20a%20coffee-donate-FFDD00?style=for-the-badge&logo=buymeacoffee&logoColor=black)](https://buymeacoffee.com/ponslooksp1)
+[![GitHub Sponsors](https://img.shields.io/badge/GitHub%20Sponsors-support-EA4AAA?style=for-the-badge&logo=githubsponsors&logoColor=white)](https://github.com/sponsors/ponslookspain)
+
 A small **spiral tiling window manager for Windows 10/11**, written in Rust. Open windows are
 arranged automatically in a spiral, you move and resize them with the keyboard or the mouse, and
 everything lives in one small `.exe` with a tray icon and a plain-text config.
