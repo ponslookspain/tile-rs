@@ -62,7 +62,8 @@ quit        = "ctrl+alt+q"             # or a single key
 - **Modifiers**: `alt`, `ctrl` (or `control`), `shift`, `win` (also `super`, `meta`).
 - **Keys**: letters `a`–`z`, digits `0`–`9`, `f1`–`f12`, `left`, `right`, `up`, `down`, `space`,
   `enter`, `tab`, `esc`, `backspace`, `home`, `end`, `pageup`, `pagedown`, `minus`, `plus`
-  (the `=`/`+` key, also written `equal`), `comma`, `period`, `numpad_add`, `numpad_subtract`.
+  (the `=`/`+` key, also written `equal`), `comma`, `period`, `semicolon`, `slash`, `grave`,
+  `bracketleft`, `backslash`, `bracketright`, `quote`, `numpad_add`, `numpad_subtract`.
 
 A combination that Windows or another program already uses cannot be registered. tile-rs tells
 you which one and carries on with the rest.

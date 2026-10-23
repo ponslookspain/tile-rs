@@ -111,21 +111,21 @@ of the old file is saved as `config.toml.bak`).
 
 ### Settings launcher
 
-Right-click the tray icon and choose **Settings...** (it also opens on first start, with a short card
-listing the main shortcuts). Pages:
+Click the tray icon (or right-click it and choose **Settings**). On first start the settings open
+with a short tour: it asks you to try three things (move between windows, swap two windows, send a
+window to another workspace) and ticks each one off as you do it. If tiling is not for you, the tour
+can pause it. Pages:
 
 | Page | What you change there |
 |---|---|
-| General | the layout (with a live preview), animation and gaps, and a summary of your setup |
-| Layout | windows in the master column, minimum tile size, windows per workspace, resize step |
-| Workspaces | the workspace dots at the top of each screen, their size and colour, focus follows mouse |
-| Window behaviour | fullscreen games and videos, photo/video viewers, the focus border |
-| Hotkeys | every action: record a new combination, add a second one, remove it, reset all |
-| Applications | rules per program: keep it floating or always open it on workspace N |
-| Advanced | start with Windows, open the config or the log, about |
-| Updates | check for a new version, see what is new and install it in one click |
+| General | the layout (with a live preview), animation and gaps, a summary; **More options** holds the main column, tile sizes, workspace dots, fullscreen apps, the focus border and **Reset to defaults** |
+| Hotkeys | every action: record a new combination, add a second one, remove it, reset all; switch every key between Alt and Win + Alt in one click |
+| Apps | rules per program: always floating or always on workspace N; pick an open window or any `.exe` |
+| About & updates | start with Windows, open the config or the log, check for and install updates |
 
-Changes are applied with **Save**; while something is not saved yet, the header says so.
+Changes apply by themselves a moment after you make them; the header says *Saving…* until they
+are saved. Combinations that Windows refuses (because another app uses them) are marked in the
+hotkey list. While tiling is paused the header says so and offers **Resume**.
 
 ![Hotkeys page](docs/images/launcher-hotkeys.png)
 
@@ -159,17 +159,19 @@ be changed or removed on the launcher's **Hotkeys** page or in [the configuratio
 
 - Drag an **edge or corner** of a tiled window to resize it; the other windows adapt live.
 - Drag a window **onto another tile** to swap the two. Dropped anywhere else, it returns to its tile.
-- **Click a workspace dot** at the top of the screen to switch to that workspace (hovering a dot
-  highlights it and shows a hand cursor).
+- Drag a window **onto a workspace dot** at the top of a screen to send it to that workspace (the dot
+  lights up while you hover it). You stay where you are.
+- **Click a workspace dot** to switch to that workspace; **right-click** it to open it or move the
+  active window there.
 - Maximized windows and dialogs are left alone.
 
 ### Tray menu (right-click the icon)
 
-*Settings...*, *Pause / Resume tiling*, *Re-tile now* (also resets all sizes to equal halves),
-*Edit config*, *Reload config*, *Show hotkeys*, *Open config folder*, *Open log*,
-*Check for updates*, *Start with Windows*, *Quit*.
-Double-clicking the icon pauses / resumes. While paused, every hotkey except pause/quit/reload/edit
-is handed back to your applications.
+*Settings*, *Pause / Resume tiling*, *Arrange windows again* (also resets all sizes to equal
+halves), *Show hotkeys*, *More* (*Check for updates*, *Edit config file*, *Reload config file*,
+*Open config folder*, *Open log*, *Export window diagnostics*), *Start with Windows*, *Quit tile-rs*.
+A left click on the icon opens the settings. Pausing shows a notification; while paused, every
+hotkey except pause/quit/reload/edit is handed back to your applications.
 
 ### Command line
 

@@ -6,6 +6,28 @@ follows [Semantic Versioning](https://semver.org) (see [docs/RELEASING.md](docs/
 
 ## [Unreleased]
 
+### Added
+- Drag a window onto a workspace dot to send it to that workspace; right-click a dot to open it or
+  move the active window there.
+- First-run tour in the settings window that ticks off three things to try, with a way to pause
+  tiling for people who do not want it.
+- Settings: autosave (no Save button), -/+ steppers with range checks, hotkeys refused by Windows
+  are marked, one-click Alt or Win + Alt key sets, rules from any `.exe`, Reset to defaults, a
+  paused banner with Resume.
+- Config: punctuation key names `semicolon`, `slash`, `grave`, `bracketleft`, `backslash`,
+  `bracketright`, `quote`.
+
+### Changed
+- The whole program is in English.
+- Settings has four pages: General (with More options), Hotkeys, Apps, About & updates.
+- Tray: a left click opens the settings (double-click no longer pauses); technical items moved to
+  a More submenu. Pausing shows a notification.
+- Hotkeys are recorded by the physical key, so they work on any keyboard layout and with
+  Shift + digit; hints show arrow keys.
+
+### Fixed
+- The "some hotkeys were not registered" message no longer pops up after every settings change.
+
 ## [0.6.0] - 2026-10-21
 
 ### Added
