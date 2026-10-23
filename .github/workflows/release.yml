@@ -76,6 +76,14 @@ jobs:
           $hash = (Get-FileHash -LiteralPath $installer -Algorithm SHA256).Hash.ToLowerInvariant()
           "$hash  tile-rs-$version-setup.exe" | Set-Content -LiteralPath "$installer.sha256" -Encoding ascii
 
+      - name: Sign installer checksum for in-app updates
+        shell: pwsh
+        env:
+          UPDATE_SIGNING_KEY: ${{ secrets.UPDATE_SIGNING_KEY }}
+        run: |
+          $version = $env:TAG.TrimStart('v')
+          ./scripts/sign-update.ps1 -Checksum "dist\tile-rs-$version-setup.exe.sha256"
+
       - name: Publish the GitHub release
         shell: pwsh
         env:
@@ -86,7 +94,8 @@ jobs:
               "release\tile-rs-v$version-windows-x64.zip",
               "release\tile-rs-v$version-windows-x64.zip.sha256",
               "dist\tile-rs-$version-setup.exe",
-              "dist\tile-rs-$version-setup.exe.sha256"
+              "dist\tile-rs-$version-setup.exe.sha256",
+              "dist\tile-rs-$version-setup.exe.sha256.sig"
           )
           $files = foreach ($asset in $expectedAssets) {
               if (-not (Test-Path $asset)) { throw "Expected release asset is missing: $asset" }

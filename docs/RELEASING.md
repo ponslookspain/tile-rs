@@ -76,7 +76,7 @@ Prerequisites: everything you want in the release is merged into `main` and CI i
 7. The **Release workflow** (`.github/workflows/release.yml`) now: verifies that the tag matches
    `Cargo.toml`, runs the tests, builds `tile-rs-vX.Y.Z-windows-x64.zip` (exe, README, LICENSE,
    CHANGELOG, configuration reference) plus its `.sha256`, builds the Windows installer
-   `tile-rs-X.Y.Z-setup.exe` (Inno Setup, see `installer/tile-rs.iss`) plus its `.sha256`, and publishes a GitHub
+   `tile-rs-X.Y.Z-setup.exe` (Inno Setup, see `installer/tile-rs.iss`) plus its `.sha256` and Ed25519 `.sha256.sig`, and publishes a GitHub
    Release whose notes come from the changelog.
 8. **Verify**: download the installer from the release page and run it on a clean profile (it
    installs, opens the launcher and starts tile-rs); also check the portable zip and its SHA-256
@@ -123,10 +123,11 @@ The manager checks the latest stable GitHub Release 15 seconds after startup and
 hours. A tray notification opens the launcher. In **Updates**, users can check manually, read
 release notes, and explicitly install an available update. Publishing source commits alone does
 not notify users: push a version tag and let the release workflow publish its installer and
-`tile-rs-X.Y.Z-setup.exe.sha256` together. Drafts and prereleases are excluded.
+`tile-rs-X.Y.Z-setup.exe.sha256` and `.sha256.sig` together. Drafts and prereleases are excluded.
 
-Downloads are limited to the repository's HTTPS release assets. The installer size and SHA-256
-are checked before a helper starts it. The helper waits for the launcher and manager to close,
+Downloads are limited to the repository's HTTPS release assets. The exact checksum asset bytes are authenticated with the embedded Ed25519 public key first.
+The signed filename must match the requested release, preventing reuse of an older signed
+installer under a newer version. The installer size and SHA-256 are then checked before a helper starts it. The helper waits for the launcher and manager to close,
 updates the current executable's folder, then starts tile-rs again. Existing user configuration
 is preserved. Windows may request elevation for a protected installation directory. Cancelling
 or failing installation shows an error and attempts to restart the existing executable.
@@ -134,7 +135,45 @@ or failing installation shows an error and attempts to restart the existing exec
 The update button uses the Windows installer, including for copies originally extracted from a
 portable ZIP; the updated folder becomes a registered Windows installation. Keep using manual
 ZIP downloads if an unregistered portable copy is required. An older release without an installer
-checksum cannot be installed through this updater. Versions shipped before this update feature
-must first be upgraded manually. SHA-256 detects corruption; configure code signing above for
-publisher identity verification. The first release containing this updater must be tested on
+checksum and signature cannot be installed through this updater. Versions shipped before this update feature
+must first be upgraded manually. Ed25519 authenticates updates independently of Authenticode; configure code signing above for
+Windows publisher identity verification. Older installed clients that only check SHA-256 ignore
+the extra signature asset and can still update to signed releases. The first release containing this updater must be tested on
 Windows with two real release versions (notification, check, install, restart and config retention).
+
+
+## Provisioning the update signing key
+
+The checksum signature is a raw 64-byte Ed25519 signature over the **exact bytes** of
+`tile-rs-X.Y.Z-setup.exe.sha256`, including its filename and newline. It is published as
+`tile-rs-X.Y.Z-setup.exe.sha256.sig`. `scripts/sign-update.ps1` uses OpenSSL 3 (`pkeyutl -sign -rawin`),
+checks that the private key matches the embedded public key, and verifies the output before publication.
+
+No production signing key is included. `UPDATE_VERIFYING_KEY` in `src/platform/update.rs` is
+explicitly `None`: ordinary builds and CI remain green, but in-app installation fails closed with
+a configuration error. The release workflow refuses to publish until both the public key and the
+`UPDATE_SIGNING_KEY` secret are configured. This avoids an intentionally failing reminder test
+while ensuring an unsigned update is never installed or published by this workflow.
+
+Before the first release with signature verification:
+
+1. On a trusted machine, in a private directory **outside the repository**, generate the key pair:
+   ```powershell
+   openssl genpkey -algorithm ED25519 -out update-signing.pem
+   openssl pkey -in update-signing.pem -pubout -outform DER -out update-public.der
+   $der = [IO.File]::ReadAllBytes((Resolve-Path update-public.der))
+   $publicHex = ($der[($der.Length - 32)..($der.Length - 1)] | ForEach-Object { $_.ToString('x2') }) -join ''
+   $publicHex
+   ```
+2. Replace the constant with `const UPDATE_VERIFYING_KEY: Option<&str> = Some("PUBLIC_HEX");`,
+   substituting the 64 public hex characters. Commit **only the public key**. Keep the private
+   PEM in a secure backup; never add it to the checkout or release assets.
+3. Set repository Actions secret `UPDATE_SIGNING_KEY` to the complete contents of
+   `update-signing.pem`, including the BEGIN/END lines. The release step receives it through an
+   environment variable, writes it only to a temporary file, and removes that file in `finally`.
+4. Run `./scripts/check.ps1`, then publish through the release workflow. Missing secrets,
+   mismatched keys, signing errors, and invalid output signatures fail the release.
+
+Existing verifier-enabled installations trust their embedded key. Preserve the pair for future
+releases; rotating it requires an explicit migration release trusted by the previous key.
+Production secrets and release publication remain maintainer actions.

@@ -7,6 +7,7 @@ use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use ed25519_dalek::{Signature, VerifyingKey};
 use serde::Deserialize;
 use windows::core::PCWSTR;
 use windows::Win32::Networking::WinHttp::{
@@ -22,6 +23,9 @@ use windows::Win32::Security::Cryptography::{
 
 const API_URL: &str = "https://api.github.com/repos/ponslookspain/tile-rs/releases/latest";
 const ASSET_PREFIX: &str = "https://github.com/ponslookspain/tile-rs/releases/download/";
+// Set to Some("<64 hex characters>") before publishing signed updates; see docs/RELEASING.md.
+// No production key has been provisioned: builds/tests work, installation fails closed.
+const UPDATE_VERIFYING_KEY: Option<&str> = None;
 const MAX_BODY: usize = 1024 * 1024;
 const MAX_INSTALLER: usize = 256 * 1024 * 1024;
 static CHECK_RUNNING: AtomicBool = AtomicBool::new(false);
@@ -50,6 +54,7 @@ pub struct Release {
     pub url: String,
     installer_url: String,
     checksum_url: String,
+    signature_url: String,
     size: u64,
 }
 
@@ -203,9 +208,16 @@ fn release_from_json(body: &[u8], current: &str) -> Result<Option<Release>, Stri
         .iter()
         .find(|a| a.name == format!("{filename}.sha256"))
         .ok_or("The release has no installer checksum. Please use the release page.")?;
+    let signature = info
+        .assets
+        .iter()
+        .find(|a| a.name == format!("{filename}.sha256.sig"))
+        .ok_or("The release has no update signature. Nothing can be installed.")?;
     let prefix = format!("{ASSET_PREFIX}{}/", info.tag_name);
     if asset.browser_download_url != format!("{prefix}{filename}")
         || checksum.browser_download_url != format!("{prefix}{filename}.sha256")
+        || signature.browser_download_url != format!("{prefix}{filename}.sha256.sig")
+        || signature.size != 64
         || asset.size == 0
         || asset.size > MAX_INSTALLER as u64
     {
@@ -220,6 +232,7 @@ fn release_from_json(body: &[u8], current: &str) -> Result<Option<Release>, Stri
         ),
         installer_url: asset.browser_download_url.clone(),
         checksum_url: checksum.browser_download_url.clone(),
+        signature_url: signature.browser_download_url.clone(),
         size: asset.size,
     }))
 }
@@ -233,12 +246,46 @@ pub fn check_latest() -> Result<Option<Release>, String> {
     )
 }
 
-fn checksum_matches(bytes: &[u8], checksum: &[u8]) -> Result<bool, String> {
-    let expected = std::str::from_utf8(checksum)
-        .ok()
-        .and_then(|s| s.split_whitespace().next())
+fn update_verifying_key(encoded: Option<&str>) -> Result<VerifyingKey, String> {
+    let encoded = encoded.ok_or(
+        "Update signature verification is not configured in this build. Please use the release page.",
+    )?;
+    if encoded.len() != 64 || !encoded.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Err("The update verification key is invalid. Nothing was installed.".into());
+    }
+    let mut bytes = [0u8; 32];
+    for (i, byte) in bytes.iter_mut().enumerate() {
+        *byte = u8::from_str_radix(&encoded[i * 2..i * 2 + 2], 16)
+            .map_err(|_| "The update verification key is invalid")?;
+    }
+    VerifyingKey::from_bytes(&bytes).map_err(|_| "The update verification key is invalid".into())
+}
+
+/// The signature covers the exact checksum asset bytes, including its filename and newline.
+fn verify_checksum_signature(
+    checksum: &[u8],
+    signature: &[u8],
+    key: &VerifyingKey,
+) -> Result<(), String> {
+    let signature = Signature::from_slice(signature)
+        .map_err(|_| "The update signature is missing or invalid. Nothing was installed.")?;
+    key.verify_strict(checksum, &signature)
+        .map_err(|_| "Update signature verification failed. Nothing was installed.".into())
+}
+
+fn checksum_matches(bytes: &[u8], checksum: &[u8], filename: &str) -> Result<bool, String> {
+    let text = std::str::from_utf8(checksum).map_err(|_| "The installer checksum is invalid")?;
+    let mut parts = text.split_whitespace();
+    let expected = parts
+        .next()
         .filter(|s| s.len() == 64 && s.bytes().all(|b| b.is_ascii_hexdigit()))
         .ok_or("The installer checksum is invalid")?;
+    if parts.next() != Some(filename) || parts.next().is_some() {
+        return Err(
+            "The signed checksum does not match this release's installer. Nothing was installed."
+                .into(),
+        );
+    }
     let mut digest = [0u8; 32];
     unsafe {
         let mut algorithm = BCRYPT_ALG_HANDLE::default();
@@ -266,6 +313,10 @@ pub fn install(release: &Release, progress: impl Fn(u8)) -> Result<(), String> {
     }
     let result = (|| {
         progress(0);
+        let key = update_verifying_key(UPDATE_VERIFYING_KEY)?;
+        let checksum = download(&release.checksum_url, 4096, 0, |_| {})?;
+        let signature = download(&release.signature_url, 64, 0, |_| {})?;
+        verify_checksum_signature(&checksum, &signature, &key)?;
         let bytes = download(
             &release.installer_url,
             MAX_INSTALLER,
@@ -275,8 +326,11 @@ pub fn install(release: &Release, progress: impl Fn(u8)) -> Result<(), String> {
         if bytes.len() as u64 != release.size {
             return Err("The downloaded installer is incomplete".into());
         }
-        let checksum = download(&release.checksum_url, 4096, 0, |_| {})?;
-        if !checksum_matches(&bytes, &checksum)? {
+        let filename = format!(
+            "tile-rs-{}-setup.exe",
+            release.version.trim_start_matches(['v', 'V'])
+        );
+        if !checksum_matches(&bytes, &checksum, &filename)? {
             return Err("Installer verification failed. Nothing was installed.".into());
         }
         progress(95);
@@ -521,7 +575,8 @@ mod tests {
         serde_json::json!({
             "tag_name": format!("v{version}"), "body": "Release notes", "assets": [
                 { "name": format!("tile-rs-{version}-setup.exe"), "browser_download_url": prefix, "size": 123 },
-                { "name": format!("tile-rs-{version}-setup.exe.sha256"), "browser_download_url": format!("{prefix}.sha256"), "size": 90 }
+                { "name": format!("tile-rs-{version}-setup.exe.sha256"), "browser_download_url": format!("{prefix}.sha256"), "size": 90 },
+                { "name": format!("tile-rs-{version}-setup.exe.sha256.sig"), "browser_download_url": format!("{prefix}.sha256.sig"), "size": 64 }
             ]
         })
     }
@@ -553,11 +608,54 @@ mod tests {
     }
 
     #[test]
+    fn checksum_signatures_reject_tampering_missing_data_and_another_key() {
+        use ed25519_dalek::{Signer, SigningKey};
+        // Deterministic test-only pair; never used by the production verifier.
+        let signing = SigningKey::from_bytes(&[0x42; 32]);
+        let encoded: String = signing
+            .verifying_key()
+            .as_bytes()
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect();
+        let key = update_verifying_key(Some(&encoded)).unwrap();
+        let checksum = b"checksum  tile-rs-test-setup.exe\n";
+        let signature = signing.sign(checksum).to_bytes();
+        assert!(verify_checksum_signature(checksum, &signature, &key).is_ok());
+        assert!(verify_checksum_signature(b"tampered", &signature, &key).is_err());
+        let mut tampered = signature;
+        tampered[0] ^= 1;
+        assert!(verify_checksum_signature(checksum, &tampered, &key).is_err());
+        assert!(verify_checksum_signature(checksum, &[], &key).is_err());
+        let other = SigningKey::from_bytes(&[0x24; 32]).verifying_key();
+        assert!(verify_checksum_signature(checksum, &signature, &other).is_err());
+        assert!(update_verifying_key(None).is_err());
+        assert!(update_verifying_key(Some("not a key")).is_err());
+    }
+
+    #[test]
+    fn release_signature_asset_must_have_trusted_url_and_exact_size() {
+        for (field, value) in [
+            (
+                "browser_download_url",
+                serde_json::json!("https://example.com/checksum.sig"),
+            ),
+            ("size", serde_json::json!(63)),
+        ] {
+            let mut info = release_json("0.6.0");
+            info["assets"][2][field] = value;
+            assert!(release_from_json(&serde_json::to_vec(&info).unwrap(), "0.5.0").is_err());
+        }
+    }
+
+    #[test]
     fn sha256_is_verified_before_any_installer_is_started() {
         let valid = b"ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad  setup.exe";
-        assert!(checksum_matches(b"abc", valid).unwrap());
-        assert!(!checksum_matches(b"modified", valid).unwrap());
-        assert!(checksum_matches(b"abc", b"invalid").is_err());
+        assert!(checksum_matches(b"abc", valid, "setup.exe").unwrap());
+        assert!(!checksum_matches(b"modified", valid, "setup.exe").unwrap());
+        assert!(checksum_matches(b"abc", b"invalid", "setup.exe").is_err());
+        // A valid hash/signature from an older installer must not authenticate a newer release.
+        assert!(checksum_matches(b"abc", valid, "tile-rs-9.0.0-setup.exe").is_err());
     }
 
     #[test]
