@@ -178,15 +178,6 @@ pub fn dpi(mi: usize) -> u32 {
     }
 }
 
-/// The work area (taskbar excluded) of the primary monitor.
-pub fn primary_work() -> RECT {
-    with_cached(|list| {
-        list.get(primary_index(list))
-            .map(|m| m.work)
-            .unwrap_or_default()
-    })
-}
-
 /// Shifts `r` into `area`; a rectangle larger than `area` is shrunk to it.
 pub fn clamp_into(r: RECT, area: RECT) -> RECT {
     let w = (r.right - r.left).min(area.right - area.left).max(0);

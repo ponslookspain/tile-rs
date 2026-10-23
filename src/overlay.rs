@@ -202,6 +202,11 @@ pub fn hide_border() {
 }
 
 #[cfg(test)]
+pub(crate) fn border_visible() -> bool {
+    BORDER_VISIBLE.load(Ordering::Relaxed)
+}
+
+#[cfg(test)]
 pub(crate) fn border_rect() -> Option<RECT> {
     let hwnd = HWND(BORDER.load(Ordering::Relaxed) as *mut _);
     let mut rect = RECT::default();

@@ -10,6 +10,7 @@
 //! Run only with other window managers (GlazeWM, Astur, ...) stopped.
 #![windows_subsystem = "windows"]
 
+mod border;
 mod config;
 mod diagnostics;
 mod divider;
@@ -82,6 +83,10 @@ use windows::Win32::UI::WindowsAndMessaging::{
     WINEVENT_SKIPOWNPROCESS, WM_CLOSE, WM_GETMINMAXINFO, WM_HOTKEY, WM_QUIT, WM_TIMER, WS_CHILD,
 };
 
+use border::{
+    border_window_shown, clear_border, place_border, refresh_border, sync_border, sync_border_to,
+    update_border,
+};
 use config::{Action, Dir, FullscreenWindows, Layout, WS_COUNT};
 use geometry::{
     anim_duration, apply_resize_for, ease, effective_step, fullscreen_action, layout_is_valid,
@@ -345,11 +350,6 @@ fn fitted(
         (mw, mh),
         gaps,
     )
-}
-
-/// The work area (taskbar excluded) of the primary monitor, as Windows reports it.
-fn raw_work_area() -> RECT {
-    monitor::primary_work()
 }
 
 /// The work area (taskbar excluded) of monitor `mi`, minus the indicator bar.
@@ -2059,75 +2059,6 @@ fn trim_working_set() {
     }
 }
 
-// ---------------------------------------------------------------------------
-// focus border (drawn by tile-rs itself, see `overlay.rs`)
-// ---------------------------------------------------------------------------
-
-/// Draws the border around the *visible* frame `vis` of `target`. The border window is placed just
-/// below `target` in the z-order and clipped to a hollow frame, so it can never cover the window
-/// with a solid colour (for example while the window is being placed or maximized).
-fn place_border(vis: &RECT, target: isize) {
-    let w = config::border_width();
-    let hw = HWND(target as *mut _);
-    // a maximized / minimized window has no tiled frame: no border
-    if w <= 0 || unsafe { IsZoomed(hw).as_bool() || IsIconic(hw).as_bool() } {
-        overlay::hide_border();
-        return;
-    }
-    // never draw a border that fills the whole monitor (a window in transition)
-    let mon = raw_work_area();
-    if (vis.right - vis.left) >= (mon.right - mon.left)
-        || (vis.bottom - vis.top) >= (mon.bottom - mon.top)
-    {
-        overlay::hide_border();
-        return;
-    }
-    place_border_frame(vis, target, w);
-}
-
-/// Positions the border overlay around the observed visible frame.
-fn place_border_frame(vis: &RECT, target: isize, w: i32) {
-    if w <= 0 {
-        overlay::hide_border();
-        return;
-    }
-    let rect = RECT {
-        left: vis.left - w,
-        top: vis.top - w,
-        right: vis.right + w,
-        bottom: vis.bottom + w,
-    };
-    // rounded corners: the window's own corner radius (~8 px) plus the border width
-    overlay::show_border(rect, HWND(target as *mut _), 8 + w, w);
-}
-
-/// Picks the window that should carry the border (the focused tiled window of the current
-/// workspace) and positions the overlay around it.
-fn update_border(s: &mut State, focus: isize) {
-    if s.focus_cur != Some(focus) && (s.ws.contains_key(&focus) || s.fs_ws.contains_key(&focus)) {
-        s.focus_prev = s.focus_cur;
-        s.focus_cur = Some(focus);
-    }
-    // a tiled window of the current workspace: in the applied layout, or (should the layout list
-    // be momentarily stale) a known window that belongs to the current workspace
-    let mi = s.mi(focus);
-    let tiled = s.last[mi].contains(&focus) || s.ws.get(&focus) == Some(&s.cur[mi]);
-    s.border_on = (config::border().is_some()
-        && !s.paused
-        && s.dragging.is_none()
-        && s.divider.is_none()
-        && tiled)
-        .then_some(focus);
-}
-
-/// Re-evaluate which window should have the border (after layout / pause / config changes).
-fn refresh_border() {
-    let fg = unsafe { GetForegroundWindow() }.0 as isize;
-    STATE.with(|s| update_border(&mut s.borrow_mut(), fg));
-    sync_border();
-    sync_dividers();
-}
-
 fn sync_dividers() {
     let fg = unsafe { GetForegroundWindow() }.0 as isize;
     let handles = STATE.with(|state| {
@@ -2420,28 +2351,6 @@ fn finish_divider(finish: DividerFinish) {
     refresh_border();
 }
 
-/// Repositions the border overlay around the current border window (`State::border_on`).
-fn sync_border() {
-    let target = STATE.with(|s| s.borrow().border_on);
-    match target {
-        Some(h) => sync_border_to(h),
-        None => overlay::hide_border(),
-    }
-}
-
-fn sync_border_to(h: isize) {
-    match visible_rect(HWND(h as *mut _)) {
-        Some(vis) => place_border(&vis, h),
-        None => overlay::hide_border(),
-    }
-}
-
-/// Hide the border (pause, quit, colour change).
-fn clear_border() {
-    STATE.with(|s| s.borrow_mut().border_on = None);
-    overlay::hide_border();
-}
-
 /// Updates each monitor's workspace indicator; the tiling area leaves room for its own bar.
 fn sync_indicator() {
     if !config::workspace_indicator() {
@@ -2634,52 +2543,40 @@ fn register_hotkeys() -> Vec<String> {
 /// Drop every piece of cached state for a destroyed HWND immediately. HWND values are reusable;
 /// waiting for the debounced EnumWindows pass can accidentally transfer stale workspace/order
 /// state to a newly created window that receives the same numeric handle.
-fn forget_window(s: &mut State, h: isize) -> bool {
-    let tracked = s.ws.contains_key(&h)
-        || s.mon.contains_key(&h)
-        || s.fs_ws.contains_key(&h)
-        || s.fs_mon.contains_key(&h)
-        || s.fs_hidden.contains(&h)
-        || s.manual_float.contains(&h)
-        || s.capacity_float.contains(&h)
-        || s.identities.contains_key(&h)
-        || s.placements.contains_key(&h)
-        || s.expected.contains_key(&h)
-        || s.geometry_retries.contains_key(&h)
-        || s.follow.is_some_and(|(_, _, window)| window == h)
-        || s.min_size.contains_key(&h)
-        || s.placement_failures.contains_key(&h)
-        || s.anims.iter().any(|animation| animation.hwnd == h)
-        || s.border_on == Some(h)
-        || s.order.iter().any(|order| order.contains(&h))
-        || s.last.iter().any(|last| last.contains(&h));
-    if !tracked {
-        return false;
-    }
-    s.live_resize.forget(&[h]);
-    s.live_borders.remove(&h);
-    s.ws.remove(&h);
-    s.mon.remove(&h);
-    s.fs_ws.remove(&h);
-    s.fs_mon.remove(&h);
-    s.fs_hidden.remove(&h);
-    s.manual_float.remove(&h);
-    s.capacity_float.remove(&h);
-    s.float_reasons.remove(&h);
-    s.suspended.remove(&h);
-    s.identities.remove(&h);
-    s.min_size.remove(&h);
-    s.placement_failures.remove(&h);
-    s.geometry_retries.remove(&h);
-    s.expected.remove(&h);
-    s.placements.remove(&h);
+/// Removes `h` from every per-window collection of [`State`] and reports whether it was in any of
+/// them. This is the single place that knows those collections: a new per-window map must be
+/// added here, and it is then forgotten (and counted as tracked) everywhere.
+fn drop_window_data(s: &mut State, h: isize) -> bool {
+    let mut tracked = false;
+    tracked |= s.live_borders.remove(&h).is_some();
+    tracked |= s.ws.remove(&h).is_some();
+    tracked |= s.mon.remove(&h).is_some();
+    tracked |= s.fs_ws.remove(&h).is_some();
+    tracked |= s.fs_mon.remove(&h).is_some();
+    tracked |= s.fs_hidden.remove(&h);
+    tracked |= s.manual_float.remove(&h);
+    tracked |= s.capacity_float.remove(&h);
+    tracked |= s.float_reasons.remove(&h).is_some();
+    tracked |= s.suspended.remove(&h);
+    tracked |= s.identities.remove(&h).is_some();
+    tracked |= s.min_size.remove(&h).is_some();
+    tracked |= s.placement_failures.remove(&h).is_some();
+    tracked |= s.geometry_retries.remove(&h).is_some();
+    tracked |= s.expected.remove(&h).is_some();
+    tracked |= s.placements.remove(&h).is_some();
     if s.follow.is_some_and(|(_, _, window)| window == h) {
         s.follow = None;
+        tracked = true;
     }
+    let animations = s.anims.len();
     s.anims.retain(|a| a.hwnd != h);
+    tracked |= s.anims.len() != animations;
     for mi in 0..MON {
+        let ordered = s.order[mi].len();
         s.order[mi].retain(|window| *window != h);
+        tracked |= s.order[mi].len() != ordered;
         if let Some(i) = s.last[mi].iter().position(|window| *window == h) {
+            tracked = true;
             s.last[mi].remove(i);
             if i < s.rects[mi].len() {
                 s.rects[mi].remove(i);
@@ -2688,6 +2585,18 @@ fn forget_window(s: &mut State, h: isize) -> bool {
                 s.regions[mi].remove(i);
             }
         }
+    }
+    tracked |= s.dragging == Some(h);
+    tracked |= s.border_on == Some(h);
+    tracked |= s.drag_preview.is_some_and(|(_, preview)| preview == h);
+    tracked
+}
+
+fn forget_window(s: &mut State, h: isize) -> bool {
+    // `live_resize` has no membership query; forgetting an unknown window is a no-op
+    s.live_resize.forget(&[h]);
+    if !drop_window_data(s, h) {
+        return false;
     }
     if s.dragging == Some(h) {
         s.live_resize.clear();
@@ -2978,6 +2887,20 @@ unsafe extern "system" fn on_event(
             forget_window(&mut s, h);
             s.windows_changed = true;
             dirty = true;
+        }
+        // A window that is hidden, cloaked, minimized or destroyed has nothing left to outline.
+        // Many apps hide a window long before (or instead of) destroying it, so do not wait for
+        // the debounced re-tile to notice.
+        // (A replayed HIDE for a window that is visible again must not clear it.)
+        if s.border_on == Some(h)
+            && (event == EVENT_OBJECT_DESTROY
+                || (matches!(
+                    event,
+                    EVENT_OBJECT_HIDE | EVENT_OBJECT_CLOAKED | EVENT_SYSTEM_MINIMIZESTART
+                ) && !border_window_shown(hwnd)))
+        {
+            s.border_on = None;
+            overlay::hide_border();
         }
         match event {
             EVENT_SYSTEM_MENUPOPUPSTART => {
@@ -6353,7 +6276,9 @@ mod tests {
     #[test]
     fn expected_location_event_still_corrects_a_stale_border() {
         let _config_lock = config::test_lock();
-        use windows::Win32::UI::WindowsAndMessaging::{CreateWindowExW, DestroyWindow, WS_POPUP};
+        use windows::Win32::UI::WindowsAndMessaging::{
+            CreateWindowExW, DestroyWindow, WS_POPUP, WS_VISIBLE,
+        };
         config::set(config::parse("border_width = 2").unwrap());
         unsafe {
             // Keep both test windows outside the desktop.
@@ -6361,7 +6286,7 @@ mod tests {
                 Default::default(),
                 w!("STATIC"),
                 w!("tile-rs border regression"),
-                WS_POPUP,
+                WS_POPUP | WS_VISIBLE,
                 -20000,
                 -20000,
                 300,
@@ -6409,6 +6334,68 @@ mod tests {
             assert!(
                 !reconciled,
                 "own placements must still skip layout reconciliation"
+            );
+        }
+    }
+
+    #[test]
+    fn border_leaves_a_window_that_is_hidden_or_gone() {
+        let _config_lock = config::test_lock();
+        use windows::Win32::UI::WindowsAndMessaging::{
+            CreateWindowExW, DestroyWindow, ShowWindow, SW_HIDE, WS_POPUP, WS_VISIBLE,
+        };
+        config::set(config::parse("border_width = 2").unwrap());
+        unsafe {
+            let hwnd = CreateWindowExW(
+                Default::default(),
+                w!("STATIC"),
+                w!("tile-rs hidden border regression"),
+                WS_POPUP | WS_VISIBLE,
+                -20000,
+                -20000,
+                300,
+                200,
+                None,
+                None,
+                None,
+                None,
+            )
+            .unwrap();
+            let h = hwnd.0 as isize;
+            let actual = visible_rect(hwnd).unwrap();
+            assert!(overlay::create_border());
+            assert!(border_window_shown(hwnd));
+            STATE.with(|state| {
+                let mut s = state.borrow_mut();
+                *s = State::default();
+                s.border_on = Some(h);
+            });
+            // hiding the window clears the border at once (the app may never destroy it)
+            let _ = ShowWindow(hwnd, SW_HIDE);
+            on_event(
+                HWINEVENTHOOK::default(),
+                EVENT_OBJECT_HIDE,
+                hwnd,
+                0,
+                0,
+                0,
+                0,
+            );
+            let cleared = STATE.with(|state| state.borrow().border_on.is_none());
+            // a stale placement request on a hidden window must not bring the border back
+            place_border(&actual, h);
+            let visible = overlay::border_visible();
+            overlay::destroy_border();
+            DestroyWindow(hwnd).unwrap();
+            STATE.with(|state| *state.borrow_mut() = State::default());
+            assert!(
+                cleared,
+                "border target must be dropped when its window hides"
+            );
+            assert!(!visible, "border must stay hidden for a hidden window");
+            assert!(
+                !border_window_shown(hwnd),
+                "a destroyed window has no border"
             );
         }
     }
