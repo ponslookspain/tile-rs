@@ -22,10 +22,10 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{TrackMouseEvent, TME_LEAVE, TR
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DestroyWindow, GetClientRect, GetWindowLongPtrW,
     IsWindowVisible, KillTimer, LoadCursorW, RegisterClassW, SetLayeredWindowAttributes, SetTimer,
-    SetWindowLongPtrW, SetWindowPos, ShowWindow, GWLP_USERDATA, IDC_HAND, LWA_COLORKEY,
+    SetWindowLongPtrW, SetWindowPos, ShowWindow, GWLP_USERDATA, GWL_EXSTYLE, IDC_HAND, LWA_COLORKEY,
     HWND_NOTOPMOST, HWND_TOPMOST, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SW_HIDE, SW_SHOWNA, WM_ERASEBKGND, WM_LBUTTONUP, WM_MOUSEMOVE, WM_RBUTTONUP,
     WM_PAINT, WM_TIMER, WNDCLASSW, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
-    WS_EX_TRANSPARENT, WS_POPUP,
+    WS_EX_TOPMOST, WS_EX_TRANSPARENT, WS_POPUP,
 };
 
 /// `WM_MOUSELEAVE` (0x02A3), not re-exported by the windows crate.
@@ -389,9 +389,15 @@ pub fn raise_indicators(raise: bool) {
         if raw == 0 {
             continue;
         }
+        let hwnd = HWND(raw as *mut _);
+        // called on every drag move: skip the z-order change once it is already in place
+        let topmost = unsafe { GetWindowLongPtrW(hwnd, GWL_EXSTYLE) } & WS_EX_TOPMOST.0 as isize != 0;
+        if topmost == raise {
+            continue;
+        }
         unsafe {
             let _ = SetWindowPos(
-                HWND(raw as *mut _),
+                hwnd,
                 Some(after),
                 0,
                 0,

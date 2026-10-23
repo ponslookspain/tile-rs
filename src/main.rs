@@ -3218,6 +3218,9 @@ unsafe extern "system" fn on_event(
                             // Coalesce input to the next frame without resetting its deadline.
                             arm_anim_timer(&mut s);
                         } else {
+                            // the raise at drag start can lose to the dragged window being
+                            // brought forward on the first grab: make sure the dots stay on top
+                            overlay::raise_indicators(true);
                             // over a workspace dot: highlight it instead of previewing a swap
                             let mut p = POINT::default();
                             let dot = if GetCursorPos(&mut p).is_ok() {
