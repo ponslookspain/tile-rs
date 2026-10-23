@@ -31,6 +31,7 @@ These keys go at the top of the file, before any `[section]`.
 | `resize_step` | `40` | Pixels per key press of the grow/shrink hotkeys, `1`–`500`. A held key uses smaller, instant steps. |
 | `fullscreen_windows` | `"minimize"` | What to do with a window that runs fullscreen or borderless fullscreen (a game, a video player): `"minimize"` hides it while its workspace is not shown and restores it when you switch back; `"ignore"` leaves it completely alone. |
 | `media_windows` | `"float"` | `"float"` leaves recognized photo/video viewers completely unmanaged, including fullscreen viewers. This includes Telegram's Qt media viewer with its English or Russian title; its main window and chats remain eligible for tiling. `"tile"` allows ordinary media windows into the layout; genuine fullscreen windows still follow `fullscreen_windows`. Explicit application rules take precedence over this media heuristic. |
+| `live_resize` | `"auto"` | What dragging a separator or a window edge does to the other windows. `"live"` resizes them while you drag. `"preview"` shows translucent outlines of the new tiles and glides the windows into them once you let go. `"auto"` is live with up to five windows on the monitor and outlines with more, or while animations are suspended on a slow machine. |
 | `border` | `true` | Draw a border around the focused tiled window (drawn by tile-rs itself, so it works for every window). |
 | `border_color` | `"#8dbcff"` | Border colour, `"#rrggbb"`. |
 | `border_width` | `2` | Border thickness in pixels, `0`–`20`. |

@@ -903,6 +903,38 @@ pub fn fullscreen_action(ws: u8, cur: u8, hidden: bool, minimized: bool) -> FsAc
     }
 }
 
+/// One edge on a cubic Hermite curve: leaves `a` with the slope `m0` (pixels per unit of `t`)
+/// and arrives at `b` at rest. With `m0 = 3 * (b - a)` this is exactly `ease_out_cubic`.
+pub fn hermite_i(a: i32, b: i32, m0: f32, t: f32) -> i32 {
+    let t = t.clamp(0.0, 1.0);
+    let (t2, t3) = (t * t, t * t * t);
+    let p = (2.0 * t3 - 3.0 * t2 + 1.0) * a as f32
+        + (t3 - 2.0 * t2 + t) * m0
+        + (-2.0 * t3 + 3.0 * t2) * b as f32;
+    p.round() as i32
+}
+
+/// Slope of `hermite_i` at `t`, in pixels per unit of `t`.
+pub fn hermite_slope(a: i32, b: i32, m0: f32, t: f32) -> f32 {
+    let t = t.clamp(0.0, 1.0);
+    let t2 = t * t;
+    (6.0 * t2 - 6.0 * t) * a as f32
+        + (3.0 * t2 - 4.0 * t + 1.0) * m0
+        + (-6.0 * t2 + 6.0 * t) * b as f32
+}
+
+/// Starting slope for an animation that replaces a running one: the edge's current speed
+/// `velocity` (px/s) over the new duration, limited so the edge never overshoots its target
+/// (at most the ease-out-cubic slope) and only briefly runs on backwards.
+pub fn carried_tangent(velocity: f32, delta: i32, dur_s: f32) -> f32 {
+    if delta == 0 {
+        return 0.0;
+    }
+    let d = delta as f32;
+    let share = (velocity * dur_s / d).clamp(-1.5, 3.0);
+    share * d
+}
+
 pub fn lerp_i(a: i32, b: i32, t: f32) -> i32 {
     a + ((b - a) as f32 * t).round() as i32
 }
@@ -1119,6 +1151,65 @@ mod tests {
                 let v = ease(e, i as f32 / 100.0);
                 assert!(v >= prev - 1e-6, "{e:?} not monotonic at {i}");
                 prev = v;
+            }
+        }
+    }
+
+    #[test]
+    fn surplus_ratios_from_a_bigger_layout_are_ignored() {
+        // saved ratios of three windows while only the first window is being admitted at start
+        let area = RECT {
+            left: 0,
+            top: 0,
+            right: 1920,
+            bottom: 1080,
+        };
+        let gaps = Gaps {
+            inner: 10,
+            outer: 10,
+        };
+        let mins = HashMap::new();
+        for layout in [Layout::Spiral, Layout::MasterStack, Layout::Grid, Layout::Columns] {
+            for n in 1..=3usize {
+                let windows: Vec<isize> = (1..=n as isize).collect();
+                let exact = vec![0.4899; n - 1];
+                let surplus = [0.4899, 0.4899, 0.4899];
+                let (tiles, _) =
+                    place_fitted(layout, area, &windows, &surplus, &mins, (460, 320), gaps);
+                assert_eq!(
+                    tiles,
+                    place_fitted(layout, area, &windows, &exact, &mins, (460, 320), gaps).0,
+                    "{layout:?} with {n} window(s)"
+                );
+                assert!(layout_is_valid(area, &windows, &tiles, &mins, (460, 320), gaps));
+                assert_eq!(place(layout, area, n, &surplus, gaps).0, place(layout, area, n, &exact, gaps).0);
+            }
+        }
+    }
+
+    #[test]
+    fn hermite_with_the_ease_out_slope_is_ease_out_cubic() {
+        for i in 0..=20 {
+            let t = i as f32 / 20.0;
+            assert_eq!(hermite_i(100, 500, 3.0 * 400.0, t), lerp_i(100, 500, ease_out_cubic(t)));
+        }
+        assert_eq!(hermite_i(100, 500, 0.0, 1.0), 500);
+        assert!((hermite_slope(100, 500, 1200.0, 0.0) - 1200.0).abs() < 0.01);
+        assert!(hermite_slope(100, 500, 1200.0, 1.0).abs() < 0.01, "arrives at rest");
+    }
+
+    #[test]
+    fn a_carried_slope_never_overshoots_and_only_briefly_reverses() {
+        // moving fast towards the new target: capped at the ease-out slope
+        assert_eq!(carried_tangent(10_000.0, 100, 0.14), 300.0);
+        // moving away from it: some run-on, then back
+        assert_eq!(carried_tangent(-10_000.0, 100, 0.14), -150.0);
+        assert_eq!(carried_tangent(500.0, 0, 0.14), 0.0);
+        // with any allowed slope the edge stays within [a - run-on, b]
+        for m0 in [-150.0, 0.0, 150.0, 300.0] {
+            for i in 0..=50 {
+                let p = hermite_i(0, 100, m0, i as f32 / 50.0);
+                assert!((-30..=100).contains(&p), "m0 {m0}: {p}");
             }
         }
     }

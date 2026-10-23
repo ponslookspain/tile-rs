@@ -14,8 +14,33 @@ follows [Semantic Versioning](https://semver.org) (see [docs/RELEASING.md](docs/
 - `Alt+/` opens the settings on the Hotkeys page.
 - tile-rs says once per program when it leaves a window alone because the program runs as
   administrator.
+- `live_resize = "live" | "preview" | "auto"`: with outlines, a separator or edge drag shows the
+  new tiles and the windows move once on release. `auto` (default) switches to outlines with more
+  than five windows on the monitor or on a slow machine.
+- Separator highlights fade on hover; a dragged window outlines the tile it would land in.
+- Switching workspace slides the windows in a short way; on arrival each window repaints
+  completely, so browsers and Electron apps do not leave their content behind.
+
+### Changed
+- A window dropped onto a workspace dot takes you along to that workspace. Moving the active
+  window from the dot's right-click menu still leaves you where you are.
+- Dragging a separator is smoother with many windows: the windows on both sides of it move
+  together, windows further away update less often, and the pointer moves in small steps.
+- A layout change during a running animation keeps the windows' speed instead of restarting it.
 
 ### Fixed
+- A window maximized on one workspace no longer stays on top when you switch to another
+  workspace: it is minimized and comes back maximized when you return. A window you minimized
+  yourself is left alone, and one you bring back from the taskbar joins the workspace you are on.
+- With "No gaps for a single window" (`smart_gaps`) turned on, windows are tiled again: the lone
+  first window filled the screen without gaps but was then checked against the gapped area,
+  rejected, and every window was left floating.
+- Moving several windows at once no longer tries a batch that Windows always rejected: each frame
+  used to fail, write a line to the log and only then place the windows one by one. Drags and
+  animations, especially right after start, react faster, and window edges no longer jitter
+  while you drag a separator.
+- The settings window no longer shows parts of other windows after it is restored, resized,
+  shown again or moved to another display: it repaints completely then.
 - The workspace dots stay above a window you are dragging, also above other always-on-top windows.
 - After the computer wakes from sleep or hibernation the layout is rebuilt, and once more a few
   seconds later for monitors that come back late.

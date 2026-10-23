@@ -3,6 +3,7 @@ use crate::config::Layout;
 use crate::layout::geometry::{layout_is_valid, place_fitted, Gaps};
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
+use std::time::Instant;
 use windows::core::w;
 use windows::Win32::Foundation::{COLORREF, HINSTANCE, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
 use windows::Win32::Graphics::Gdi::{
@@ -139,21 +140,106 @@ fn highlight_alpha(captured: bool, hovered: bool) -> u8 {
 }
 
 fn highlight(hwnd: HWND, handle: &Handle) {
-    unsafe {
-        let mut point = POINT::default();
-        let hovered = GetCursorPos(&mut point).is_ok()
-            && point.x >= handle.rect.left
-            && point.x < handle.rect.right
-            && point.y >= handle.rect.top
-            && point.y < handle.rect.bottom;
-        let active = CAPTURE.with(|capture| capture.get() == hwnd);
-        let _ = SetLayeredWindowAttributes(
-            hwnd,
-            COLORREF(0),
-            highlight_alpha(active, hovered),
-            LWA_ALPHA,
-        );
+    let mut point = POINT::default();
+    let hovered = unsafe { GetCursorPos(&mut point) }.is_ok()
+        && point.x >= handle.rect.left
+        && point.x < handle.rect.right
+        && point.y >= handle.rect.top
+        && point.y < handle.rect.bottom;
+    let active = CAPTURE.with(|capture| capture.get() == hwnd);
+    if active {
+        set_alpha(hwnd, highlight_alpha(true, hovered));
+    } else {
+        fade_to(hwnd, highlight_alpha(false, hovered));
     }
+}
+
+/// Timer of the hover fade of an input surface.
+const FADE_TIMER: usize = 2;
+const FADE_MS: f32 = 110.0;
+
+struct Fade {
+    from: u8,
+    to: u8,
+    start: Instant,
+}
+
+thread_local! {
+    /// Current alpha of every input surface, and the fades in progress.
+    static ALPHA: RefCell<HashMap<isize, u8>> = RefCell::new(HashMap::new());
+    static FADES: RefCell<HashMap<isize, Fade>> = RefCell::new(HashMap::new());
+}
+
+/// Sets the alpha at once (a pressed separator answers immediately) and stops a running fade.
+fn set_alpha(hwnd: HWND, alpha: u8) {
+    if FADES.with(|f| f.borrow_mut().remove(&(hwnd.0 as isize)).is_some()) {
+        unsafe {
+            let _ = KillTimer(Some(hwnd), FADE_TIMER);
+        }
+    }
+    ALPHA.with(|a| a.borrow_mut().insert(hwnd.0 as isize, alpha));
+    unsafe {
+        let _ = SetLayeredWindowAttributes(hwnd, COLORREF(0), alpha, LWA_ALPHA);
+    }
+}
+
+/// Fades the surface to `alpha` (hover in / out).
+fn fade_to(hwnd: HWND, alpha: u8) {
+    let key = hwnd.0 as isize;
+    let current = ALPHA.with(|a| a.borrow().get(&key).copied()).unwrap_or(alpha);
+    let running = FADES.with(|f| f.borrow().get(&key).map(|fade| fade.to));
+    if running == Some(alpha) || (running.is_none() && current == alpha) {
+        return;
+    }
+    if !crate::config::animation().0 {
+        set_alpha(hwnd, alpha);
+        return;
+    }
+    FADES.with(|f| {
+        f.borrow_mut().insert(
+            key,
+            Fade {
+                from: current,
+                to: alpha,
+                start: Instant::now(),
+            },
+        )
+    });
+    unsafe {
+        let _ = SetTimer(Some(hwnd), FADE_TIMER, 8, None);
+    }
+}
+
+fn fade_tick(hwnd: HWND) {
+    let key = hwnd.0 as isize;
+    let step = FADES.with(|f| {
+        f.borrow().get(&key).map(|fade| {
+            let t = (fade.start.elapsed().as_secs_f32() * 1000.0 / FADE_MS).min(1.0);
+            let eased = crate::layout::geometry::ease_out_cubic(t);
+            let alpha = f32::from(fade.from) + (f32::from(fade.to) - f32::from(fade.from)) * eased;
+            (alpha.round() as u8, t >= 1.0)
+        })
+    });
+    let Some((alpha, done)) = step else {
+        unsafe {
+            let _ = KillTimer(Some(hwnd), FADE_TIMER);
+        }
+        return;
+    };
+    if done {
+        set_alpha(hwnd, alpha);
+    } else {
+        ALPHA.with(|a| a.borrow_mut().insert(key, alpha));
+        unsafe {
+            let _ = SetLayeredWindowAttributes(hwnd, COLORREF(0), alpha, LWA_ALPHA);
+        }
+    }
+}
+
+fn forget_alpha(hwnd: HWND) {
+    let key = hwnd.0 as isize;
+    ALPHA.with(|a| a.borrow_mut().remove(&key));
+    FADES.with(|f| f.borrow_mut().remove(&key));
 }
 
 pub struct Resize {
@@ -186,6 +272,54 @@ impl Resize {
         self.last_pointer_axis = axis;
         true
     }
+    /// Which of `tiles` border the dragged separator: those have to move together.
+    pub fn touching_split(&self, tiles: &[RECT]) -> Vec<bool> {
+        let j = self.handle.split;
+        let (Some(t), Some(q)) = (tiles.get(j), self.regions.get(j)) else {
+            return vec![false; tiles.len()];
+        };
+        let line = if self.handle.vertical {
+            t.right
+        } else {
+            t.bottom
+        };
+        let other_side = line + self.gaps.inner;
+        tiles
+            .iter()
+            .map(|r| {
+                let inside = r.left < q.right && r.right > q.left && r.top < q.bottom && r.bottom > q.top;
+                let (near_edge, far_edge) = if self.handle.vertical {
+                    (r.right, r.left)
+                } else {
+                    (r.bottom, r.top)
+                };
+                inside && ((near_edge - line).abs() <= 1 || (far_edge - other_side).abs() <= 1)
+            })
+            .collect()
+    }
+
+    /// `target` for the live preview: the pointer moves in steps of `step` pixels from the
+    /// origin, so a slow drag does not make every window re-lay out its content for each single
+    /// pixel. The final placement uses the exact `target`.
+    pub fn live_target(&self, point: POINT, step: i32) -> (Vec<f32>, Vec<RECT>, Vec<RECT>) {
+        let step = step.max(1);
+        let snap = |value: i32, origin: i32| {
+            origin + ((value - origin) as f32 / step as f32).round() as i32 * step
+        };
+        let point = if self.handle.vertical {
+            POINT {
+                x: snap(point.x, self.origin.x),
+                y: point.y,
+            }
+        } else {
+            POINT {
+                x: point.x,
+                y: snap(point.y, self.origin.y),
+            }
+        };
+        self.target(point)
+    }
+
     /// Always calculate from the gesture's original geometry, never from previous frames.
     pub fn target(&self, point: POINT) -> (Vec<f32>, Vec<RECT>, Vec<RECT>) {
         let j = self.handle.split;
@@ -317,9 +451,7 @@ pub fn follow(handle: Option<Handle>) {
     let Some(handle) = handle else {
         // Keep capture, but do not paint over an application while the two
         // asynchronous window edges temporarily leave no actual gap.
-        unsafe {
-            let _ = SetLayeredWindowAttributes(hwnd, COLORREF(0), 0, LWA_ALPHA);
-        }
+        set_alpha(hwnd, 0);
         return;
     };
     let changed = SURFACES.with(|surfaces| {
@@ -444,13 +576,14 @@ pub fn sync(handles: Vec<Handle>) {
                 Some(instance),
                 None,
             ) {
-                let _ = SetLayeredWindowAttributes(hwnd, COLORREF(0), 1, LWA_ALPHA);
+                set_alpha(hwnd, 1);
                 SURFACES.with(|s| s.borrow_mut().push((handle, hwnd)));
                 let _ = ShowWindow(hwnd, SW_SHOWNA);
                 highlight(hwnd, &handle);
             }
         }
         for (_, hwnd) in old {
+            forget_alpha(hwnd);
             let _ = DestroyWindow(hwnd);
         }
     }
@@ -478,7 +611,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             {
                 CAPTURE.with(|c| c.set(hwnd));
                 SetCapture(hwnd);
-                let _ = SetLayeredWindowAttributes(hwnd, COLORREF(0), 180, LWA_ALPHA);
+                set_alpha(hwnd, highlight_alpha(true, true));
                 if GetCapture() != hwnd || SetTimer(Some(hwnd), 1, 100, None) == 0 {
                     release();
                     crate::app::end_divider(false);
@@ -501,12 +634,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             if active {
                 return LRESULT(0);
             } // The frame tick positions and highlights the captured surface.
-            let _ = SetLayeredWindowAttributes(
-                hwnd,
-                COLORREF(0),
-                highlight_alpha(active, true),
-                LWA_ALPHA,
-            );
+            fade_to(hwnd, highlight_alpha(false, true));
             let mut tracking = TRACKMOUSEEVENT {
                 cbSize: std::mem::size_of::<TRACKMOUSEEVENT>() as u32,
                 dwFlags: TME_LEAVE,
@@ -521,14 +649,10 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             if active {
                 return LRESULT(0);
             }
-            let _ = SetLayeredWindowAttributes(
-                hwnd,
-                COLORREF(0),
-                highlight_alpha(active, false),
-                LWA_ALPHA,
-            );
+            fade_to(hwnd, highlight_alpha(false, false));
         }
         WM_TIMER if wp.0 == 1 => tick(),
+        WM_TIMER if wp.0 == FADE_TIMER => fade_tick(hwnd),
         WM_LBUTTONUP => {
             release();
             crate::app::end_divider(true);
@@ -609,6 +733,31 @@ mod tests {
         }
         assert!(unobstructed(vec![handle], &[handle.rect]).is_empty());
         assert_eq!(unobstructed(vec![handle], &[]), vec![handle]);
+    }
+
+    #[test]
+    fn only_tiles_beside_the_dragged_separator_count_as_touching() {
+        // spiral of 4: 0 | (1 / (2 | 3)); split 1 is the horizontal line between 1 and 2/3
+        let resize = gesture(Layout::Spiral, 4, 1);
+        assert_eq!(resize.touching_split(&resize.tiles), vec![false, true, true, true]);
+        // split 0: everything right of the first column borders it
+        let resize = gesture(Layout::Spiral, 4, 0);
+        assert_eq!(resize.touching_split(&resize.tiles), vec![true, true, true, false]);
+        let resize = gesture(Layout::MasterStack, 4, 0);
+        assert_eq!(resize.touching_split(&resize.tiles), vec![true, true, true, true]);
+    }
+
+    #[test]
+    fn live_target_moves_in_steps_and_the_final_target_is_exact() {
+        let resize = gesture(Layout::Spiral, 3, 0);
+        let at = |dx: i32| POINT {
+            x: resize.origin.x + dx,
+            y: resize.origin.y,
+        };
+        assert_eq!(resize.live_target(at(1), 4).1, resize.tiles);
+        assert_eq!(resize.live_target(at(3), 4).1, resize.target(at(4)).1);
+        assert_eq!(resize.live_target(at(5), 4).1, resize.target(at(4)).1);
+        assert_ne!(resize.target(at(5)).1, resize.target(at(4)).1);
     }
 
     fn gesture(layout: Layout, n: usize, split: usize) -> Resize {

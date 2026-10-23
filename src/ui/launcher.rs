@@ -157,6 +157,14 @@ pub fn run() {
     let _autosave = wire_editors(&ui);
     // The launcher is light-only: keep the caption light even when Windows uses dark mode.
     slint::Timer::single_shot(Duration::from_millis(60), light_caption);
+    {
+        let weak = ui.as_weak();
+        slint::Timer::single_shot(Duration::from_millis(60), move || {
+            if let Some(ui) = weak.upgrade() {
+                watch_repaints(&ui);
+            }
+        });
+    }
     if std::env::args().any(|arg| arg == "--preview-dirty") {
         let weak = ui.as_weak();
         slint::Timer::single_shot(Duration::from_millis(700), move || {
@@ -223,6 +231,66 @@ pub fn run() {
         unsafe {
             let _ = CloseHandle(mutex);
         }
+    }
+}
+
+thread_local! {
+    /// The settings window, for `force_full_repaint`.
+    static REPAINT_TARGET: RefCell<Option<slint::Weak<MainWindow>>> = const { RefCell::new(None) };
+}
+
+/// Repaint the whole settings window once.
+fn force_full_repaint() {
+    REPAINT_TARGET.with(|target| {
+        if let Some(ui) = target.borrow().as_ref().and_then(|weak| weak.upgrade()) {
+            ui.set_full_repaint(!ui.get_full_repaint());
+        }
+    });
+}
+
+/// The software renderer only repaints what changed in the UI. When Windows itself drops the
+/// window's pixels (restored after minimizing, shown again, resized, a DPI, display or theme
+/// change), the rest would keep whatever was on screen before, often another window. These
+/// messages ask for one full repaint, after the message has been handled.
+unsafe extern "system" fn repaint_subclass(
+    hwnd: windows::Win32::Foundation::HWND,
+    msg: u32,
+    wparam: windows::Win32::Foundation::WPARAM,
+    lparam: windows::Win32::Foundation::LPARAM,
+    _id: usize,
+    _data: usize,
+) -> windows::Win32::Foundation::LRESULT {
+    use windows::Win32::UI::WindowsAndMessaging::{
+        SWP_SHOWWINDOW, WINDOWPOS, WM_ACTIVATE, WM_DISPLAYCHANGE, WM_DPICHANGED, WM_SIZE,
+        WM_THEMECHANGED, WM_WINDOWPOSCHANGED,
+    };
+    const WM_DWMCOMPOSITIONCHANGED: u32 = 0x031E;
+    let shown = msg == WM_WINDOWPOSCHANGED
+        && lparam.0 != 0
+        && (*(lparam.0 as *const WINDOWPOS)).flags.contains(SWP_SHOWWINDOW);
+    if shown
+        || matches!(
+            msg,
+            WM_SIZE
+                | WM_ACTIVATE
+                | WM_DPICHANGED
+                | WM_DISPLAYCHANGE
+                | WM_THEMECHANGED
+                | WM_DWMCOMPOSITIONCHANGED
+        )
+    {
+        let _ = slint::invoke_from_event_loop(force_full_repaint);
+    }
+    windows::Win32::UI::Shell::DefSubclassProc(hwnd, msg, wparam, lparam)
+}
+
+fn watch_repaints(ui: &MainWindow) {
+    REPAINT_TARGET.with(|target| *target.borrow_mut() = Some(ui.as_weak()));
+    let Ok(hwnd) = (unsafe { FindWindowW(PCWSTR::null(), LAUNCHER_TITLE) }) else {
+        return;
+    };
+    unsafe {
+        let _ = windows::Win32::UI::Shell::SetWindowSubclass(hwnd, Some(repaint_subclass), 1, 0);
     }
 }
 

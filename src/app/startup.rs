@@ -312,6 +312,7 @@ pub(super) fn start(interactive: bool) {
     launcher::destroy();
     overlay::destroy_indicator();
     overlay::destroy_border();
+    preview::destroy();
     let (ffm_timer, drag_timer) = STATE.with(|s| {
         let s = s.borrow();
         (s.ffm_timer, s.drag_timer)

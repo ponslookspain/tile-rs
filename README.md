@@ -84,7 +84,7 @@ untick *Start with Windows* → *Quit tile-rs*, then delete the folder. Settings
 - Drag a window **onto another one** to swap them. Dropped anywhere else, it returns to its place.
 - Drag the **gap between windows** to resize both sides at once.
 - **Workspace dots** at the top of each screen show where your windows are. Click a dot to switch,
-  drag a window onto a dot to send it there, right-click a dot for more.
+  drag a window onto a dot to move it there and follow it, right-click a dot for more.
 
 ### Keyboard
 

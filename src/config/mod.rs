@@ -41,6 +41,18 @@ pub enum MediaWindows {
     Tile,
 }
 
+/// What dragging a separator or a window edge does to the other windows.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum LiveResize {
+    /// The windows follow the pointer and re-lay out their content while you drag.
+    Live,
+    /// Outlines show the new tiles while you drag; the windows move once, on release.
+    Preview,
+    /// Live, but outlines when many windows would have to follow or the machine is too slow.
+    #[default]
+    Auto,
+}
+
 /// Visual and clickable size of the workspace indicator.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub enum IndicatorSize {
@@ -117,6 +129,7 @@ struct RawConfig {
     easing: Option<String>,
     fullscreen_windows: Option<String>,
     media_windows: Option<String>,
+    live_resize: Option<String>,
     resize_step: Option<u32>,
     border: Option<bool>,
     border_color: Option<String>,
@@ -154,6 +167,8 @@ pub struct Config {
     pub fullscreen_windows: FullscreenWindows,
     /// How to handle a window with a photo / video open.
     pub media_windows: MediaWindows,
+    /// What a separator / edge drag does to the other windows.
+    pub live_resize: LiveResize,
     /// Pixels per keypress for the resize hotkeys.
     pub resize_step: u32,
     /// Draw a border around the focused tiled window.
@@ -266,6 +281,11 @@ fullscreen_windows = "minimize"
 # other window. Floating media stays unmanaged even in fullscreen; with "tile", fullscreen
 # playback follows fullscreen_windows above and is never resized into a tile.
 media_windows = "float"
+
+# Dragging a separator or a window edge: "live" resizes the other windows while you drag,
+# "preview" shows outlines of the new tiles and moves the windows once when you let go, "auto"
+# (default) is live but switches to outlines with many windows or on a slow machine.
+live_resize = "auto"
 
 [hotkeys]
 # Format: "modifiers+key". Modifiers: alt, ctrl, shift, win.
@@ -513,6 +533,13 @@ pub fn migrate(text: &str) -> Option<String> {
         );
         top.push("media_windows = \"float\"".into());
     }
+    if !has("live_resize") {
+        top.push(
+            "# Dragging a separator / window edge: \"live\", \"preview\" (outlines) or \"auto\"."
+                .into(),
+        );
+        top.push("live_resize = \"auto\"".into());
+    }
     if !top.is_empty() {
         let at = lines
             .iter()
@@ -681,6 +708,18 @@ pub fn parse_media_windows(s: &str) -> Result<MediaWindows, String> {
     }
 }
 
+/// "live", "preview", "auto" -> `LiveResize`.
+pub fn parse_live_resize(s: &str) -> Result<LiveResize, String> {
+    match s.trim().to_ascii_lowercase().as_str() {
+        "live" => Ok(LiveResize::Live),
+        "preview" => Ok(LiveResize::Preview),
+        "auto" => Ok(LiveResize::Auto),
+        other => Err(format!(
+            "live_resize = \"{other}\": expected \"live\", \"preview\" or \"auto\""
+        )),
+    }
+}
+
 /// "#rrggbb" (or "rrggbb") -> Windows COLORREF (0x00BBGGRR)
 pub fn parse_color(s: &str) -> Result<u32, String> {
     let h = s.trim().trim_start_matches('#');
@@ -726,6 +765,7 @@ pub fn parse(text: &str) -> Result<Config, String> {
     let fullscreen_windows =
         parse_fullscreen_windows(raw.fullscreen_windows.as_deref().unwrap_or("minimize"))?;
     let media_windows = parse_media_windows(raw.media_windows.as_deref().unwrap_or("float"))?;
+    let live_resize = parse_live_resize(raw.live_resize.as_deref().unwrap_or("auto"))?;
     let resize_step = raw.resize_step.unwrap_or(40);
     if !(1..=500).contains(&resize_step) {
         return Err(format!(
@@ -817,6 +857,7 @@ pub fn parse(text: &str) -> Result<Config, String> {
         easing,
         fullscreen_windows,
         media_windows,
+        live_resize,
         resize_step,
         border,
         border_color,
@@ -915,6 +956,11 @@ pub fn fullscreen_windows() -> FullscreenWindows {
 /// How to treat a window with a photo / video open.
 pub fn media_windows() -> MediaWindows {
     with_cfg(|c| c.media_windows)
+}
+
+/// What a separator / edge drag does to the other windows.
+pub fn live_resize() -> LiveResize {
+    with_cfg(|c| c.live_resize)
 }
 
 /// The border colour (COLORREF) if the border is enabled.
@@ -1205,7 +1251,7 @@ mod tests {
         let once = migrate(OLD_CONFIG).unwrap();
         assert!(migrate(&once).is_none(), "second run must change nothing");
         // a key the user commented out or turned off is not re-added
-        let custom = "layout = \"spiral\"\ngap = 5\nanimations = false\n# animation_ms = 99\neasing = \"linear\"\nfullscreen_windows = \"ignore\"\nmedia_windows = \"tile\"\nresize_step = 10\nborder = false\n# border_color = \"#112233\"\nborder_width = 3\nmin_tile_width = 400\nmin_tile_height = 300\nmax_tiles = 6\nauto_overflow = false\nworkspace_indicator = false\nworkspace_indicator_size = \"small\"\nfocus_follows_mouse = true\nsmart_gaps = false\nmaster_count = 2\naccent_color = \"#008cff\"\n\n[hotkeys]\n# grow_width = \"alt+plus\"\n# shrink_width = \"alt+minus\"\nminimize = \"alt+shift+m\"\ntoggle_float = \"alt+shift+f\"\nclose = \"alt+shift+q\"\ncycle_layout = \"ctrl+alt+l\"\ntoggle_monocle = \"alt+m\"\nfocus_last = \"alt+z\"\nworkspace_back_and_forth = \"alt+shift+z\"\nmaster_count_inc = \"alt+period\"\nmaster_count_dec = \"alt+comma\"\nquit = \"ctrl+alt+q\"\nworkspace_next = \"alt+shift+period\"\nworkspace_prev = \"alt+shift+comma\"\nmove_to_next_workspace = \"ctrl+alt+period\"\nmove_to_prev_workspace = \"ctrl+alt+comma\"\nfocus_prev_monitor = \"alt+bracketleft\"\nfocus_next_monitor = \"alt+bracketright\"\nmove_to_prev_monitor = \"alt+shift+bracketleft\"\nmove_to_next_monitor = \"alt+shift+bracketright\"\nshow_hotkeys = \"alt+slash\"\n";
+        let custom = "layout = \"spiral\"\ngap = 5\nanimations = false\n# animation_ms = 99\neasing = \"linear\"\nfullscreen_windows = \"ignore\"\nmedia_windows = \"tile\"\nlive_resize = \"live\"\nresize_step = 10\nborder = false\n# border_color = \"#112233\"\nborder_width = 3\nmin_tile_width = 400\nmin_tile_height = 300\nmax_tiles = 6\nauto_overflow = false\nworkspace_indicator = false\nworkspace_indicator_size = \"small\"\nfocus_follows_mouse = true\nsmart_gaps = false\nmaster_count = 2\naccent_color = \"#008cff\"\n\n[hotkeys]\n# grow_width = \"alt+plus\"\n# shrink_width = \"alt+minus\"\nminimize = \"alt+shift+m\"\ntoggle_float = \"alt+shift+f\"\nclose = \"alt+shift+q\"\ncycle_layout = \"ctrl+alt+l\"\ntoggle_monocle = \"alt+m\"\nfocus_last = \"alt+z\"\nworkspace_back_and_forth = \"alt+shift+z\"\nmaster_count_inc = \"alt+period\"\nmaster_count_dec = \"alt+comma\"\nquit = \"ctrl+alt+q\"\nworkspace_next = \"alt+shift+period\"\nworkspace_prev = \"alt+shift+comma\"\nmove_to_next_workspace = \"ctrl+alt+period\"\nmove_to_prev_workspace = \"ctrl+alt+comma\"\nfocus_prev_monitor = \"alt+bracketleft\"\nfocus_next_monitor = \"alt+bracketright\"\nmove_to_prev_monitor = \"alt+shift+bracketleft\"\nmove_to_next_monitor = \"alt+shift+bracketright\"\nshow_hotkeys = \"alt+slash\"\n";
         let custom = format!("animation_fps_limit = 30\nsnapshot_animations = false\n{custom}");
         assert!(migrate(&custom).is_none());
         assert!(!parse(&custom).unwrap().animations);

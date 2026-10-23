@@ -74,6 +74,8 @@ pub(super) fn drop_window_data(s: &mut State, h: isize) -> bool {
         tracked = true;
     }
     tracked |= s.live_borders.remove(&h).is_some();
+    tracked |= s.slid.remove(&h);
+    tracked |= s.max_hidden.remove(&h).is_some();
     tracked |= s.ws.remove(&h).is_some();
     tracked |= s.mon.remove(&h).is_some();
     tracked |= s.tracked.remove(&h).is_some();
@@ -136,6 +138,8 @@ pub(super) fn forget_window(s: &mut State, h: isize) -> bool {
     if s.dragging == Some(h) {
         s.live_resize.clear();
         s.live_borders.clear();
+        s.resize_preview = false;
+        preview::hide();
         s.drop_dot = None;
         overlay::set_drop_target(None);
         overlay::raise_indicators(false);
@@ -593,9 +597,19 @@ pub(super) unsafe extern "system" fn on_event(
                                 .copied()
                                 .zip(tiles.iter().copied())
                                 .collect();
-                            place_batch(&mut s, &targets);
+                            if s.resize_preview {
+                                // the neighbours were only outlined: glide them into place now
+                                for (w, target) in targets {
+                                    move_window(&mut s, HWND(w as *mut _), target, w != h);
+                                }
+                            } else {
+                                place_batch(&mut s, &targets);
+                            }
                             s.rects[mi] = tiles;
                             s.regions[mi] = regions;
+                        }
+                        if std::mem::take(&mut s.resize_preview) {
+                            preview::hide();
                         }
                         s.resizing = false;
                         s.live = false;
@@ -628,6 +642,9 @@ pub(super) unsafe extern "system" fn on_event(
                             }
                         }
                     }
+                    // whichever way the drag ended, its outlines (resize or drop target) go away
+                    s.resize_preview = false;
+                    preview::hide();
                     s.reflow = true;
                     for h in &affected {
                         s.live_borders.remove(h);
@@ -710,6 +727,7 @@ pub(super) unsafe extern "system" fn on_event(
                             overlay::set_drop_target(dot);
                             s.drop_dot = dot;
                             if dot.is_some() {
+                                preview::hide();
                                 let mi = s.mi(h);
                                 if let Some((pi, ph)) = s.drag_preview.take() {
                                     if pi < s.rects[mi].len() {
@@ -874,7 +892,10 @@ pub(super) unsafe extern "system" fn on_event(
         }
     });
     if let Some((window, mi, n)) = dot_drop {
-        send_to_workspace(window, mi, n);
+        // a window dropped onto a dot takes the user along to that workspace
+        if send_to_workspace(window, mi, n) {
+            switch_ws(mi, n, Some(window));
+        }
     }
     if reposition {
         // the borrow above is released: move the border onto the window that just got focus

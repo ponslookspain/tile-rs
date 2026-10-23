@@ -47,8 +47,18 @@ pub(super) fn valid_layout(
         rects,
         mins,
         config::min_tile(),
-        gaps(),
+        layout_gaps(windows.len()),
     )
+}
+
+/// Gaps of a layout of `count` windows: none for a lone window with `smart_gaps`. The layout and
+/// its validation must agree, or a lone window filling the screen is rejected as out of bounds.
+pub(super) fn layout_gaps(count: usize) -> Gaps {
+    if config::smart_gaps() && count == 1 {
+        Gaps { inner: 0, outer: 0 }
+    } else {
+        gaps()
+    }
 }
 
 pub(super) fn workspace_windows(s: &State, mi: usize, ws: u8) -> Vec<isize> {
@@ -124,11 +134,7 @@ pub(super) fn fitted(
     monocle: bool,
 ) -> (Vec<RECT>, Vec<RECT>) {
     let (mw, mh) = config::min_tile();
-    let gaps = if config::smart_gaps() && windows.len() == 1 {
-        Gaps { inner: 0, outer: 0 }
-    } else {
-        gaps()
-    };
+    let gaps = layout_gaps(windows.len());
     if monocle {
         return geometry::monocle(area, windows.len(), gaps);
     }
@@ -225,7 +231,11 @@ pub(super) fn reconcile_fullscreen(s: &mut State, wins: &[Win]) {
     let fs_ws = &s.fs_ws;
     s.fs_mon.retain(|h, _| fs_ws.contains_key(h));
     s.fs_hidden.retain(|h| fs_ws.contains_key(h));
-    HIDDEN_FULLSCREEN.with(|hidden| hidden.borrow_mut().clone_from(&s.fs_hidden));
+    HIDDEN_FULLSCREEN.with(|hidden| {
+        let mut hidden = hidden.borrow_mut();
+        hidden.clone_from(&s.fs_hidden);
+        hidden.extend(s.max_hidden.keys().copied());
+    });
 }
 
 /// The first workspace (starting after `cur`, wrapping) that has no windows at all - used for a
@@ -298,9 +308,107 @@ pub(super) fn apply_fullscreen(s: &mut State) {
     s.enforce |= changed;
 }
 
-/// Restores every fullscreen window we minimized (pause, quit), so nothing stays hidden.
+/// How long our own asynchronous minimize of a maximized window may take to show up.
+pub(super) const MINIMIZE_GRACE: Duration = Duration::from_millis(1500);
+
+/// Maximized windows are tracked like any other window (`State::ws`) but are not tiled while
+/// maximized, and a maximized window left in place would cover the workspace the user switched
+/// to. So the ones whose workspace is not shown are minimized, and restored (Windows brings them
+/// back maximized) when their workspace is shown again. Only windows this function minimized are
+/// ever restored by it: an app the user minimized stays minimized.
+pub(super) fn apply_maximized(s: &mut State) {
+    if s.session_ending() || s.paused {
+        return;
+    }
+    // minimized by us, but no longer assigned to a workspace (closed, excluded, reassigned)
+    let orphans: Vec<isize> = s
+        .max_hidden
+        .keys()
+        .copied()
+        .filter(|h| !s.ws.contains_key(h))
+        .collect();
+    for h in orphans {
+        s.max_hidden.remove(&h);
+        HIDDEN_FULLSCREEN.with(|hidden| hidden.borrow_mut().remove(&h));
+        let hw = HWND(h as *mut _);
+        if unsafe { IsWindow(Some(hw)) }.as_bool() && unsafe { IsIconic(hw) }.as_bool() {
+            unsafe {
+                let _ = ShowWindowAsync(hw, SW_RESTORE);
+            }
+        }
+    }
+    let items: Vec<(isize, u8)> = s
+        .suspended
+        .iter()
+        .filter_map(|h| s.ws.get(h).map(|ws| (*h, *ws)))
+        .chain(
+            s.max_hidden
+                .keys()
+                .filter(|h| !s.suspended.contains(h))
+                .filter_map(|h| s.ws.get(h).map(|ws| (*h, *ws))),
+        )
+        .collect();
+    let mut changed = false;
+    for (h, ws) in items {
+        let hw = HWND(h as *mut _);
+        if !unsafe { IsWindow(Some(hw)) }.as_bool() {
+            continue;
+        }
+        let mi = s.mi(h);
+        let cur = s.cur[mi];
+        let hidden = s.max_hidden.contains_key(&h);
+        let minimized = unsafe { IsIconic(hw) }.as_bool();
+        // The user brought a window we minimized back out (taskbar, Alt+Tab) while its workspace
+        // is not shown: it now belongs to the workspace they are on. The grace period covers our
+        // own asynchronous minimize that has not been carried out yet.
+        let settled = s
+            .max_hidden
+            .get(&h)
+            .is_some_and(|since| since.elapsed() >= MINIMIZE_GRACE);
+        if hidden && !minimized && ws != cur && settled {
+            s.max_hidden.remove(&h);
+            HIDDEN_FULLSCREEN.with(|hidden| hidden.borrow_mut().remove(&h));
+            s.ws.insert(h, cur);
+            s.mon.insert(h, mi);
+            changed = true;
+            continue;
+        }
+        match fullscreen_action(ws, cur, hidden, minimized) {
+            FsAction::Show => {
+                unsafe {
+                    let _ = ShowWindowAsync(hw, SW_RESTORE);
+                }
+                s.max_hidden.remove(&h);
+                HIDDEN_FULLSCREEN.with(|hidden| hidden.borrow_mut().remove(&h));
+                changed = true;
+            }
+            // visible and not cloaked: a window on another Windows virtual desktop is left alone
+            FsAction::Hide if unsafe { IsZoomed(hw) }.as_bool() && border_window_shown(hw) => {
+                s.max_hidden.insert(h, Instant::now());
+                HIDDEN_FULLSCREEN.with(|hidden| hidden.borrow_mut().insert(h));
+                unsafe {
+                    let _ = ShowWindowAsync(hw, SW_MINIMIZE);
+                }
+                changed = true;
+            }
+            _ => {}
+        }
+    }
+    s.enforce |= changed;
+}
+
+/// Restores every window we minimized (pause, quit), so nothing stays hidden.
 pub(super) fn restore_hidden_fullscreen(s: &mut State) {
     HIDDEN_FULLSCREEN.with(|hidden| hidden.borrow_mut().clear());
+    let hidden: Vec<isize> = std::mem::take(&mut s.max_hidden).into_keys().collect();
+    for h in hidden {
+        let hw = HWND(h as *mut _);
+        if unsafe { IsWindow(Some(hw)) }.as_bool() && unsafe { IsIconic(hw) }.as_bool() {
+            unsafe {
+                let _ = ShowWindowAsync(hw, SW_RESTORE);
+            }
+        }
+    }
     for h in std::mem::take(&mut s.fs_hidden) {
         let hw = HWND(h as *mut _);
         if unsafe { IsWindow(Some(hw)) }.as_bool() && unsafe { IsIconic(hw) }.as_bool() {
@@ -557,9 +665,6 @@ pub(super) fn place(hwnd: HWND, target: RECT) -> bool {
 /// Commit one layout as a batch. A failed batch falls back to bounded individual placements;
 /// accepting the request never substitutes for checking the actual client geometry afterwards.
 pub(super) fn place_batch(s: &mut State, targets: &[(isize, RECT)]) {
-    use windows::Win32::UI::WindowsAndMessaging::{
-        BeginDeferWindowPos, DeferWindowPos, EndDeferWindowPos,
-    };
     let _profile = Timer::new("place_batch");
     let requested: HashSet<_> = targets.iter().map(|(h, _)| *h).collect();
     s.anims.retain(|a| !requested.contains(&a.hwnd));
@@ -597,33 +702,28 @@ pub(super) fn place_batch(s: &mut State, targets: &[(isize, RECT)]) {
     if operations.is_empty() {
         return;
     }
-    let result = unsafe {
-        BeginDeferWindowPos(operations.len() as i32).and_then(|mut batch| {
-            for (h, _, r, flags, _) in &operations {
-                batch = DeferWindowPos(
-                    batch,
-                    HWND(*h as *mut _),
-                    None,
-                    r.left,
-                    r.top,
-                    r.right - r.left,
-                    r.bottom - r.top,
-                    SWP_NOACTIVATE | SWP_NOZORDER | SWP_NOOWNERZORDER | SWP_ASYNCWINDOWPOS | *flags,
-                )?;
-            }
-            EndDeferWindowPos(batch)
-        })
-    };
-    if let Err(error) = &result {
-        log(format!("batch placement fallback: {error}"));
-    }
-    if result.is_ok() && prof::on() {
-        prof::PLACEMENTS.fetch_add(operations.len() as u32, Ordering::Relaxed);
-    }
-    for (h, target, _, _, before) in operations {
+    // One asynchronous request per window, shrinking windows first so a tile vacates its space
+    // before its neighbour grows into it. DeferWindowPos cannot batch these: it rejects
+    // SWP_ASYNCWINDOWPOS, and without it a hung application would block this thread.
+    let mut operations = operations;
+    let area = |r: &RECT| i64::from(r.right - r.left) * i64::from(r.bottom - r.top);
+    operations.sort_by_key(|(h, _, r, _, _)| {
+        let mut current = RECT::default();
+        let _ = unsafe { GetWindowRect(HWND(*h as *mut _), &mut current) };
+        area(r) - area(&current)
+    });
+    for (h, target, r, _, before) in operations {
         s.anims.retain(|a| a.hwnd != h);
         let hwnd = HWND(h as *mut _);
-        let ok = result.is_ok() || place(hwnd, target);
+        let ok = apply_window_pos(
+            hwnd,
+            r.left,
+            r.top,
+            r.right - r.left,
+            r.bottom - r.top,
+            SWP_NOACTIVATE | SWP_NOZORDER | SWP_NOOWNERZORDER,
+            "batch",
+        );
         note_placement_result(s, hwnd, target, before, ok);
         if ok {
             s.min_size_reflow |= observe_min_size(s, hwnd, &target);

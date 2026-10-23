@@ -27,7 +27,7 @@ use crate::layout::{divider, geometry, live_resize};
 use crate::platform::autostart::set_autostart;
 use crate::platform::dialogs::{msgbox, notify};
 use crate::platform::{monitor, parked, update, window};
-use crate::ui::{launcher, overlay, tray};
+use crate::ui::{launcher, overlay, preview, tray};
 
 use actions::*;
 use animation::*;
@@ -191,6 +191,9 @@ impl TrackedWindow {
 struct State {
     tracked: HashMap<isize, TrackedWindow>,
     divider: Option<divider::Resize>,
+    /// The running separator / edge drag shows outlines instead of resizing the windows live
+    /// (see `config::LiveResize`).
+    resize_preview: bool,
     /// Rects of the layout last applied, same indices as `last`, per monitor.
     rects: [Vec<RECT>; MON],
     /// Stable window order (so the spiral does not reshuffle when focus changes), per monitor.
@@ -207,6 +210,9 @@ struct State {
     fs_mon: HashMap<isize, usize>,
     /// Fullscreen windows we minimized because their workspace is not shown (to restore later).
     fs_hidden: HashSet<isize>,
+    /// Maximized windows of other workspaces that were minimized by tile-rs (see
+    /// `apply_maximized`); only these are restored when their workspace is shown again.
+    max_hidden: HashMap<isize, Instant>,
     /// Windows the user floated with `toggle_float` (never tiled this session).
     manual_float: HashSet<isize>,
     /// Windows currently parked off-screen with their original rectangles (mirrored to disk).
@@ -315,6 +321,11 @@ struct State {
     frame_fallback: usize,
     /// The next layout pass must place windows instantly (workspace switch, startup, ...).
     no_anim: bool,
+    /// The next layout pass slides the windows of a workspace just switched to in, as (monitor,
+    /// direction: 1 = from the right, -1 = from the left).
+    slide: Option<(usize, i32)>,
+    /// Windows sliding in that must repaint completely when they arrive (see `repaint_moved`).
+    slid: HashSet<isize>,
     /// An animated client refused its target size; reflow once after all current animations settle.
     min_size_reflow: bool,
     /// Registered hotkeys: (id, action)

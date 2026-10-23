@@ -17,6 +17,53 @@ pub(super) struct Anim {
     pub(super) last: Option<RECT>,
     /// When this window last took a frame; a monitor slower than the timer skips the ticks between.
     pub(super) frame_at: Option<Instant>,
+    /// Set when this animation replaced a running one: the starting slope of every edge
+    /// (left, top, right, bottom) in pixels per unit of `t`, so the window keeps its speed instead
+    /// of jerking onto a fresh easing curve. `None` follows the configured easing.
+    pub(super) tangent: Option<[f32; 4]>,
+}
+
+fn edges(r: &RECT) -> [i32; 4] {
+    [r.left, r.top, r.right, r.bottom]
+}
+
+impl Anim {
+    /// Where the window is at normalized time `t`.
+    fn rect_at(&self, easing: geometry::Easing, t: f32) -> RECT {
+        match self.tangent {
+            Some(m) => {
+                let (a, b) = (edges(&self.from), edges(&self.to));
+                let e: [i32; 4] =
+                    std::array::from_fn(|i| geometry::hermite_i(a[i], b[i], m[i], t));
+                RECT {
+                    left: e[0],
+                    top: e[1],
+                    right: e[2],
+                    bottom: e[3],
+                }
+            }
+            None => lerp_rect(&self.from, &self.to, ease(easing, t)),
+        }
+    }
+
+    /// Speed of every edge at `now`, in pixels per second.
+    fn velocity(&self, easing: geometry::Easing, now: Instant) -> [f32; 4] {
+        let dur = (self.dur_ms.max(1) as f32) / 1000.0;
+        let t = (now.saturating_duration_since(self.t0).as_secs_f32() / dur).min(1.0);
+        if t >= 1.0 {
+            return [0.0; 4];
+        }
+        let (a, b) = (edges(&self.from), edges(&self.to));
+        match self.tangent {
+            Some(m) => std::array::from_fn(|i| geometry::hermite_slope(a[i], b[i], m[i], t) / dur),
+            None => {
+                let h = 0.01;
+                let (t0, t1) = ((t - h).max(0.0), (t + h).min(1.0));
+                let slope = (ease(easing, t1) - ease(easing, t0)) / (t1 - t0);
+                std::array::from_fn(|i| (b[i] - a[i]) as f32 * slope / dur)
+            }
+        }
+    }
 }
 
 /// Put the *visible* frame of a window at `vis`, given its invisible border.
@@ -34,22 +81,17 @@ pub(super) fn set_frame(hwnd: isize, vis: &RECT, b: (i32, i32, i32, i32)) -> boo
 
 pub(super) type FrameBorder = (i32, i32, i32, i32);
 
-/// Submit the frames of several windows as one batch. Windows that shrink are placed before
+/// Submit the frames of several windows together. Windows that shrink are placed before
 /// windows that grow, so a tile vacates its space before its neighbour expands into it and
 /// the transient overlap inside a frame is minimal. Returns, per input, whether the request was
-/// accepted. A failed batch falls back to individual requests.
+/// accepted.
 pub(super) fn apply_frames(ops: &[(isize, RECT, FrameBorder)]) -> Vec<bool> {
-    use windows::Win32::UI::WindowsAndMessaging::{
-        BeginDeferWindowPos, DeferWindowPos, EndDeferWindowPos,
-    };
     if ops.len() < 2 {
         return ops.iter().map(|(h, r, b)| set_frame(*h, r, *b)).collect();
     }
     struct Item {
         index: usize,
-        native: RECT,
         shrink: i64,
-        flags: windows::Win32::UI::WindowsAndMessaging::SET_WINDOW_POS_FLAGS,
     }
     let mut results = vec![true; ops.len()];
     let mut items: Vec<Item> = Vec::with_capacity(ops.len());
@@ -71,45 +113,18 @@ pub(super) fn apply_frames(ops: &[(isize, RECT, FrameBorder)]) -> Vec<bool> {
         let area = |r: &RECT| i64::from(r.right - r.left) * i64::from(r.bottom - r.top);
         items.push(Item {
             index,
-            native,
             shrink: area(&native) - area(&current),
-            flags: unchanged_position_flags(&current, &native),
         });
     }
     if items.is_empty() {
         return results;
     }
     items.sort_by_key(|item| item.shrink); // most negative (shrinking) first
-    if prof::on() {
-        prof::PLACEMENTS.fetch_add(items.len() as u32, Ordering::Relaxed);
-    }
-    let batch = unsafe {
-        BeginDeferWindowPos(items.len() as i32).and_then(|mut batch| {
-            for item in &items {
-                batch = DeferWindowPos(
-                    batch,
-                    HWND(ops[item.index].0 as *mut _),
-                    None,
-                    item.native.left,
-                    item.native.top,
-                    item.native.right - item.native.left,
-                    item.native.bottom - item.native.top,
-                    SWP_NOZORDER
-                        | SWP_NOACTIVATE
-                        | SWP_NOOWNERZORDER
-                        | SWP_ASYNCWINDOWPOS
-                        | item.flags,
-                )?;
-            }
-            EndDeferWindowPos(batch)
-        })
-    };
-    if let Err(error) = batch {
-        log(format!("frame batch fallback: {error}"));
-        for item in &items {
-            let (h, vis, b) = &ops[item.index];
-            results[item.index] = set_frame(*h, vis, *b);
-        }
+    // DeferWindowPos cannot batch these: it rejects SWP_ASYNCWINDOWPOS, and without it a hung
+    // application would block this thread. The requests go out back to back in this order.
+    for item in &items {
+        let (h, vis, b) = &ops[item.index];
+        results[item.index] = set_frame(*h, vis, *b);
     }
     results
 }
@@ -127,6 +142,12 @@ pub(super) fn move_window(s: &mut State, hwnd: HWND, target: RECT, animate: bool
     {
         return;
     }
+    // a running glide hands its speed on to the new one (see `Anim::tangent`)
+    let carried = s
+        .anims
+        .iter()
+        .find(|a| a.hwnd == h)
+        .map(|a| a.velocity(config::easing(), Instant::now()));
     s.anims.retain(|a| a.hwnd != h);
     if placement_blocked(s, hwnd, &target) {
         return;
@@ -171,6 +192,11 @@ pub(super) fn move_window(s: &mut State, hwnd: HWND, target: RECT, animate: bool
         .max((from.right - target.right).abs())
         .max((from.bottom - target.bottom).abs());
     let dur_ms = anim_duration(ms, dist);
+    let tangent = carried.filter(|v| v.iter().any(|x| x.abs() > 1.0)).map(|v| {
+        let (a, b) = (edges(&from), edges(&target));
+        let dur = dur_ms.max(1) as f32 / 1000.0;
+        std::array::from_fn(|i| geometry::carried_tangent(v[i], b[i] - a[i], dur))
+    });
     let was_empty = s.anims.is_empty();
     s.anims.push(Anim {
         hwnd: h,
@@ -181,6 +207,7 @@ pub(super) fn move_window(s: &mut State, hwnd: HWND, target: RECT, animate: bool
         dur_ms,
         last: None,
         frame_at: None,
+        tangent,
     });
     if was_empty {
         if prof::on() {
@@ -189,6 +216,86 @@ pub(super) fn move_window(s: &mut State, hwnd: HWND, target: RECT, animate: bool
         arm_anim_timer(s);
     } else {
         retarget_frame_timer(s); // the new window may sit on a faster monitor than the timer
+    }
+}
+
+/// Workspace slide: puts `hwnd` at `from` at once and glides it to `target` from there, without
+/// reading where the window was (a parked window can still report its parking spot while the
+/// asynchronous placement is under way). The window repaints itself completely on arrival.
+pub(super) fn slide_in(s: &mut State, hwnd: HWND, from: RECT, target: RECT) {
+    let target = monitor::clamp_to_work(target);
+    let h = hwnd.0 as isize;
+    let (on, ms) = config::animation();
+    if !on || ms == 0 || s.anim_timer.is_invalid() || animations_suspended(s) {
+        move_window(s, hwnd, target, false);
+        return;
+    }
+    s.anims.retain(|a| a.hwnd != h);
+    if placement_blocked(s, hwnd, &target) {
+        return;
+    }
+    let mut win = RECT::default();
+    let border = match (unsafe { GetWindowRect(hwnd, &mut win) }.is_ok(), visible_rect(hwnd)) {
+        (true, Some(vis)) => frame_insets(&win, &vis).unwrap_or_default(),
+        _ => Default::default(),
+    };
+    let before = visible_rect(hwnd);
+    let placed = place(hwnd, from);
+    note_placement_result(s, hwnd, from, before, placed);
+    if !placed {
+        move_window(s, hwnd, target, false);
+        return;
+    }
+    s.slid.insert(h);
+    let was_empty = s.anims.is_empty();
+    s.anims.push(Anim {
+        hwnd: h,
+        from,
+        to: target,
+        border,
+        t0: Instant::now(),
+        dur_ms: ms,
+        last: Some(from),
+        frame_at: None,
+        tangent: None,
+    });
+    if was_empty {
+        arm_anim_timer(s);
+    } else {
+        retarget_frame_timer(s);
+    }
+}
+
+/// Chromium / Electron windows can keep drawing their content at an old spot after being moved
+/// without a size change. Recalculating the frame and invalidating the window makes the
+/// application paint everything at its new place. Both requests are posted, never waited for.
+pub(super) fn repaint_moved(hwnd: HWND) {
+    use windows::Win32::Graphics::Gdi::{
+        RedrawWindow, RDW_ALLCHILDREN, RDW_ERASE, RDW_FRAME, RDW_INVALIDATE,
+    };
+    use windows::Win32::UI::WindowsAndMessaging::{SWP_FRAMECHANGED, SWP_NOMOVE, SWP_NOSIZE};
+    unsafe {
+        let _ = SetWindowPos(
+            hwnd,
+            None,
+            0,
+            0,
+            0,
+            0,
+            SWP_FRAMECHANGED
+                | SWP_NOMOVE
+                | SWP_NOSIZE
+                | SWP_NOZORDER
+                | SWP_NOACTIVATE
+                | SWP_NOOWNERZORDER
+                | SWP_ASYNCWINDOWPOS,
+        );
+        let _ = RedrawWindow(
+            Some(hwnd),
+            None,
+            None,
+            RDW_INVALIDATE | RDW_ERASE | RDW_FRAME | RDW_ALLCHILDREN,
+        );
     }
 }
 
@@ -594,12 +701,17 @@ pub(super) fn anim_tick() {
     STATE.with(|s| {
         let s = s.borrow();
         if let Some(gesture) = s.divider.as_ref() {
-            let observed: Vec<_> = gesture
-                .windows
-                .iter()
-                .enumerate()
-                .map(|(i, h)| visible_rect(HWND(*h as *mut _)).unwrap_or(gesture.preview[i]))
-                .collect();
+            // with outlines the windows stay put: the separator follows the outlines
+            let observed: Vec<_> = if s.resize_preview {
+                gesture.preview.clone()
+            } else {
+                gesture
+                    .windows
+                    .iter()
+                    .enumerate()
+                    .map(|(i, h)| visible_rect(HWND(*h as *mut _)).unwrap_or(gesture.preview[i]))
+                    .collect()
+            };
             let handles: Vec<_> = divider::handles(
                 gesture.handle.monitor,
                 gesture.layout,
@@ -656,7 +768,7 @@ pub(super) fn anim_tick() {
             let (rect, done) = if t >= 1.0 {
                 (a.to, true) // exact final position
             } else {
-                (lerp_rect(&a.from, &a.to, ease(easing, t)), false)
+                (a.rect_at(easing, t), false)
             };
             // skip frames that would not move the window (the tail of an ease-out is almost flat)
             let apply = a.last.as_ref().is_none_or(|l| !same_rect(l, &rect, 0));
@@ -711,11 +823,17 @@ pub(super) fn anim_tick() {
                 if can_observe_size {
                     min_size_changed |= observe_min_size(&mut s, HWND(ahwnd as *mut _), &a.to);
                 }
+                if s.slid.remove(&ahwnd) {
+                    repaint_moved(HWND(ahwnd as *mut _));
+                }
             } else {
                 keep.push(a);
             }
         }
         s.anims = keep;
+        if s.anims.is_empty() {
+            s.slid.clear(); // a slide replaced by another placement has nothing left to finish
+        }
         s.min_size_reflow |= min_size_changed;
         if s.anims.is_empty() {
             if s.divider.is_none() && !s.resizing {
