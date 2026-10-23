@@ -1,0 +1,29 @@
+// Light, soft theme: lavender-grey canvas, white cards, the product's blue accent.
+export global AppTheme {
+    in-out property <bool> motion: true;
+    out property <color> canvas: #eef1f8;
+    out property <color> surface: #ffffff;
+    out property <color> sunken: #f4f6fb;
+    out property <color> line: #e3e8f2;
+    out property <color> ink: #1d2433;
+    out property <color> ink-2: #556075;
+    out property <color> muted: #687287;
+    out property <color> accent: #008cff;
+    out property <color> accent-strong: #0070e0;
+    out property <color> accent-strong-hover: #0062c7;
+    out property <color> accent-soft: #e6f2ff;
+    out property <color> accent-soft-hover: #d6eaff;
+    out property <color> accent-ink: #005fc0;
+    out property <color> danger: #d93d42;
+    out property <color> danger-soft: #fdeeee;
+    out property <color> warn-ink: #8a5300;
+    out property <color> warn-soft: #fff3dc;
+    out property <color> success-ink: #137a47;
+    out property <color> success-soft: #e3f6ec;
+    out property <color> shadow: #22325a1a;
+    out property <duration> quick: 140ms;
+}
+
+export global ColorParser {
+    pure callback parse(string) -> color;
+}

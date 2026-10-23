@@ -1,0 +1,67 @@
+import { Card, CardTitle, ToggleRow, TextField, Segmented, Swatch, DotCell } from "launcher-components.slint";
+import { AppTheme } from "launcher-theme.slint";
+
+export component WorkspacesSection inherits VerticalLayout {
+    in-out property <int> indicator_size;
+    in-out property <bool> show_indicator;
+    in-out property <bool> focus_follows_mouse;
+    in-out property <string> accent_color;
+
+    spacing: 18px;
+    Card {
+        card-height: 300px;
+        VerticalLayout {
+            padding: 20px;
+            spacing: 12px;
+            CardTitle { title: "Workspace dots"; subtitle: "Dots at the top of each screen: current, busy and empty"; icon: @image-url("icons/desktops.svg"); }
+            Rectangle {
+                height: 96px;
+                border-radius: 14px;
+                background: AppTheme.sunken;
+                Rectangle {
+                    x: (parent.width - self.width) / 2;
+                    y: 14px;
+                    width: 9 * 28px + 16px;
+                    height: 36px;
+                    border-radius: 18px;
+                    background: show_indicator ? AppTheme.surface : transparent;
+                    drop-shadow-offset-y: show_indicator ? 2px : 0px;
+                    drop-shadow-blur: show_indicator ? 8px : 0px;
+                    drop-shadow-color: AppTheme.shadow;
+                    opacity: show_indicator ? 1 : 0.35;
+                    HorizontalLayout {
+                        padding-left: 8px;
+                        for workspace[index] in [1, 2, 3, 4, 5, 6, 7, 8, 9]: DotCell {
+                            y: 4px;
+                            state: index == 0 ? 2 : (index == 1 || index == 4 ? 1 : 0);
+                            diameter: indicator_size == 0 ? 6px : (indicator_size == 2 ? 10px : 8px);
+                        }
+                    }
+                }
+                Text { y: 60px; x: (parent.width - self.width) / 2; text: show_indicator ? "This is how the dots look on screen" : "The dots are hidden"; color: AppTheme.muted; font-size: 12px; }
+            }
+            ToggleRow { label: "Show the dots on every screen"; checked: show_indicator; changed(value) => { show_indicator = value; } }
+            HorizontalLayout {
+                padding-left: 10px;
+                padding-right: 10px;
+                spacing: 16px;
+                height: 44px;
+                Text { text: "Dot size"; color: AppTheme.ink; font-size: 13px; vertical-alignment: center; }
+                Segmented { y: 2px; options: ["Small", "Medium", "Large"]; current <=> indicator_size; segment-width: 104px; }
+                Rectangle { horizontal-stretch: 1; }
+                Text { text: "Accent"; color: AppTheme.ink; font-size: 13px; vertical-alignment: center; }
+                Swatch { y: 5px; hex: accent_color; }
+                TextField { y: 4px; width: 112px; text <=> accent_color; }
+            }
+        }
+    }
+    Card {
+        card-height: 126px;
+        VerticalLayout {
+            padding: 20px;
+            spacing: 4px;
+            CardTitle { title: "Focus"; icon: @image-url("icons/pointer.svg"); }
+            ToggleRow { label: "Focus the window under the mouse"; hint: "No click needed, just point at it"; checked: focus_follows_mouse; changed(value) => { focus_follows_mouse = value; } }
+        }
+    }
+}

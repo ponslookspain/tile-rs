@@ -266,19 +266,10 @@ fn activate_existing() {
 }
 
 fn populate(ui: &MainWindow, cfg: &config::Config) {
-    use crate::config::{FullscreenWindows, IndicatorSize, Layout, MediaWindows};
-
-    ui.set_layout_index(match cfg.layout {
-        Layout::Spiral => 0,
-        Layout::MasterStack => 1,
-        Layout::Grid => 2,
-        Layout::Columns => 3,
-    });
-    ui.set_indicator_size(match cfg.workspace_indicator_size {
-        IndicatorSize::Small => 0,
-        IndicatorSize::Medium => 1,
-        IndicatorSize::Large => 2,
-    });
+    ui.set_layout_index(launcher_model::layout_index(cfg.layout));
+    ui.set_indicator_size(launcher_model::indicator_index(
+        cfg.workspace_indicator_size,
+    ));
     ui.set_animations(cfg.animations);
     ui.set_auto_overflow(cfg.auto_overflow);
     ui.set_show_indicator(cfg.workspace_indicator);
@@ -288,34 +279,16 @@ fn populate(ui: &MainWindow, cfg: &config::Config) {
     ui.set_inner_gap(cfg.inner_gap.to_string().into());
     ui.set_outer_gap(cfg.outer_gap.to_string().into());
     ui.set_animation_ms(cfg.animation_ms.to_string().into());
-    ui.set_easing(easing_name(cfg.easing).into());
+    ui.set_easing(launcher_model::easing_name(cfg.easing).into());
     ui.set_resize_step(cfg.resize_step.to_string().into());
     ui.set_min_tile_width(cfg.min_tile_width.to_string().into());
     ui.set_min_tile_height(cfg.min_tile_height.to_string().into());
     ui.set_max_tiles(cfg.max_tiles.to_string().into());
-    ui.set_accent_color(
-        format!(
-            "#{:02x}{:02x}{:02x}",
-            cfg.accent_color & 0xff,
-            (cfg.accent_color >> 8) & 0xff,
-            (cfg.accent_color >> 16) & 0xff
-        )
-        .into(),
-    );
-    ui.set_border_color(
-        format!(
-            "#{:02x}{:02x}{:02x}",
-            cfg.border_color & 0xff,
-            (cfg.border_color >> 8) & 0xff,
-            (cfg.border_color >> 16) & 0xff
-        )
-        .into(),
-    );
+    ui.set_accent_color(launcher_model::color_hex(cfg.accent_color).into());
+    ui.set_border_color(launcher_model::color_hex(cfg.border_color).into());
     ui.set_border_width(cfg.border_width.to_string().into());
-    ui.set_fullscreen_windows(i32::from(
-        cfg.fullscreen_windows == FullscreenWindows::Ignore,
-    ));
-    ui.set_media_windows(i32::from(cfg.media_windows == MediaWindows::Tile));
+    ui.set_fullscreen_windows(launcher_model::fullscreen_index(cfg.fullscreen_windows));
+    ui.set_media_windows(launcher_model::media_index(cfg.media_windows));
     ui.set_smart_gaps(cfg.smart_gaps);
     ui.set_master_count(cfg.master_count.to_string().into());
     ui.set_status("".into()); // empty: the header shows the page subtitle
@@ -421,23 +394,11 @@ fn wire_updates(ui: &MainWindow) {
     ui.invoke_check_updates();
 }
 
-fn easing_name(easing: crate::layout::geometry::Easing) -> &'static str {
-    use crate::layout::geometry::Easing;
-    match easing {
-        Easing::Linear => "linear",
-        Easing::OutQuad => "out_quad",
-        Easing::OutCubic => "out_cubic",
-        Easing::OutQuart => "out_quart",
-        Easing::InOutCubic => "in_out_cubic",
-    }
-}
-
-/// "#RRGGBB" -> colour for the swatches; anything else is transparent.
+/// Adapt the toolkit-independent RGB value to a Slint swatch.
 fn parse_hex_color(text: &str) -> slint::Color {
-    let hex = text.trim().trim_start_matches('#');
-    match (hex.len(), u32::from_str_radix(hex, 16)) {
-        (6, Ok(v)) => slint::Color::from_rgb_u8((v >> 16) as u8, (v >> 8) as u8, v as u8),
-        _ => slint::Color::from_argb_u8(0, 0, 0, 0),
+    match launcher_model::parse_hex_color(text) {
+        Some([r, g, b]) => slint::Color::from_rgb_u8(r, g, b),
+        None => slint::Color::from_argb_u8(0, 0, 0, 0),
     }
 }
 
@@ -498,12 +459,9 @@ struct Editor {
 }
 
 fn read_refused() -> Vec<(String, String)> {
-    std::fs::read_to_string(config::hotkey_failures_path())
-        .unwrap_or_default()
-        .lines()
-        .filter_map(|line| line.split_once('\t'))
-        .map(|(action, keys)| (action.trim().to_string(), keys.trim().to_string()))
-        .collect()
+    launcher_model::parse_refused(
+        &std::fs::read_to_string(config::hotkey_failures_path()).unwrap_or_default(),
+    )
 }
 
 /// When the manager last wrote the refused-hotkeys file (it rewrites it on every reload).
@@ -566,13 +524,7 @@ fn push_rows(ui: &MainWindow, editor: &Editor) {
                     .collect::<Vec<_>>(),
             )),
             conflict,
-            refused: editor.refused.iter().any(|(a, k)| {
-                *a == row.action
-                    && row
-                        .keys
-                        .iter()
-                        .any(|key| config::parse_hotkey(key).ok() == config::parse_hotkey(k).ok())
-            }),
+            refused: launcher_model::is_refused(row, &editor.refused),
         })
         .collect();
     ui.set_hotkeys_bound(editor.rows.iter().filter(|r| !r.keys.is_empty()).count() as i32);
@@ -930,28 +882,10 @@ fn wire_editors(ui: &MainWindow) -> slint::Timer {
 
 /// Adds a rule for `process` (an executable name without `.exe`) with the chosen action.
 fn add_rule(ui: &MainWindow, ed: &mut Editor, process: String) {
-    let kind = ui.get_rule_kind_index().clamp(0, 9);
-    let rule = config::Rule {
-        process: Some(process),
-        action: (kind == 0).then(|| "float".to_string()),
-        workspace: (kind > 0).then_some(kind as u8),
-        ..config::Rule::default()
-    };
-    let same = |r: &config::Rule| {
-        r.process
-            .as_deref()
-            .zip(rule.process.as_deref())
-            .is_some_and(|(a, b)| a.eq_ignore_ascii_case(b))
-            && r.class.is_none()
-            && r.title.is_none()
-            && r.action == rule.action
-            && r.workspace == rule.workspace
-    };
-    if ed.rules.iter().any(same) {
+    if !launcher_model::add_process_rule(&mut ed.rules, process, ui.get_rule_kind_index()) {
         ui.set_status("This rule already exists".into());
         return;
     }
-    ed.rules.push(rule);
     ed.rules_dirty = true;
     push_rules(ui, ed);
     ed.edited = true;
@@ -1080,114 +1014,37 @@ fn ask_close_anyway(reason: &str) -> MESSAGEBOX_RESULT {
 }
 
 fn save(ui: &MainWindow, editor: &mut Editor) {
-    use crate::config::{IndicatorSize, Layout};
-
-    let layout = match ui.get_layout_index() {
-        1 => Layout::MasterStack,
-        2 => Layout::Grid,
-        3 => Layout::Columns,
-        _ => Layout::Spiral,
+    let form = launcher_model::SettingsForm {
+        layout_index: ui.get_layout_index(),
+        indicator_size: ui.get_indicator_size(),
+        inner_gap: ui.get_inner_gap().to_string(),
+        outer_gap: ui.get_outer_gap().to_string(),
+        animations: ui.get_animations(),
+        animation_ms: ui.get_animation_ms().to_string(),
+        easing: ui.get_easing().to_string(),
+        resize_step: ui.get_resize_step().to_string(),
+        min_tile_width: ui.get_min_tile_width().to_string(),
+        min_tile_height: ui.get_min_tile_height().to_string(),
+        max_tiles: ui.get_max_tiles().to_string(),
+        auto_overflow: ui.get_auto_overflow(),
+        smart_gaps: ui.get_smart_gaps(),
+        master_count: ui.get_master_count().to_string(),
+        show_indicator: ui.get_show_indicator(),
+        focus_follows_mouse: ui.get_focus_follows_mouse(),
+        highlight_window: ui.get_highlight_window(),
+        border_color: ui.get_border_color().to_string(),
+        accent_color: ui.get_accent_color().to_string(),
+        border_width: ui.get_border_width().to_string(),
+        fullscreen_windows: ui.get_fullscreen_windows(),
+        media_windows: ui.get_media_windows(),
     };
-    let indicator = match ui.get_indicator_size() {
-        0 => IndicatorSize::Small,
-        2 => IndicatorSize::Large,
-        _ => IndicatorSize::Medium,
-    };
-    let easing = ui.get_easing().to_string();
-    let border_color = ui.get_border_color().to_string();
-    let accent_color = ui.get_accent_color().to_string();
-    let mut bad: Option<String> = None;
-    let mut num = |label: &str, text: SharedString, min: i64, max: i64| -> String {
-        match text.trim().parse::<i64>() {
-            Ok(v) if (min..=max).contains(&v) => v.to_string(),
-            _ => {
-                bad.get_or_insert_with(|| format!("{label}: enter a number from {min} to {max}"));
-                String::new()
-            }
+    let pairs = match form.config_pairs() {
+        Ok(pairs) => pairs,
+        Err(message) => {
+            ui.set_status(message.into());
+            return;
         }
     };
-    let pairs: Vec<(&str, String)> = vec![
-        ("layout", format!("\"{}\"", layout.name())),
-        (
-            "inner_gap",
-            num("Between windows", ui.get_inner_gap(), 0, 200),
-        ),
-        (
-            "outer_gap",
-            num("From screen edges", ui.get_outer_gap(), 0, 200),
-        ),
-        ("animations", ui.get_animations().to_string()),
-        (
-            "animation_ms",
-            num("Animation length", ui.get_animation_ms(), 0, 1000),
-        ),
-        ("easing", format!("\"{easing}\"")),
-        (
-            "resize_step",
-            num("Resize step", ui.get_resize_step(), 1, 500),
-        ),
-        (
-            "min_tile_width",
-            num("Minimum width", ui.get_min_tile_width(), 100, 4000),
-        ),
-        (
-            "min_tile_height",
-            num("Minimum height", ui.get_min_tile_height(), 100, 4000),
-        ),
-        (
-            "max_tiles",
-            num("Windows per workspace", ui.get_max_tiles(), 0, 20),
-        ),
-        ("auto_overflow", ui.get_auto_overflow().to_string()),
-        ("smart_gaps", ui.get_smart_gaps().to_string()),
-        (
-            "master_count",
-            num("Windows in the main column", ui.get_master_count(), 1, 8),
-        ),
-        ("workspace_indicator", ui.get_show_indicator().to_string()),
-        (
-            "workspace_indicator_size",
-            format!("\"{}\"", indicator.name()),
-        ),
-        (
-            "focus_follows_mouse",
-            ui.get_focus_follows_mouse().to_string(),
-        ),
-        ("border", ui.get_highlight_window().to_string()),
-        ("border_color", format!("\"{border_color}\"")),
-        ("accent_color", format!("\"{accent_color}\"")),
-        (
-            "border_width",
-            num("Border width", ui.get_border_width(), 0, 20),
-        ),
-        (
-            "fullscreen_windows",
-            format!(
-                "\"{}\"",
-                if ui.get_fullscreen_windows() == 1 {
-                    "ignore"
-                } else {
-                    "minimize"
-                }
-            ),
-        ),
-        (
-            "media_windows",
-            format!(
-                "\"{}\"",
-                if ui.get_media_windows() == 1 {
-                    "tile"
-                } else {
-                    "float"
-                }
-            ),
-        ),
-    ];
-
-    if let Some(message) = bad {
-        ui.set_status(message.into());
-        return;
-    }
     if launcher_model::conflicts(&editor.rows).iter().any(|c| *c) {
         ui.set_status("Fix the keys marked ⚠: one combination cannot be used twice".into());
         return;
@@ -1200,7 +1057,7 @@ fn save(ui: &MainWindow, editor: &mut Editor) {
             return;
         }
     };
-    let mut updated = edit_hotkeys(
+    let mut updated = launcher_model::edit_hotkeys(
         &config::edit_top(&current, &pairs),
         &launcher_model::rows_to_lines(&editor.rows),
     );
@@ -1228,50 +1085,4 @@ fn save(ui: &MainWindow, editor: &mut Editor) {
     } else {
         ui.set_status("Saved; tile-rs is not running, so they apply at its next start".into());
     }
-}
-
-/// Replaces the `[hotkeys]` section, leaving all unrelated config text untouched.
-fn edit_hotkeys(text: &str, lines: &str) -> String {
-    let nl = if text.contains("\r\n") { "\r\n" } else { "\n" };
-    let mut hot: Vec<String> = Vec::new();
-    for line in lines.lines() {
-        let value = line.trim();
-        if value.is_empty() || value.starts_with('#') {
-            continue;
-        }
-        if let Some((key, value)) = value.split_once('=') {
-            let key = key.trim();
-            let value = value.trim();
-            let value = if value.starts_with('[') || value.starts_with('"') {
-                value.to_string()
-            } else {
-                format!("\"{}\"", value.trim_matches('"'))
-            };
-            hot.push(format!("{key} = {value}"));
-        }
-    }
-    let mut out = Vec::new();
-    let mut in_hotkeys = false;
-    let mut found = false;
-    for line in text.lines() {
-        let trimmed = line.trim();
-        if trimmed.starts_with('[') {
-            in_hotkeys = trimmed == "[hotkeys]";
-            found |= in_hotkeys;
-            out.push(line.to_string());
-            if in_hotkeys {
-                out.extend(hot.iter().cloned());
-            }
-        } else if !in_hotkeys {
-            out.push(line.to_string());
-        }
-    }
-    if !found {
-        out.push(String::new());
-        out.push("[hotkeys]".into());
-        out.extend(hot);
-    }
-    let mut output = out.join(nl);
-    output.push_str(nl);
-    output
 }

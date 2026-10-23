@@ -1,0 +1,176 @@
+import { Icon, Card, CardTitle, ActionButton, IconButton, ToggleRow, Select, FieldRow, Divider, LayoutPreview, StatCard } from "launcher-components.slint";
+import { AppTheme } from "launcher-theme.slint";
+import { HotkeyRowData } from "launcher-types.slint";
+
+export component GeneralPage inherits HorizontalLayout {
+    in-out property <int> page;
+    in-out property <int> layout_index;
+    in-out property <bool> animations;
+    in-out property <string> inner_gap;
+    in-out property <string> outer_gap;
+    in-out property <string> animation_ms;
+    in-out property <string> easing;
+    in-out property <string> master_count;
+    in-out property <[HotkeyRowData]> hotkey_rows;
+    in-out property <int> hotkeys_bound;
+    in-out property <[string]> rule_rows;
+    in property <string> app_version;
+    in-out property <int> update_state;
+    in property <[string]> layout_names;
+    in property <[string]> layout_hints;
+    in property <length> preview_gap;
+    in property <string> update_title;
+    callback check_updates();
+
+    spacing: 22px;
+    VerticalLayout {
+        horizontal-stretch: 1;
+        alignment: start;
+        spacing: 14px;
+        Text { text: "Window layout"; color: AppTheme.ink; font-size: 16px; font-weight: 600; }
+        HorizontalLayout {
+            spacing: 12px;
+            height: 214px;
+            for name[index] in layout_names: Rectangle {
+                horizontal-stretch: 1;
+                min-width: 96px;
+                preferred-width: 120px;
+                border-radius: 18px;
+                background: layout_index == index ? AppTheme.accent-strong : AppTheme.surface;
+                border-width: layout_index == index ? 0px : 1px;
+                border-color: lt-touch.has-hover ? #b9d9fb : #e8ecf4;
+                drop-shadow-offset-y: layout_index == index ? 10px : 6px;
+                drop-shadow-blur: layout_index == index ? 24px : 22px;
+                drop-shadow-color: layout_index == index ? #0070e04d : AppTheme.shadow;
+                animate background { duration: AppTheme.motion ? 180ms : 0ms; }
+                accessible-role: button;
+                accessible-label: name;
+                accessible-action-default => { layout_index = index; }
+                forward-focus: lt-focus;
+                VerticalLayout {
+                    padding: 16px;
+                    spacing: 4px;
+                    LayoutPreview {
+                        height: 92px;
+                        mode: index;
+                        filled: layout_index == index;
+                        masters: master_count.to-float();
+                        gap: preview_gap;
+                        background: layout_index == index ? #ffffff26 : AppTheme.sunken;
+                    }
+                    Rectangle { height: 8px; }
+                    Text { text: name; color: layout_index == index ? #ffffff : AppTheme.ink; font-size: 14px; font-weight: 600; }
+                    Text { text: layout_hints[index]; color: layout_index == index ? #dcecff : AppTheme.muted; font-size: 12px; wrap: word-wrap; }
+                }
+                Rectangle { border-radius: parent.border-radius; border-width: lt-focus.has-focus ? 2px : 0px; border-color: layout_index == index ? #9ccdff : AppTheme.accent; }
+                lt-focus := FocusScope { key-pressed(event) => { if (event.text == Key.Return || event.text == " ") { layout_index = index; return accept; } return reject; } }
+                lt-touch := TouchArea { mouse-cursor: pointer; clicked => { lt-focus.focus(); layout_index = index; } }
+            }
+        }
+        Text { text: "Motion and gaps"; color: AppTheme.ink; font-size: 16px; font-weight: 600; }
+        Card {
+            card-height: 292px;
+            VerticalLayout {
+                padding: 18px;
+                spacing: 4px;
+                ToggleRow { label: "Animate windows"; hint: "Windows slide to their new place instead of jumping"; checked: animations; changed(value) => { animations = value; } }
+                FieldRow { label: "Animation length"; hint: "Milliseconds"; value <=> animation_ms; minimum: 0; maximum: 1000; step: 20; }
+                HorizontalLayout {
+                    height: 54px;
+                    padding-left: 10px;
+                    padding-right: 10px;
+                    spacing: 14px;
+                    VerticalLayout {
+                        alignment: center;
+                        horizontal-stretch: 1;
+                        spacing: 2px;
+                        Text { text: "Motion curve"; color: AppTheme.ink; font-size: 13px; }
+                        Text { text: "How a window speeds up and slows down"; color: AppTheme.muted; font-size: 12px; }
+                    }
+                    Select {
+                        property <[string]> names: ["linear", "out_quad", "out_cubic", "out_quart", "in_out_cubic"];
+                        y: (parent.height - self.height) / 2;
+                        width: 200px;
+                        model: ["Linear", "Gentle stop", "Smooth stop", "Strong stop", "Ease in and out"];
+                        current-index: easing == "linear" ? 0 : (easing == "out_quad" ? 1 : (easing == "out_quart" ? 3 : (easing == "in_out_cubic" ? 4 : 2)));
+                        changed current-index => { easing = names[self.current-index]; }
+                    }
+                }
+                Divider { }
+                HorizontalLayout {
+                    spacing: 8px;
+                    FieldRow { horizontal-stretch: 1; label: "Between windows"; hint: "Pixels"; value <=> inner_gap; field-width: 48px; minimum: 0; maximum: 200; step: 2; }
+                    FieldRow { horizontal-stretch: 1; label: "From screen edges"; hint: "Pixels"; value <=> outer_gap; field-width: 48px; minimum: 0; maximum: 200; step: 2; }
+                }
+            }
+        }
+    }
+    VerticalLayout {
+        width: 256px;
+        alignment: start;
+        spacing: 14px;
+        Text { text: "Summary"; color: AppTheme.ink; font-size: 16px; font-weight: 600; }
+        StatCard { title: "Hotkeys"; caption: "of " + hotkey_rows.length + " actions have keys"; fraction: hotkey_rows.length == 0 ? 0 : hotkeys_bound / hotkey_rows.length; value: hotkeys_bound; }
+        Card {
+            card-height: 96px;
+            HorizontalLayout {
+                padding-left: 18px;
+                padding-right: 16px;
+                spacing: 8px;
+                VerticalLayout {
+                    alignment: center;
+                    horizontal-stretch: 1;
+                    spacing: 3px;
+                    Text { text: "App rules"; color: AppTheme.ink; font-size: 13px; font-weight: 600; overflow: elide; }
+                    Text { text: rule_rows.length == 0 ? "None yet" : "Set up: " + rule_rows.length; color: AppTheme.muted; font-size: 12px; }
+                }
+                IconButton { y: (parent.height - self.height) / 2; icon: @image-url("icons/arrow-right.svg"); label: "Open app rules"; activated => { page = 5; } }
+            }
+        }
+        Card {
+            card-height: 206px;
+            background: AppTheme.accent-soft;
+            border-color: #d3e7fd;
+            VerticalLayout {
+                padding: 18px;
+                spacing: 6px;
+                alignment: start;
+                Rectangle {
+                    width: 44px;
+                    height: 44px;
+                    border-radius: 14px;
+                    background: AppTheme.surface;
+                    Icon { width: 22px; height: 22px; source: update_state == 3 ? @image-url("icons/check.svg") : @image-url("icons/download.svg"); tint: AppTheme.accent; }
+                }
+                Rectangle { height: 4px; }
+                Text { text: update_title; color: AppTheme.ink; font-size: 15px; font-weight: 600; wrap: word-wrap; }
+                Text { text: "Installed version " + app_version; color: AppTheme.ink-2; font-size: 12px; }
+                Rectangle { height: 8px; }
+                ActionButton {
+                    label: update_state == 2 ? "Update" : "Check";
+                    icon: update_state == 2 ? @image-url("icons/download.svg") : @image-url("icons/refresh.svg");
+                    has-icon: true;
+                    primary: true;
+                    compact: true;
+                    button-width: 140px;
+                    enabled: update_state != 1 && update_state != 4;
+                    activated => { page = 7; if (update_state != 2) { root.check_updates(); } }
+                }
+            }
+        }
+    }
+}
+
+export component MoreOptions inherits Card {
+    in-out property <bool> show_more;
+    callback reset_all();
+
+    card-height: 80px;
+    HorizontalLayout {
+        padding: 20px;
+        spacing: 12px;
+        CardTitle { horizontal-stretch: 1; title: "More options"; subtitle: "Main column, tile sizes, workspace dots, fullscreen apps, focus border"; icon: @image-url("icons/adjustments.svg"); }
+        ActionButton { y: (parent.height - self.height) / 2; label: "Reset to defaults"; kind: 3; compact: true; button-width: 170px; activated => { root.reset_all(); } }
+        ActionButton { y: (parent.height - self.height) / 2; label: show_more ? "Hide" : "Show"; kind: 2; compact: true; button-width: 120px; activated => { show_more = !show_more; } }
+    }
+}

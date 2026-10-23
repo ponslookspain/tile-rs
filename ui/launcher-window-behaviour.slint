@@ -1,0 +1,72 @@
+import { Card, CardTitle, ToggleRow, TextField, Segmented, Swatch } from "launcher-components.slint";
+import { AppTheme, ColorParser } from "launcher-theme.slint";
+
+export component WindowBehaviourSection inherits HorizontalLayout {
+    in-out property <bool> highlight_window;
+    in-out property <string> border_color;
+    in-out property <string> border_width;
+    in-out property <int> fullscreen_windows;
+    in-out property <int> media_windows;
+
+    spacing: 18px;
+    Card {
+        horizontal-stretch: 1;
+        card-height: 280px;
+        VerticalLayout {
+            padding: 20px;
+            spacing: 10px;
+            CardTitle { title: "Fullscreen apps"; subtitle: "Games, videos and slideshows"; icon: @image-url("icons/maximize.svg"); }
+            Rectangle { height: 2px; }
+            Text { text: "When you switch to another workspace"; color: AppTheme.ink; font-size: 13px; }
+            Segmented { options: ["Minimize", "Leave alone"]; current <=> fullscreen_windows; segment-width: 150px; }
+            Rectangle { height: 6px; }
+            Text { text: "Photo and video viewers"; color: AppTheme.ink; font-size: 13px; }
+            Segmented { options: ["Floating", "Tiled"]; current <=> media_windows; segment-width: 150px; }
+        }
+    }
+    Card {
+        horizontal-stretch: 1;
+        card-height: 280px;
+        VerticalLayout {
+            padding: 20px;
+            spacing: 8px;
+            CardTitle { title: "Focus border"; subtitle: "Shown around any window, even a console"; icon: @image-url("icons/border.svg"); }
+            ToggleRow { label: "Show the border"; checked: highlight_window; changed(value) => { highlight_window = value; } }
+            HorizontalLayout {
+                spacing: 18px;
+                height: 120px;
+                Rectangle {
+                    width: 150px;
+                    border-radius: 14px;
+                    background: AppTheme.sunken;
+                    Rectangle {
+                        x: 22px;
+                        y: 22px;
+                        width: parent.width - 44px;
+                        height: parent.height - 44px;
+                        border-radius: 6px;
+                        background: AppTheme.surface;
+                        border-width: highlight_window ? clamp(border_width.to-float(), 1, 6) * 1px : 0px;
+                        border-color: ColorParser.parse(border_color);
+                        Rectangle { y: 0px; height: 12px; background: AppTheme.line; border-radius: 4px; }
+                    }
+                }
+                VerticalLayout {
+                    horizontal-stretch: 1;
+                    alignment: center;
+                    spacing: 10px;
+                    HorizontalLayout {
+                        spacing: 10px;
+                        Swatch { hex: border_color; }
+                        TextField { horizontal-stretch: 1; text <=> border_color; }
+                    }
+                    HorizontalLayout {
+                        spacing: 10px;
+                        Text { text: "Width, pixels"; color: AppTheme.ink; font-size: 13px; vertical-alignment: center; horizontal-stretch: 1; }
+                        TextField { width: 72px; text <=> border_width; }
+                    }
+                }
+            }
+        }
+    }
+}

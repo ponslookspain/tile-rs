@@ -1,0 +1,75 @@
+import { Icon, Card, CardTitle, ActionButton, IconButton, Select } from "launcher-components.slint";
+import { AppTheme } from "launcher-theme.slint";
+
+export component AppsPage inherits VerticalLayout {
+    in-out property <[string]> rule_rows;
+    in-out property <[string]> app_choices;
+    in-out property <int> rule_app_index;
+    in-out property <int> rule_kind_index;
+    in property <[string]> rule_kinds;
+    callback add_rule_from_file();
+    callback add_rule();
+    callback delete_rule(int);
+    callback refresh_apps();
+
+    spacing: 18px;
+    Card {
+        card-height: rules-list.preferred-height;
+        rules-list := VerticalLayout {
+            padding: 20px;
+            spacing: 6px;
+            CardTitle { title: "App rules"; subtitle: rule_rows.length == 0 ? "No rules yet" : "Rules: " + rule_rows.length; icon: @image-url("icons/apps.svg"); }
+            Rectangle { height: 6px; }
+            if rule_rows.length == 0: Rectangle {
+                height: 132px;
+                border-radius: 14px;
+                background: AppTheme.sunken;
+                VerticalLayout {
+                    alignment: center;
+                    spacing: 6px;
+                    Icon { x: (parent.width - self.width) / 2; width: 28px; height: 28px; source: @image-url("icons/apps.svg"); tint: AppTheme.accent; }
+                    Text { text: "Set up your first app"; color: AppTheme.ink; font-size: 14px; font-weight: 600; horizontal-alignment: center; }
+                    Text { text: "For example, always open your messenger on its own workspace"; color: AppTheme.ink-2; font-size: 12px; horizontal-alignment: center; }
+                }
+            }
+            for rule[index] in rule_rows: Rectangle {
+                height: 52px;
+                border-radius: 12px;
+                background: rule-touch.has-hover ? AppTheme.sunken : transparent;
+                rule-touch := TouchArea { }
+                HorizontalLayout {
+                    padding-left: 6px;
+                    padding-right: 4px;
+                    spacing: 12px;
+                    Rectangle {
+                        y: (parent.height - self.height) / 2;
+                        width: 36px;
+                        height: 36px;
+                        border-radius: 12px;
+                        background: AppTheme.accent-soft;
+                        Icon { source: @image-url("icons/window.svg"); tint: AppTheme.accent; }
+                    }
+                    Text { text: rule; color: AppTheme.ink; font-size: 13px; vertical-alignment: center; horizontal-stretch: 1; overflow: elide; }
+                    IconButton { y: (parent.height - self.height) / 2; icon: @image-url("icons/trash.svg"); label: "Delete rule"; danger: true; activated => { root.delete_rule(index); } }
+                }
+            }
+        }
+    }
+    Card {
+        card-height: 148px;
+        VerticalLayout {
+            padding: 20px;
+            spacing: 14px;
+            CardTitle { title: "New rule"; subtitle: "Pick an open app (or a program file with the file button) and what to do with it"; icon: @image-url("icons/app-plus.svg"); }
+            HorizontalLayout {
+                spacing: 10px;
+                height: 38px;
+                Select { horizontal-stretch: 1; model: app_choices; current-index <=> rule_app_index; placeholder: "No open apps"; }
+                Select { width: 250px; model: rule_kinds; current-index <=> rule_kind_index; }
+                ActionButton { label: "Add"; icon: @image-url("icons/plus.svg"); has-icon: true; primary: true; button-width: 128px; enabled: app_choices.length > 0; activated => { root.add_rule(); } }
+                IconButton { y: 2px; icon: @image-url("icons/refresh.svg"); label: "Refresh the app list"; activated => { root.refresh_apps(); } }
+                IconButton { y: 2px; icon: @image-url("icons/file.svg"); label: "Choose a program file (.exe)"; activated => { root.add_rule_from_file(); } }
+            }
+        }
+    }
+}

@@ -1,527 +1,16 @@
-import { ScrollView, AboutSlint, Palette } from "std-widgets.slint";
-
-// Light, soft theme: lavender-grey canvas, white cards, the product's blue accent.
-export global AppTheme {
-    in-out property <bool> motion: true;
-    out property <color> canvas: #eef1f8;
-    out property <color> surface: #ffffff;
-    out property <color> sunken: #f4f6fb;
-    out property <color> line: #e3e8f2;
-    out property <color> ink: #1d2433;
-    out property <color> ink-2: #556075;
-    out property <color> muted: #687287;
-    out property <color> accent: #008cff;
-    out property <color> accent-strong: #0070e0;
-    out property <color> accent-strong-hover: #0062c7;
-    out property <color> accent-soft: #e6f2ff;
-    out property <color> accent-soft-hover: #d6eaff;
-    out property <color> accent-ink: #005fc0;
-    out property <color> danger: #d93d42;
-    out property <color> danger-soft: #fdeeee;
-    out property <color> warn-ink: #8a5300;
-    out property <color> warn-soft: #fff3dc;
-    out property <color> success-ink: #137a47;
-    out property <color> success-soft: #e3f6ec;
-    out property <color> shadow: #22325a1a;
-    out property <duration> quick: 140ms;
-}
-
-export struct HotkeyRowData {
-    action: string,
-    label: string,
-    group: string,
-    keys: [string],
-    conflict: bool,
-    refused: bool,
-}
-
-export struct WelcomeItem {
-    keys: string,
-    what: string,
-}
-
-export struct TourStep {
-    text: string,
-    done: bool,
-}
-
-component Icon inherits Image {
-    in property <color> tint: AppTheme.ink-2;
-    width: 18px;
-    height: 18px;
-    colorize: tint;
-    image-fit: contain;
-}
-
-// White card with a soft, offset shadow.
-component Card inherits Rectangle {
-    in property <length> card-height: 120px;
-    height: card-height;
-    border-radius: 18px;
-    background: AppTheme.surface;
-    border-width: 1px;
-    border-color: #e8ecf4;
-    drop-shadow-offset-y: 6px;
-    drop-shadow-blur: 22px;
-    drop-shadow-color: AppTheme.shadow;
-}
-
-component CardTitle inherits HorizontalLayout {
-    in property <string> title;
-    in property <string> subtitle: "";
-    in property <image> icon;
-    spacing: 12px;
-    height: subtitle == "" ? 36px : 40px;
-    Rectangle {
-        width: 36px;
-        height: 36px;
-        border-radius: 12px;
-        background: AppTheme.accent-soft;
-        Icon { source: icon; tint: AppTheme.accent; }
-    }
-    VerticalLayout {
-        alignment: center;
-        spacing: 1px;
-        Text { text: title; color: AppTheme.ink; font-size: 15px; font-weight: 600; }
-        if subtitle != "": Text { text: subtitle; color: AppTheme.ink-2; font-size: 12px; overflow: elide; }
-    }
-}
-
-component NavItem inherits Rectangle {
-    in property <string> title;
-    in property <image> icon;
-    in property <bool> selected: false;
-    in property <bool> badge: false;
-    callback activated();
-    height: 42px;
-    border-radius: 12px;
-    background: selected ? AppTheme.accent-soft : (touch.has-hover ? AppTheme.sunken : transparent);
-    border-width: focus.has-focus ? 2px : 0px;
-    border-color: AppTheme.accent;
-    animate background { duration: AppTheme.motion ? AppTheme.quick : 0ms; }
-    accessible-role: button;
-    accessible-label: title;
-    accessible-action-default => { root.activated(); }
-    forward-focus: focus;
-    HorizontalLayout {
-        padding-left: 14px;
-        padding-right: 12px;
-        spacing: 12px;
-        Icon { y: (parent.height - self.height) / 2; source: icon; tint: selected ? AppTheme.accent : AppTheme.muted; }
-        Text { text: title; color: selected ? AppTheme.accent-ink : AppTheme.ink-2; font-size: 13px; font-weight: selected ? 600 : 400; vertical-alignment: center; horizontal-stretch: 1; }
-        if badge: Rectangle { y: (parent.height - 8px) / 2; width: 8px; height: 8px; border-radius: 4px; background: AppTheme.accent; }
-    }
-    focus := FocusScope { key-pressed(event) => { if (event.text == Key.Return || event.text == " ") { root.activated(); return accept; } return reject; } }
-    touch := TouchArea { mouse-cursor: pointer; clicked => { focus.focus(); root.activated(); } }
-}
-
-// kind: 0 secondary, 1 primary, 2 ghost, 3 danger ghost
-component ActionButton inherits Rectangle {
-    in property <string> label;
-    in property <image> icon;
-    in property <bool> has-icon: false;
-    in property <int> kind: 0;
-    in property <bool> primary: false;
-    in property <bool> enabled: true;
-    in property <bool> compact: false;
-    in property <length> button-width: 126px;
-    callback activated();
-    property <int> k: primary ? 1 : kind;
-    width: button-width;
-    height: compact ? 32px : 38px;
-    border-radius: self.height / 2;
-    opacity: enabled ? 1 : 0.5;
-    background: k == 1 ? (touch.pressed ? AppTheme.accent-strong-hover : (touch.has-hover ? AppTheme.accent-strong-hover : AppTheme.accent-strong))
-        : k == 0 ? (touch.pressed ? AppTheme.accent-soft-hover : (touch.has-hover ? AppTheme.accent-soft : AppTheme.surface))
-        : k == 3 ? (touch.has-hover ? AppTheme.danger-soft : transparent)
-        : (touch.has-hover ? AppTheme.sunken : transparent);
-    border-width: k == 0 ? 1px : 0px;
-    border-color: touch.has-hover ? #b9d9fb : AppTheme.line;
-    drop-shadow-offset-y: k == 1 ? 4px : 0px;
-    drop-shadow-blur: k == 1 ? 12px : 0px;
-    drop-shadow-color: #0070e040;
-    animate background, border-color { duration: AppTheme.motion ? AppTheme.quick : 0ms; }
-    accessible-role: button;
-    accessible-label: label;
-    accessible-action-default => { if (root.enabled) { root.activated(); } }
-    forward-focus: focus;
-    HorizontalLayout {
-        alignment: center;
-        spacing: 8px;
-        if has-icon: Icon {
-            y: (parent.height - self.height) / 2;
-            width: 16px;
-            height: 16px;
-            source: icon;
-            tint: k == 1 ? #ffffff : (k == 3 ? AppTheme.danger : AppTheme.accent-ink);
-        }
-        Text {
-            text: label;
-            color: k == 1 ? #ffffff : (k == 3 ? AppTheme.danger : (k == 2 ? AppTheme.ink-2 : AppTheme.accent-ink));
-            font-size: 13px;
-            font-weight: 600;
-            vertical-alignment: center;
-        }
-    }
-    Rectangle {
-        border-radius: parent.border-radius;
-        border-width: focus.has-focus ? 2px : 0px;
-        border-color: k == 1 ? #9ccdff : AppTheme.accent;
-    }
-    focus := FocusScope { enabled: root.enabled; key-pressed(event) => { if (event.text == Key.Return || event.text == " ") { root.activated(); return accept; } return reject; } }
-    touch := TouchArea { enabled: root.enabled; mouse-cursor: pointer; clicked => { focus.focus(); root.activated(); } }
-}
-
-component IconButton inherits Rectangle {
-    in property <image> icon;
-    in property <string> label;
-    in property <bool> danger: false;
-    callback activated();
-    width: 34px;
-    height: 34px;
-    border-radius: 17px;
-    background: touch.has-hover ? (danger ? AppTheme.danger-soft : AppTheme.accent-soft) : transparent;
-    animate background { duration: AppTheme.motion ? AppTheme.quick : 0ms; }
-    accessible-role: button;
-    accessible-label: label;
-    accessible-action-default => { root.activated(); }
-    forward-focus: focus;
-    Icon { source: icon; tint: touch.has-hover ? (danger ? AppTheme.danger : AppTheme.accent-ink) : AppTheme.muted; }
-    Rectangle { border-radius: parent.border-radius; border-width: focus.has-focus ? 2px : 0px; border-color: AppTheme.accent; }
-    focus := FocusScope { key-pressed(event) => { if (event.text == Key.Return || event.text == " ") { root.activated(); return accept; } return reject; } }
-    touch := TouchArea { mouse-cursor: pointer; clicked => { focus.focus(); root.activated(); } }
-}
-
-component Switch inherits Rectangle {
-    in property <bool> checked;
-    width: 42px;
-    height: 24px;
-    border-radius: 12px;
-    background: checked ? AppTheme.accent : #cdd4e2;
-    animate background { duration: AppTheme.motion ? 160ms : 0ms; }
-    Rectangle {
-        x: checked ? 21px : 3px;
-        y: 3px;
-        width: 18px;
-        height: 18px;
-        border-radius: 9px;
-        background: #ffffff;
-        drop-shadow-offset-y: 1px;
-        drop-shadow-blur: 3px;
-        drop-shadow-color: #1d243340;
-        animate x { duration: AppTheme.motion ? 180ms : 0ms; easing: cubic-bezier(0.22, 1, 0.36, 1); }
-    }
-}
-
-component ToggleRow inherits Rectangle {
-    in property <string> label;
-    in property <string> hint: "";
-    in property <bool> checked: false;
-    callback changed(bool);
-    height: hint == "" ? 44px : 54px;
-    border-radius: 12px;
-    background: touch.has-hover ? AppTheme.sunken : transparent;
-    accessible-role: checkbox;
-    accessible-label: label;
-    accessible-checked: checked;
-    accessible-action-default => { root.changed(!root.checked); }
-    forward-focus: focus;
-    HorizontalLayout {
-        padding-left: 10px;
-        padding-right: 10px;
-        spacing: 14px;
-        VerticalLayout {
-            alignment: center;
-            horizontal-stretch: 1;
-            spacing: 2px;
-            Text { text: label; color: AppTheme.ink; font-size: 13px; wrap: word-wrap; }
-            if hint != "": Text { text: hint; color: AppTheme.muted; font-size: 12px; overflow: elide; }
-        }
-        Switch { y: (parent.height - self.height) / 2; checked: root.checked; }
-    }
-    Rectangle { border-radius: parent.border-radius; border-width: focus.has-focus ? 2px : 0px; border-color: AppTheme.accent; }
-    focus := FocusScope { key-pressed(event) => { if (event.text == Key.Return || event.text == " ") { root.changed(!root.checked); return accept; } return reject; } }
-    touch := TouchArea { mouse-cursor: pointer; clicked => { focus.focus(); root.changed(!root.checked); } }
-}
-
-// Authored text field: soft fill, rounded, blue focus ring.
-component TextField inherits Rectangle {
-    in-out property <string> text;
-    in property <TextHorizontalAlignment> align: center;
-    height: 36px;
-    border-radius: 10px;
-    background: input.has-focus ? AppTheme.surface : AppTheme.sunken;
-    border-width: input.has-focus ? 2px : 1px;
-    border-color: input.has-focus ? AppTheme.accent : (hover.has-hover ? #c9d3e4 : AppTheme.line);
-    animate background, border-color { duration: AppTheme.motion ? AppTheme.quick : 0ms; }
-    hover := TouchArea { mouse-cursor: MouseCursor.text; clicked => { input.focus(); } }
-    input := TextInput {
-        x: 12px;
-        width: parent.width - 24px;
-        height: parent.height;
-        vertical-alignment: center;
-        horizontal-alignment: root.align;
-        text <=> root.text;
-        color: AppTheme.ink;
-        font-size: 13px;
-        selection-background-color: #bcdcff;
-        selection-foreground-color: AppTheme.ink;
-        single-line: true;
-    }
-}
-
-// Authored drop-down: a pill showing the choice, a soft popup list.
-component Select inherits Rectangle {
-    in property <[string]> model;
-    in-out property <int> current-index: 0;
-    in property <string> placeholder: "No options";
-    height: 38px;
-    border-radius: 12px;
-    background: AppTheme.surface;
-    border-width: 1px;
-    border-color: touch.has-hover ? #b9d9fb : AppTheme.line;
-    animate border-color { duration: AppTheme.motion ? AppTheme.quick : 0ms; }
-    accessible-role: combobox;
-    accessible-value: model.length > 0 ? model[current-index] : placeholder;
-    HorizontalLayout {
-        padding-left: 14px;
-        padding-right: 10px;
-        spacing: 8px;
-        Text { text: model.length > 0 ? model[current-index] : placeholder; color: model.length > 0 ? AppTheme.ink : AppTheme.muted; font-size: 13px; vertical-alignment: center; horizontal-stretch: 1; overflow: elide; }
-        Icon { y: (parent.height - self.height) / 2; width: 16px; height: 16px; source: @image-url("icons/chevron-down.svg"); tint: AppTheme.muted; }
-    }
-    touch := TouchArea { mouse-cursor: pointer; clicked => { if (model.length > 0) { popup.show(); } } }
-    popup := PopupWindow {
-        x: 0px;
-        y: root.height + 6px;
-        width: root.width;
-        height: min(model.length * 38px + 12px, 304px);
-        Rectangle {
-            border-radius: 14px;
-            background: AppTheme.surface;
-            border-width: 1px;
-            border-color: AppTheme.line;
-            drop-shadow-offset-y: 10px;
-            drop-shadow-blur: 28px;
-            drop-shadow-color: #22325a26;
-            Flickable {
-                content-height: model.length * 38px + 12px;
-                VerticalLayout {
-                    padding: 6px;
-                    for option[index] in model: Rectangle {
-                        height: 38px;
-                        border-radius: 10px;
-                        background: index == current-index ? AppTheme.accent-soft : (option-touch.has-hover ? AppTheme.sunken : transparent);
-                        Text { x: 10px; width: parent.width - 20px; height: parent.height; text: option; color: index == current-index ? AppTheme.accent-ink : AppTheme.ink; font-size: 13px; font-weight: index == current-index ? 600 : 400; vertical-alignment: center; overflow: elide; }
-                        option-touch := TouchArea { mouse-cursor: pointer; clicked => { current-index = index; popup.close(); } }
-                    }
-                }
-            }
-        }
-    }
-}
-
-// A number or text setting: label on the left, a compact field on the right.
-component FieldRow inherits HorizontalLayout {
-    in property <string> label;
-    in property <string> hint: "";
-    in-out property <string> value;
-    in property <length> field-width: 72px;
-    in property <int> minimum: 0;
-    in property <int> maximum: 9999;
-    in property <int> step: 1;
-    property <int> number: clamp(round(value.to-float()), minimum, maximum);
-    height: hint == "" ? 44px : 54px;
-    padding-left: 10px;
-    padding-right: 10px;
-    spacing: 14px;
-    VerticalLayout {
-        alignment: center;
-        horizontal-stretch: 1;
-        spacing: 2px;
-        Text { text: label; color: AppTheme.ink; font-size: 13px; }
-        if hint != "": Text { text: hint; color: AppTheme.muted; font-size: 12px; overflow: elide; }
-    }
-    HorizontalLayout {
-        y: (parent.height - self.height) / 2;
-        spacing: 2px;
-        IconButton { y: (parent.height - self.height) / 2; icon: @image-url("icons/minus.svg"); label: "Less"; activated => { value = "" + max(minimum, number - step); } }
-        TextField {
-            y: (parent.height - self.height) / 2;
-            width: field-width;
-            text <=> value;
-        }
-        IconButton { y: (parent.height - self.height) / 2; icon: @image-url("icons/plus.svg"); label: "More"; activated => { value = "" + min(maximum, number + step); } }
-    }
-}
-
-component Divider inherits Rectangle {
-    height: 1px;
-    background: AppTheme.line;
-}
-
-// Four windows arranged the way the chosen layout arranges them; it follows the gap and the
-// master-column count, and animates between layouts.
-component LayoutPreview inherits Rectangle {
-    in property <int> mode: 0;
-    in property <bool> filled: false;
-    in property <int> masters: 1;
-    in property <length> gap: 4px;
-    in property <length> pad: 6px;
-    property <int> m: clamp(masters, 1, 4);
-    border-radius: 10px;
-    background: filled ? transparent : AppTheme.sunken;
-    for tile[i] in [0, 1, 2, 3]: Rectangle {
-        property <float> tx: mode == 3 ? i * 0.25 : (mode == 2 ? mod(i, 2) * 0.5 : (mode == 1 ? ((m >= 4 || i < m) ? 0 : 0.5) : (i == 0 ? 0 : (i == 3 ? 0.75 : 0.5))));
-        property <float> tw: mode == 3 ? 0.25 : (mode == 2 ? 0.5 : (mode == 1 ? (m >= 4 ? 1 : 0.5) : (i >= 2 ? 0.25 : 0.5)));
-        property <float> ty: mode == 3 ? 0 : (mode == 2 ? floor(i / 2) * 0.5 : (mode == 1 ? (m >= 4 ? i / 4 : (i < m ? i / m : (i - m) / (4 - m))) : (i <= 1 ? 0 : 0.5)));
-        property <float> th: mode == 3 ? 1 : (mode == 2 ? 0.5 : (mode == 1 ? (m >= 4 ? 0.25 : (i < m ? 1 / m : 1 / (4 - m))) : (i == 0 ? 1 : 0.5)));
-        property <length> span-w: root.width - 2 * root.pad + root.gap;
-        property <length> span-h: root.height - 2 * root.pad + root.gap;
-        x: root.pad + tx * span-w;
-        y: root.pad + ty * span-h;
-        width: max(2px, tw * span-w - root.gap);
-        height: max(2px, th * span-h - root.gap);
-        border-radius: 5px;
-        background: filled ? (i == 0 ? #ffffff : (i == 1 ? #ffffffd9 : #ffffffa6)) : (i == 0 ? AppTheme.accent : (i == 1 ? #5cb3ff : #a9d5ff));
-        animate x, y, width, height { duration: AppTheme.motion ? 260ms : 0ms; easing: cubic-bezier(0.65, 0, 0.35, 1); }
-    }
-}
-
-// Proportion ring for a real ratio (value of total).
-component Ring inherits Rectangle {
-    in property <float> fraction: 0;
-    in property <string> center-text;
-    width: 64px;
-    height: 64px;
-    property <float> f: clamp(fraction, 0, 0.9999);
-    Rectangle { border-radius: self.width / 2; border-width: 6px; border-color: AppTheme.accent-soft; }
-    if f > 0.001: Path {
-        width: parent.width;
-        height: parent.height;
-        viewbox-width: 64;
-        viewbox-height: 64;
-        stroke: AppTheme.accent;
-        stroke-width: 6px;
-        MoveTo { x: 32; y: 3; }
-        ArcTo {
-            x: 32 + 29 * sin(f * 360deg);
-            y: 32 - 29 * cos(f * 360deg);
-            radius-x: 29;
-            radius-y: 29;
-            large-arc: f > 0.5;
-            sweep: true;
-        }
-    }
-    Text { text: center-text; color: AppTheme.ink; font-size: 16px; font-weight: 600; horizontal-alignment: center; vertical-alignment: center; }
-}
-
-component StatCard inherits Card {
-    in property <string> title;
-    in property <string> caption;
-    in property <float> fraction: -1;
-    in property <string> value;
-    card-height: 96px;
-    HorizontalLayout {
-        padding-left: 18px;
-        padding-right: 16px;
-        spacing: 12px;
-        VerticalLayout {
-            alignment: center;
-            horizontal-stretch: 1;
-            spacing: 3px;
-            Text { text: title; color: AppTheme.ink; font-size: 13px; font-weight: 600; wrap: word-wrap; }
-            Text { text: caption; color: AppTheme.muted; font-size: 12px; wrap: word-wrap; }
-        }
-        if fraction >= 0: Ring { y: (parent.height - self.height) / 2; fraction: root.fraction; center-text: root.value; }
-        if fraction < 0: Rectangle {
-            y: (parent.height - self.height) / 2;
-            width: 64px;
-            height: 64px;
-            border-radius: 32px;
-            background: AppTheme.accent-soft;
-            Text { text: root.value; color: AppTheme.accent-ink; font-size: 16px; font-weight: 600; horizontal-alignment: center; vertical-alignment: center; }
-        }
-    }
-}
-
-// Segmented choice: one rounded track, the chosen segment raised.
-component Segmented inherits Rectangle {
-    in property <[string]> options;
-    in-out property <int> current: 0;
-    in property <length> segment-width: 110px;
-    width: options.length * segment-width + 8px;
-    height: 40px;
-    border-radius: 20px;
-    background: AppTheme.sunken;
-    for option[index] in options: Rectangle {
-        x: 4px + index * segment-width;
-        y: 4px;
-        width: segment-width;
-        height: 32px;
-        border-radius: 16px;
-        background: current == index ? AppTheme.surface : transparent;
-        drop-shadow-offset-y: current == index ? 2px : 0px;
-        drop-shadow-blur: current == index ? 6px : 0px;
-        drop-shadow-color: AppTheme.shadow;
-        animate background { duration: AppTheme.motion ? AppTheme.quick : 0ms; }
-        accessible-role: button;
-        accessible-label: option;
-        Text { text: option; color: current == index ? AppTheme.accent-ink : AppTheme.ink-2; font-size: 12px; font-weight: current == index ? 600 : 400; horizontal-alignment: center; vertical-alignment: center; }
-        TouchArea { mouse-cursor: pointer; clicked => { current = index; } }
-    }
-}
-
-component Stepper inherits Rectangle {
-    in-out property <string> value;
-    in property <int> minimum: 1;
-    in property <int> maximum: 8;
-    property <int> number: clamp(round(value.to-float()), minimum, maximum);
-    width: 124px;
-    height: 38px;
-    border-radius: 19px;
-    background: AppTheme.sunken;
-    HorizontalLayout {
-        padding: 2px;
-        IconButton { icon: @image-url("icons/minus.svg"); label: "Less"; activated => { value = "" + max(minimum, number - 1); } }
-        Text { text: number; color: AppTheme.ink; font-size: 15px; font-weight: 600; horizontal-alignment: center; vertical-alignment: center; horizontal-stretch: 1; }
-        IconButton { icon: @image-url("icons/plus.svg"); label: "More"; activated => { value = "" + min(maximum, number + 1); } }
-    }
-}
-
-// Parses "#RRGGBB" (Rust side); an invalid value shows as transparent.
-export global ColorParser {
-    pure callback parse(string) -> color;
-}
-
-component Swatch inherits Rectangle {
-    in property <string> hex;
-    width: 34px;
-    height: 34px;
-    border-radius: 10px;
-    border-width: 1px;
-    border-color: #0000001a;
-    background: ColorParser.parse(hex);
-}
-
-component DotCell inherits Rectangle {
-    in property <int> state: 0; // 0 empty, 1 occupied, 2 active
-    in property <length> diameter: 8px;
-    width: 28px;
-    height: 28px;
-    Rectangle {
-        width: diameter + 6px;
-        height: diameter + 6px;
-        border-radius: (diameter + 6px) / 2;
-        background: state == 2 ? #b7dcff : transparent;
-    }
-    Rectangle {
-        width: diameter;
-        height: diameter;
-        border-radius: diameter / 2;
-        background: state == 2 ? AppTheme.accent : (state == 1 ? #7cbcf5 : #c3cad8);
-    }
-}
+import { ScrollView, Palette } from "std-widgets.slint";
+import { AppTheme, ColorParser } from "launcher-theme.slint";
+import { HotkeyRowData, WelcomeItem, TourStep } from "launcher-types.slint";
+import { Icon, NavItem, ActionButton, LayoutPreview } from "launcher-components.slint";
+import { GeneralPage, MoreOptions } from "launcher-general.slint";
+import { LayoutSection } from "launcher-layout.slint";
+import { WorkspacesSection } from "launcher-workspaces.slint";
+import { WindowBehaviourSection } from "launcher-window-behaviour.slint";
+import { HotkeysPage } from "launcher-hotkeys.slint";
+import { AppsPage } from "launcher-apps.slint";
+import { AdvancedSection } from "launcher-advanced.slint";
+import { UpdatesPage } from "launcher-updates.slint";
+export { AppTheme, ColorParser, HotkeyRowData, WelcomeItem, TourStep }
 
 export component MainWindow inherits Window {
     title: "tile-rs Settings";
@@ -745,630 +234,107 @@ export component MainWindow inherits Window {
                     spacing: 18px;
 
                     // ---------- 0: general ----------
-                    if page == 0: HorizontalLayout {
-                        spacing: 22px;
-                        VerticalLayout {
-                            horizontal-stretch: 1;
-                            alignment: start;
-                            spacing: 14px;
-                            Text { text: "Window layout"; color: AppTheme.ink; font-size: 16px; font-weight: 600; }
-                            HorizontalLayout {
-                                spacing: 12px;
-                                height: 214px;
-                                for name[index] in layout_names: Rectangle {
-                                    horizontal-stretch: 1;
-                                    min-width: 96px;
-                                    preferred-width: 120px;
-                                    border-radius: 18px;
-                                    background: layout_index == index ? AppTheme.accent-strong : AppTheme.surface;
-                                    border-width: layout_index == index ? 0px : 1px;
-                                    border-color: lt-touch.has-hover ? #b9d9fb : #e8ecf4;
-                                    drop-shadow-offset-y: layout_index == index ? 10px : 6px;
-                                    drop-shadow-blur: layout_index == index ? 24px : 22px;
-                                    drop-shadow-color: layout_index == index ? #0070e04d : AppTheme.shadow;
-                                    animate background { duration: AppTheme.motion ? 180ms : 0ms; }
-                                    accessible-role: button;
-                                    accessible-label: name;
-                                    accessible-action-default => { layout_index = index; }
-                                    forward-focus: lt-focus;
-                                    VerticalLayout {
-                                        padding: 16px;
-                                        spacing: 4px;
-                                        LayoutPreview {
-                                            height: 92px;
-                                            mode: index;
-                                            filled: layout_index == index;
-                                            masters: master_count.to-float();
-                                            gap: preview_gap;
-                                            background: layout_index == index ? #ffffff26 : AppTheme.sunken;
-                                        }
-                                        Rectangle { height: 8px; }
-                                        Text { text: name; color: layout_index == index ? #ffffff : AppTheme.ink; font-size: 14px; font-weight: 600; }
-                                        Text { text: layout_hints[index]; color: layout_index == index ? #dcecff : AppTheme.muted; font-size: 12px; wrap: word-wrap; }
-                                    }
-                                    Rectangle { border-radius: parent.border-radius; border-width: lt-focus.has-focus ? 2px : 0px; border-color: layout_index == index ? #9ccdff : AppTheme.accent; }
-                                    lt-focus := FocusScope { key-pressed(event) => { if (event.text == Key.Return || event.text == " ") { layout_index = index; return accept; } return reject; } }
-                                    lt-touch := TouchArea { mouse-cursor: pointer; clicked => { lt-focus.focus(); layout_index = index; } }
-                                }
-                            }
-                            Text { text: "Motion and gaps"; color: AppTheme.ink; font-size: 16px; font-weight: 600; }
-                            Card {
-                                card-height: 292px;
-                                VerticalLayout {
-                                    padding: 18px;
-                                    spacing: 4px;
-                                    ToggleRow { label: "Animate windows"; hint: "Windows slide to their new place instead of jumping"; checked: animations; changed(value) => { animations = value; } }
-                                    FieldRow { label: "Animation length"; hint: "Milliseconds"; value <=> animation_ms; minimum: 0; maximum: 1000; step: 20; }
-                                    HorizontalLayout {
-                                        height: 54px;
-                                        padding-left: 10px;
-                                        padding-right: 10px;
-                                        spacing: 14px;
-                                        VerticalLayout {
-                                            alignment: center;
-                                            horizontal-stretch: 1;
-                                            spacing: 2px;
-                                            Text { text: "Motion curve"; color: AppTheme.ink; font-size: 13px; }
-                                            Text { text: "How a window speeds up and slows down"; color: AppTheme.muted; font-size: 12px; }
-                                        }
-                                        Select {
-                                            property <[string]> names: ["linear", "out_quad", "out_cubic", "out_quart", "in_out_cubic"];
-                                            y: (parent.height - self.height) / 2;
-                                            width: 200px;
-                                            model: ["Linear", "Gentle stop", "Smooth stop", "Strong stop", "Ease in and out"];
-                                            current-index: easing == "linear" ? 0 : (easing == "out_quad" ? 1 : (easing == "out_quart" ? 3 : (easing == "in_out_cubic" ? 4 : 2)));
-                                            changed current-index => { easing = names[self.current-index]; }
-                                        }
-                                    }
-                                    Divider { }
-                                    HorizontalLayout {
-                                        spacing: 8px;
-                                        FieldRow { horizontal-stretch: 1; label: "Between windows"; hint: "Pixels"; value <=> inner_gap; field-width: 48px; minimum: 0; maximum: 200; step: 2; }
-                                        FieldRow { horizontal-stretch: 1; label: "From screen edges"; hint: "Pixels"; value <=> outer_gap; field-width: 48px; minimum: 0; maximum: 200; step: 2; }
-                                    }
-                                }
-                            }
-                        }
-                        VerticalLayout {
-                            width: 256px;
-                            alignment: start;
-                            spacing: 14px;
-                            Text { text: "Summary"; color: AppTheme.ink; font-size: 16px; font-weight: 600; }
-                            StatCard { title: "Hotkeys"; caption: "of " + hotkey_rows.length + " actions have keys"; fraction: hotkey_rows.length == 0 ? 0 : hotkeys_bound / hotkey_rows.length; value: hotkeys_bound; }
-                            Card {
-                                card-height: 96px;
-                                HorizontalLayout {
-                                    padding-left: 18px;
-                                    padding-right: 16px;
-                                    spacing: 8px;
-                                    VerticalLayout {
-                                        alignment: center;
-                                        horizontal-stretch: 1;
-                                        spacing: 3px;
-                                        Text { text: "App rules"; color: AppTheme.ink; font-size: 13px; font-weight: 600; overflow: elide; }
-                                        Text { text: rule_rows.length == 0 ? "None yet" : "Set up: " + rule_rows.length; color: AppTheme.muted; font-size: 12px; }
-                                    }
-                                    IconButton { y: (parent.height - self.height) / 2; icon: @image-url("icons/arrow-right.svg"); label: "Open app rules"; activated => { page = 5; } }
-                                }
-                            }
-                            Card {
-                                card-height: 206px;
-                                background: AppTheme.accent-soft;
-                                border-color: #d3e7fd;
-                                VerticalLayout {
-                                    padding: 18px;
-                                    spacing: 6px;
-                                    alignment: start;
-                                    Rectangle {
-                                        width: 44px;
-                                        height: 44px;
-                                        border-radius: 14px;
-                                        background: AppTheme.surface;
-                                        Icon { width: 22px; height: 22px; source: update_state == 3 ? @image-url("icons/check.svg") : @image-url("icons/download.svg"); tint: AppTheme.accent; }
-                                    }
-                                    Rectangle { height: 4px; }
-                                    Text { text: update_title; color: AppTheme.ink; font-size: 15px; font-weight: 600; wrap: word-wrap; }
-                                    Text { text: "Installed version " + app_version; color: AppTheme.ink-2; font-size: 12px; }
-                                    Rectangle { height: 8px; }
-                                    ActionButton {
-                                        label: update_state == 2 ? "Update" : "Check";
-                                        icon: update_state == 2 ? @image-url("icons/download.svg") : @image-url("icons/refresh.svg");
-                                        has-icon: true;
-                                        primary: true;
-                                        compact: true;
-                                        button-width: 140px;
-                                        enabled: update_state != 1 && update_state != 4;
-                                        activated => { page = 7; if (update_state != 2) { root.check_updates(); } }
-                                    }
-                                }
-                            }
-                        }
+                    if page == 0: GeneralPage {
+                        page <=> root.page;
+                        layout_index <=> root.layout_index;
+                        animations <=> root.animations;
+                        inner_gap <=> root.inner_gap;
+                        outer_gap <=> root.outer_gap;
+                        animation_ms <=> root.animation_ms;
+                        easing <=> root.easing;
+                        master_count <=> root.master_count;
+                        hotkey_rows <=> root.hotkey_rows;
+                        hotkeys_bound <=> root.hotkeys_bound;
+                        rule_rows <=> root.rule_rows;
+                        app_version: root.app_version;
+                        update_state <=> root.update_state;
+                        layout_names: root.layout_names;
+                        layout_hints: root.layout_hints;
+                        preview_gap: root.preview_gap;
+                        update_title: root.update_title;
+                        check_updates() => { root.check_updates(); }
                     }
 
-                    if page == 0: Card {
-                        card-height: 80px;
-                        HorizontalLayout {
-                            padding: 20px;
-                            spacing: 12px;
-                            CardTitle { horizontal-stretch: 1; title: "More options"; subtitle: "Main column, tile sizes, workspace dots, fullscreen apps, focus border"; icon: @image-url("icons/adjustments.svg"); }
-                            ActionButton { y: (parent.height - self.height) / 2; label: "Reset to defaults"; kind: 3; compact: true; button-width: 170px; activated => { root.reset_all(); } }
-                            ActionButton { y: (parent.height - self.height) / 2; label: show_more ? "Hide" : "Show"; kind: 2; compact: true; button-width: 120px; activated => { show_more = !show_more; } }
-                        }
+                    if page == 0: MoreOptions {
+                        show_more <=> root.show_more;
+                        reset_all() => { root.reset_all(); }
                     }
 
                     // ---------- 1: layout sizes (General, more options) ----------
-                    if (page == 0 && show_more) || page == 1: VerticalLayout {
-                        spacing: 18px;
-                        HorizontalLayout {
-                            spacing: 18px;
-                            Card {
-                                horizontal-stretch: 1;
-                                card-height: 238px;
-                                VerticalLayout {
-                                    padding: 20px;
-                                    spacing: 10px;
-                                    CardTitle { title: "Main column"; subtitle: "Only for the Main window layout"; icon: @image-url("icons/layout.svg"); }
-                                    HorizontalLayout {
-                                        spacing: 18px;
-                                        LayoutPreview { width: 170px; height: 112px; mode: 1; masters: master_count.to-float(); gap: preview_gap; }
-                                        VerticalLayout {
-                                            alignment: center;
-                                            spacing: 8px;
-                                            Text { text: "Windows in the main column"; color: AppTheme.ink; font-size: 13px; }
-                                            Stepper { value <=> master_count; minimum: 1; maximum: 8; }
-                                            Text { text: master_hint; color: AppTheme.muted; font-size: 12px; }
-                                        }
-                                    }
-                                }
-                            }
-                            Card {
-                                horizontal-stretch: 1;
-                                card-height: 238px;
-                                VerticalLayout {
-                                    padding: 20px;
-                                    spacing: 6px;
-                                    CardTitle { title: "Layout behaviour"; icon: @image-url("icons/overflow.svg"); }
-                                    ToggleRow { label: "Send new windows onward"; hint: "When the current workspace is full"; checked: auto_overflow; changed(value) => { auto_overflow = value; } }
-                                    ToggleRow { label: "No gaps for a single window"; hint: "A lone window fills the screen"; checked: smart_gaps; changed(value) => { smart_gaps = value; } }
-                                }
-                            }
-                        }
-                        Card {
-                            card-height: 212px;
-                            VerticalLayout {
-                                padding: 20px;
-                                spacing: 6px;
-                                CardTitle { title: "Sizes and limits"; subtitle: "Tiles never get smaller than this"; icon: @image-url("icons/resize.svg"); }
-                                Rectangle { height: 4px; }
-                                HorizontalLayout {
-                                    spacing: 24px;
-                                    VerticalLayout {
-                                        horizontal-stretch: 1;
-                                        FieldRow { label: "Minimum width"; hint: "Pixels"; value <=> min_tile_width; minimum: 100; maximum: 4000; step: 20; }
-                                        Divider { }
-                                        FieldRow { label: "Minimum height"; hint: "Pixels"; value <=> min_tile_height; minimum: 100; maximum: 4000; step: 20; }
-                                    }
-                                    VerticalLayout {
-                                        horizontal-stretch: 1;
-                                        FieldRow { label: "Windows per workspace"; hint: "0 picks it automatically"; value <=> max_tiles; minimum: 0; maximum: 20; step: 1; }
-                                        Divider { }
-                                        FieldRow { label: "Resize step"; hint: "Pixels per press of the grow key"; value <=> resize_step; minimum: 1; maximum: 500; step: 10; }
-                                    }
-                                }
-                            }
-                        }
+                    if (page == 0 && show_more) || page == 1: LayoutSection {
+                        auto_overflow <=> root.auto_overflow;
+                        resize_step <=> root.resize_step;
+                        min_tile_width <=> root.min_tile_width;
+                        min_tile_height <=> root.min_tile_height;
+                        max_tiles <=> root.max_tiles;
+                        smart_gaps <=> root.smart_gaps;
+                        master_count <=> root.master_count;
+                        master_hint <=> root.master_hint;
+                        preview_gap: root.preview_gap;
                     }
 
                     // ---------- 2: workspaces ----------
-                    if (page == 0 && show_more) || page == 2: VerticalLayout {
-                        spacing: 18px;
-                        Card {
-                            card-height: 300px;
-                            VerticalLayout {
-                                padding: 20px;
-                                spacing: 12px;
-                                CardTitle { title: "Workspace dots"; subtitle: "Dots at the top of each screen: current, busy and empty"; icon: @image-url("icons/desktops.svg"); }
-                                Rectangle {
-                                    height: 96px;
-                                    border-radius: 14px;
-                                    background: AppTheme.sunken;
-                                    Rectangle {
-                                        x: (parent.width - self.width) / 2;
-                                        y: 14px;
-                                        width: 9 * 28px + 16px;
-                                        height: 36px;
-                                        border-radius: 18px;
-                                        background: show_indicator ? AppTheme.surface : transparent;
-                                        drop-shadow-offset-y: show_indicator ? 2px : 0px;
-                                        drop-shadow-blur: show_indicator ? 8px : 0px;
-                                        drop-shadow-color: AppTheme.shadow;
-                                        opacity: show_indicator ? 1 : 0.35;
-                                        HorizontalLayout {
-                                            padding-left: 8px;
-                                            for workspace[index] in [1, 2, 3, 4, 5, 6, 7, 8, 9]: DotCell {
-                                                y: 4px;
-                                                state: index == 0 ? 2 : (index == 1 || index == 4 ? 1 : 0);
-                                                diameter: indicator_size == 0 ? 6px : (indicator_size == 2 ? 10px : 8px);
-                                            }
-                                        }
-                                    }
-                                    Text { y: 60px; x: (parent.width - self.width) / 2; text: show_indicator ? "This is how the dots look on screen" : "The dots are hidden"; color: AppTheme.muted; font-size: 12px; }
-                                }
-                                ToggleRow { label: "Show the dots on every screen"; checked: show_indicator; changed(value) => { show_indicator = value; } }
-                                HorizontalLayout {
-                                    padding-left: 10px;
-                                    padding-right: 10px;
-                                    spacing: 16px;
-                                    height: 44px;
-                                    Text { text: "Dot size"; color: AppTheme.ink; font-size: 13px; vertical-alignment: center; }
-                                    Segmented { y: 2px; options: ["Small", "Medium", "Large"]; current <=> indicator_size; segment-width: 104px; }
-                                    Rectangle { horizontal-stretch: 1; }
-                                    Text { text: "Accent"; color: AppTheme.ink; font-size: 13px; vertical-alignment: center; }
-                                    Swatch { y: 5px; hex: accent_color; }
-                                    TextField { y: 4px; width: 112px; text <=> accent_color; }
-                                }
-                            }
-                        }
-                        Card {
-                            card-height: 126px;
-                            VerticalLayout {
-                                padding: 20px;
-                                spacing: 4px;
-                                CardTitle { title: "Focus"; icon: @image-url("icons/pointer.svg"); }
-                                ToggleRow { label: "Focus the window under the mouse"; hint: "No click needed, just point at it"; checked: focus_follows_mouse; changed(value) => { focus_follows_mouse = value; } }
-                            }
-                        }
+                    if (page == 0 && show_more) || page == 2: WorkspacesSection {
+                        indicator_size <=> root.indicator_size;
+                        show_indicator <=> root.show_indicator;
+                        focus_follows_mouse <=> root.focus_follows_mouse;
+                        accent_color <=> root.accent_color;
                     }
 
                     // ---------- 3: window behaviour ----------
-                    if (page == 0 && show_more) || page == 3: HorizontalLayout {
-                        spacing: 18px;
-                        Card {
-                            horizontal-stretch: 1;
-                            card-height: 280px;
-                            VerticalLayout {
-                                padding: 20px;
-                                spacing: 10px;
-                                CardTitle { title: "Fullscreen apps"; subtitle: "Games, videos and slideshows"; icon: @image-url("icons/maximize.svg"); }
-                                Rectangle { height: 2px; }
-                                Text { text: "When you switch to another workspace"; color: AppTheme.ink; font-size: 13px; }
-                                Segmented { options: ["Minimize", "Leave alone"]; current <=> fullscreen_windows; segment-width: 150px; }
-                                Rectangle { height: 6px; }
-                                Text { text: "Photo and video viewers"; color: AppTheme.ink; font-size: 13px; }
-                                Segmented { options: ["Floating", "Tiled"]; current <=> media_windows; segment-width: 150px; }
-                            }
-                        }
-                        Card {
-                            horizontal-stretch: 1;
-                            card-height: 280px;
-                            VerticalLayout {
-                                padding: 20px;
-                                spacing: 8px;
-                                CardTitle { title: "Focus border"; subtitle: "Shown around any window, even a console"; icon: @image-url("icons/border.svg"); }
-                                ToggleRow { label: "Show the border"; checked: highlight_window; changed(value) => { highlight_window = value; } }
-                                HorizontalLayout {
-                                    spacing: 18px;
-                                    height: 120px;
-                                    Rectangle {
-                                        width: 150px;
-                                        border-radius: 14px;
-                                        background: AppTheme.sunken;
-                                        Rectangle {
-                                            x: 22px;
-                                            y: 22px;
-                                            width: parent.width - 44px;
-                                            height: parent.height - 44px;
-                                            border-radius: 6px;
-                                            background: AppTheme.surface;
-                                            border-width: highlight_window ? clamp(border_width.to-float(), 1, 6) * 1px : 0px;
-                                            border-color: ColorParser.parse(border_color);
-                                            Rectangle { y: 0px; height: 12px; background: AppTheme.line; border-radius: 4px; }
-                                        }
-                                    }
-                                    VerticalLayout {
-                                        horizontal-stretch: 1;
-                                        alignment: center;
-                                        spacing: 10px;
-                                        HorizontalLayout {
-                                            spacing: 10px;
-                                            Swatch { hex: border_color; }
-                                            TextField { horizontal-stretch: 1; text <=> border_color; }
-                                        }
-                                        HorizontalLayout {
-                                            spacing: 10px;
-                                            Text { text: "Width, pixels"; color: AppTheme.ink; font-size: 13px; vertical-alignment: center; horizontal-stretch: 1; }
-                                            TextField { width: 72px; text <=> border_width; }
-                                        }
-                                    }
-                                }
-                            }
-                        }
+                    if (page == 0 && show_more) || page == 3: WindowBehaviourSection {
+                        highlight_window <=> root.highlight_window;
+                        border_color <=> root.border_color;
+                        border_width <=> root.border_width;
+                        fullscreen_windows <=> root.fullscreen_windows;
+                        media_windows <=> root.media_windows;
                     }
 
                     // ---------- 4: hotkeys ----------
-                    if page == 4: VerticalLayout {
-                        spacing: 14px;
-                        Rectangle {
-                            height: 56px;
-                            border-radius: 16px;
-                            background: recording >= 0 ? AppTheme.accent-soft : AppTheme.surface;
-                            border-width: 1px;
-                            border-color: recording >= 0 ? #b9d9fb : #e8ecf4;
-                            HorizontalLayout {
-                                padding-left: 18px;
-                                padding-right: 10px;
-                                spacing: 12px;
-                                Icon { y: (parent.height - self.height) / 2; source: recording >= 0 ? @image-url("icons/record.svg") : @image-url("icons/info.svg"); tint: recording >= 0 ? AppTheme.accent : AppTheme.muted; }
-                                Text {
-                                    text: recording >= 0 ? "Press a key combination. Esc cancels, Backspace removes the keys" : "Record keys with the circle";
-                                    color: recording >= 0 ? AppTheme.accent-ink : AppTheme.ink-2;
-                                    font-size: 13px;
-                                    vertical-alignment: center;
-                                    horizontal-stretch: 1;
-                                    overflow: elide;
-                                }
-                                ActionButton { y: (parent.height - self.height) / 2; label: "Alt keys"; kind: 2; compact: true; button-width: 110px; activated => { root.apply_preset(0); } }
-                                ActionButton { y: (parent.height - self.height) / 2; label: "Win + Alt keys"; kind: 2; compact: true; button-width: 140px; activated => { root.apply_preset(1); } }
-                                ActionButton { y: (parent.height - self.height) / 2; label: "Reset all"; icon: @image-url("icons/refresh.svg"); has-icon: true; kind: 2; compact: true; button-width: 148px; activated => { root.reset_hotkeys(); } }
-                            }
-                        }
-                        key_capture := FocusScope {
-                            width: 0px;
-                            height: 0px;
-                            key-pressed(event) => {
-                                if (root.recording >= 0) {
-                                    root.key_captured(root.recording, root.recording_append, event.text, event.modifiers.alt, event.modifiers.control, event.modifiers.shift, event.modifiers.meta);
-                                    return accept;
-                                }
-                                return reject;
-                            }
-                        }
-                        Card {
-                            card-height: hk-list.preferred-height + 24px;
-                            hk-list := VerticalLayout {
-                                padding-top: 12px;
-                                padding-bottom: 12px;
-                                padding-left: 14px;
-                                padding-right: 14px;
-                                for row[index] in hotkey_rows: VerticalLayout {
-                                    property <bool> first-of-group: index == 0 || hotkey_rows[index - 1].group != row.group;
-                                    if first-of-group: VerticalLayout {
-                                        padding-top: index == 0 ? 6px : 18px;
-                                        padding-left: 10px;
-                                        padding-bottom: 6px;
-                                        Text { text: row.group; color: AppTheme.ink; font-size: 14px; font-weight: 600; }
-                                    }
-                                    Rectangle {
-                                        height: 46px;
-                                        border-radius: 12px;
-                                        background: recording == index ? AppTheme.accent-soft : (row-touch.has-hover ? AppTheme.sunken : transparent);
-                                        row-touch := TouchArea { }
-                                        HorizontalLayout {
-                                            padding-left: 10px;
-                                            padding-right: 4px;
-                                            spacing: 10px;
-                                            Text { text: row.label; color: AppTheme.ink; font-size: 13px; vertical-alignment: center; width: 260px; overflow: elide; }
-                                            HorizontalLayout {
-                                                horizontal-stretch: 1;
-                                                alignment: start;
-                                                spacing: 10px;
-                                                if recording == index || row.keys.length == 0: Rectangle {
-                                                    y: (parent.height - self.height) / 2;
-                                                    height: 28px;
-                                                    width: hint-text.preferred-width + 24px;
-                                                    border-radius: 8px;
-                                                    background: recording == index ? AppTheme.surface : transparent;
-                                                    border-width: 1px;
-                                                    border-color: recording == index ? #9ccdff : AppTheme.line;
-                                                    hint-text := Text {
-                                                        text: recording == index ? "Press keys…" : "Not set";
-                                                        color: recording == index ? AppTheme.accent-ink : AppTheme.muted;
-                                                        font-size: 12px;
-                                                        horizontal-alignment: center;
-                                                        vertical-alignment: center;
-                                                    }
-                                                }
-                                                if recording != index: HorizontalLayout {
-                                                    spacing: 6px;
-                                                    for key in row.keys: Rectangle {
-                                                        y: (parent.height - self.height) / 2;
-                                                        height: 28px;
-                                                        width: key-text.preferred-width + 22px;
-                                                        border-radius: 8px;
-                                                        background: row.conflict ? AppTheme.danger-soft : AppTheme.surface;
-                                                        border-width: 1px;
-                                                        border-color: row.conflict ? #f3c4c6 : #d9e0ec;
-                                                        drop-shadow-offset-y: 1px;
-                                                        drop-shadow-blur: 0px;
-                                                        drop-shadow-color: #d9e0ec;
-                                                        key-text := Text { text: key; color: row.conflict ? AppTheme.danger : AppTheme.ink; font-size: 12px; font-weight: 600; horizontal-alignment: center; vertical-alignment: center; }
-                                                    }
-                                                }
-                                                if row.refused && !row.conflict: HorizontalLayout {
-                                                    spacing: 6px;
-                                                    Icon { y: (parent.height - self.height) / 2; width: 16px; height: 16px; source: @image-url("icons/alert.svg"); tint: AppTheme.danger; }
-                                                    Text { text: "Taken by another app or by Windows"; color: AppTheme.danger; font-size: 12px; vertical-alignment: center; }
-                                                }
-                                                if row.conflict: HorizontalLayout {
-                                                    spacing: 6px;
-                                                    Icon { y: (parent.height - self.height) / 2; width: 16px; height: 16px; source: @image-url("icons/alert.svg"); tint: AppTheme.danger; }
-                                                    Text { text: "Already used"; color: AppTheme.danger; font-size: 12px; vertical-alignment: center; }
-                                                }
-                                            }
-                                            IconButton { y: (parent.height - self.height) / 2; icon: @image-url("icons/record.svg"); label: "Record new keys"; activated => { root.recording = index; root.recording_append = false; key_capture.focus(); } }
-                                            IconButton { y: (parent.height - self.height) / 2; icon: @image-url("icons/plus.svg"); label: "Add another combination"; activated => { root.recording = index; root.recording_append = true; key_capture.focus(); } }
-                                            IconButton { y: (parent.height - self.height) / 2; icon: @image-url("icons/trash.svg"); label: "Remove keys"; danger: true; activated => { root.clear_keys(index); } }
-                                        }
-                                    }
-                                }
-                            }
-                        }
+                    if page == 4: HotkeysPage {
+                        hotkey_rows <=> root.hotkey_rows;
+                        recording <=> root.recording;
+                        recording_append <=> root.recording_append;
+                        key_captured(arg0, arg1, arg2, arg3, arg4, arg5, arg6) => { root.key_captured(arg0, arg1, arg2, arg3, arg4, arg5, arg6); }
+                        clear_keys(arg0) => { root.clear_keys(arg0); }
+                        reset_hotkeys() => { root.reset_hotkeys(); }
+                        apply_preset(arg0) => { root.apply_preset(arg0); }
                     }
 
                     // ---------- 5: applications ----------
-                    if page == 5: VerticalLayout {
-                        spacing: 18px;
-                        Card {
-                            card-height: rules-list.preferred-height;
-                            rules-list := VerticalLayout {
-                                padding: 20px;
-                                spacing: 6px;
-                                CardTitle { title: "App rules"; subtitle: rule_rows.length == 0 ? "No rules yet" : "Rules: " + rule_rows.length; icon: @image-url("icons/apps.svg"); }
-                                Rectangle { height: 6px; }
-                                if rule_rows.length == 0: Rectangle {
-                                    height: 132px;
-                                    border-radius: 14px;
-                                    background: AppTheme.sunken;
-                                    VerticalLayout {
-                                        alignment: center;
-                                        spacing: 6px;
-                                        Icon { x: (parent.width - self.width) / 2; width: 28px; height: 28px; source: @image-url("icons/apps.svg"); tint: AppTheme.accent; }
-                                        Text { text: "Set up your first app"; color: AppTheme.ink; font-size: 14px; font-weight: 600; horizontal-alignment: center; }
-                                        Text { text: "For example, always open your messenger on its own workspace"; color: AppTheme.ink-2; font-size: 12px; horizontal-alignment: center; }
-                                    }
-                                }
-                                for rule[index] in rule_rows: Rectangle {
-                                    height: 52px;
-                                    border-radius: 12px;
-                                    background: rule-touch.has-hover ? AppTheme.sunken : transparent;
-                                    rule-touch := TouchArea { }
-                                    HorizontalLayout {
-                                        padding-left: 6px;
-                                        padding-right: 4px;
-                                        spacing: 12px;
-                                        Rectangle {
-                                            y: (parent.height - self.height) / 2;
-                                            width: 36px;
-                                            height: 36px;
-                                            border-radius: 12px;
-                                            background: AppTheme.accent-soft;
-                                            Icon { source: @image-url("icons/window.svg"); tint: AppTheme.accent; }
-                                        }
-                                        Text { text: rule; color: AppTheme.ink; font-size: 13px; vertical-alignment: center; horizontal-stretch: 1; overflow: elide; }
-                                        IconButton { y: (parent.height - self.height) / 2; icon: @image-url("icons/trash.svg"); label: "Delete rule"; danger: true; activated => { root.delete_rule(index); } }
-                                    }
-                                }
-                            }
-                        }
-                        Card {
-                            card-height: 148px;
-                            VerticalLayout {
-                                padding: 20px;
-                                spacing: 14px;
-                                CardTitle { title: "New rule"; subtitle: "Pick an open app (or a program file with the file button) and what to do with it"; icon: @image-url("icons/app-plus.svg"); }
-                                HorizontalLayout {
-                                    spacing: 10px;
-                                    height: 38px;
-                                    Select { horizontal-stretch: 1; model: app_choices; current-index <=> rule_app_index; placeholder: "No open apps"; }
-                                    Select { width: 250px; model: rule_kinds; current-index <=> rule_kind_index; }
-                                    ActionButton { label: "Add"; icon: @image-url("icons/plus.svg"); has-icon: true; primary: true; button-width: 128px; enabled: app_choices.length > 0; activated => { root.add_rule(); } }
-                                    IconButton { y: 2px; icon: @image-url("icons/refresh.svg"); label: "Refresh the app list"; activated => { root.refresh_apps(); } }
-                                    IconButton { y: 2px; icon: @image-url("icons/file.svg"); label: "Choose a program file (.exe)"; activated => { root.add_rule_from_file(); } }
-                                }
-                            }
-                        }
+                    if page == 5: AppsPage {
+                        rule_rows <=> root.rule_rows;
+                        app_choices <=> root.app_choices;
+                        rule_app_index <=> root.rule_app_index;
+                        rule_kind_index <=> root.rule_kind_index;
+                        rule_kinds: root.rule_kinds;
+                        add_rule_from_file() => { root.add_rule_from_file(); }
+                        add_rule() => { root.add_rule(); }
+                        delete_rule(arg0) => { root.delete_rule(arg0); }
+                        refresh_apps() => { root.refresh_apps(); }
                     }
 
                     // ---------- 6: advanced ----------
-                    if page == 6 || page == 7: VerticalLayout {
-                        spacing: 18px;
-                        Card {
-                            card-height: 186px;
-                            VerticalLayout {
-                                padding: 20px;
-                                spacing: 8px;
-                                CardTitle { title: "Startup and troubleshooting"; icon: @image-url("icons/adjustments.svg"); }
-                                ToggleRow { label: "Start tile-rs when Windows starts"; checked: autostart; changed(value) => { autostart = value; } }
-                                HorizontalLayout {
-                                    padding-left: 10px;
-                                    spacing: 10px;
-                                    alignment: start;
-                                    ActionButton { label: "Open config file"; icon: @image-url("icons/file.svg"); has-icon: true; compact: true; button-width: 168px; activated => { root.open_config(); } }
-                                    ActionButton { label: "Open log"; icon: @image-url("icons/list.svg"); has-icon: true; compact: true; button-width: 168px; activated => { root.open_log(); } }
-                                }
-                            }
-                        }
-                        Card {
-                            card-height: 226px;
-                            VerticalLayout {
-                                padding: 20px;
-                                spacing: 8px;
-                                CardTitle { title: "About"; subtitle: "tile-rs " + app_version + " · open source, MIT license"; icon: @image-url("icons/info.svg"); }
-                                Text { text: "The settings window is built with Slint under the Slint Royalty-Free license."; color: AppTheme.ink-2; font-size: 12px; wrap: word-wrap; }
-                                HorizontalLayout {
-                                    spacing: 24px;
-                                    alignment: start;
-                                    AboutSlint { width: 160px; height: 100px; }
-                                    VerticalLayout {
-                                        alignment: center;
-                                        spacing: 8px;
-                                        ActionButton { label: "Support tile-rs"; icon: @image-url("icons/external.svg"); has-icon: true; compact: true; button-width: 196px; activated => { root.open_support(); } }
-                                        ActionButton { label: "GitHub page"; icon: @image-url("icons/external.svg"); has-icon: true; compact: true; button-width: 196px; activated => { root.open_github(); } }
-                                    }
-                                }
-                            }
-                        }
+                    if page == 6 || page == 7: AdvancedSection {
+                        autostart <=> root.autostart;
+                        app_version: root.app_version;
+                        open_github() => { root.open_github(); }
+                        open_support() => { root.open_support(); }
+                        open_config() => { root.open_config(); }
+                        open_log() => { root.open_log(); }
                     }
 
                     // ---------- 7: updates ----------
-                    if page == 7: VerticalLayout {
-                        spacing: 18px;
-                        Card {
-                            card-height: update_state == 4 ? 252px : 230px;
-                            VerticalLayout {
-                                padding: 24px;
-                                spacing: 14px;
-                                HorizontalLayout {
-                                    height: 56px;
-                                    spacing: 16px;
-                                    Rectangle {
-                                        width: 56px;
-                                        border-radius: 18px;
-                                        background: update_state == 5 ? AppTheme.danger-soft : (update_state == 3 ? AppTheme.success-soft : AppTheme.accent-soft);
-                                        Icon {
-                                            width: 26px;
-                                            height: 26px;
-                                            source: update_state == 5 ? @image-url("icons/alert.svg") : (update_state == 3 ? @image-url("icons/check.svg") : @image-url("icons/download.svg"));
-                                            tint: update_state == 5 ? AppTheme.danger : (update_state == 3 ? AppTheme.success-ink : AppTheme.accent);
-                                        }
-                                    }
-                                    VerticalLayout {
-                                        alignment: center;
-                                        spacing: 3px;
-                                        Text { text: update_title; color: AppTheme.ink; font-size: 20px; font-weight: 700; }
-                                        Text { text: "Installed version " + app_version + " · stable channel"; color: AppTheme.ink-2; font-size: 13px; }
-                                    }
-                                }
-                                Text { text: update_message; color: update_state == 5 ? AppTheme.danger : AppTheme.ink-2; font-size: 13px; wrap: word-wrap; height: 40px; }
-                                if update_state == 4: Rectangle {
-                                    height: 8px;
-                                    border-radius: 4px;
-                                    background: AppTheme.accent-soft;
-                                    Rectangle { x: 0px; height: parent.height; width: parent.width * (update_progress / 100); border-radius: 4px; background: AppTheme.accent; animate width { duration: AppTheme.motion ? 160ms : 0ms; } }
-                                }
-                                HorizontalLayout {
-                                    spacing: 10px;
-                                    ActionButton { label: update_state == 1 ? "Checking…" : "Check"; icon: @image-url("icons/refresh.svg"); has-icon: true; button-width: 150px; enabled: update_state != 1 && update_state != 4; activated => { root.check_updates(); } }
-                                    if update_state == 2 || update_state == 4: ActionButton { label: update_state == 4 ? "Downloading " + update_progress + "%" : "Install update"; icon: @image-url("icons/download.svg"); has-icon: true; primary: true; button-width: 232px; enabled: update_state == 2; activated => { root.install_update(); } }
-                                    Rectangle { horizontal-stretch: 1; }
-                                    ActionButton { label: "All releases"; icon: @image-url("icons/external.svg"); has-icon: true; kind: 2; button-width: 140px; activated => { root.open_release(); } }
-                                }
-                            }
-                        }
-                        Card {
-                            card-height: notes.preferred-height;
-                            notes := VerticalLayout {
-                                padding: 20px;
-                                spacing: 12px;
-                                CardTitle { title: "What's new"; icon: @image-url("icons/list.svg"); }
-                                Text {
-                                    wrap: word-wrap;
-                                    color: AppTheme.ink-2;
-                                    font-size: 13px;
-                                    text: release_notes == "" ? "Release notes appear here after a check.\n\ntile-rs checks at startup and then every 6 hours. When a new version is out, Windows shows a notification." : release_notes;
-                                }
-                            }
-                        }
+                    if page == 7: UpdatesPage {
+                        app_version: root.app_version;
+                        update_state <=> root.update_state;
+                        update_progress <=> root.update_progress;
+                        update_message <=> root.update_message;
+                        release_notes <=> root.release_notes;
+                        update_title: root.update_title;
+                        install_update() => { root.install_update(); }
+                        open_release() => { root.open_release(); }
+                        check_updates() => { root.check_updates(); }
                     }
                 }
             }

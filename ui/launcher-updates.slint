@@ -1,0 +1,72 @@
+import { Icon, Card, CardTitle, ActionButton } from "launcher-components.slint";
+import { AppTheme } from "launcher-theme.slint";
+
+export component UpdatesPage inherits VerticalLayout {
+    in property <string> app_version;
+    in-out property <int> update_state;
+    in-out property <int> update_progress;
+    in-out property <string> update_message;
+    in-out property <string> release_notes;
+    in property <string> update_title;
+    callback install_update();
+    callback open_release();
+    callback check_updates();
+
+    spacing: 18px;
+    Card {
+        card-height: update_state == 4 ? 252px : 230px;
+        VerticalLayout {
+            padding: 24px;
+            spacing: 14px;
+            HorizontalLayout {
+                height: 56px;
+                spacing: 16px;
+                Rectangle {
+                    width: 56px;
+                    border-radius: 18px;
+                    background: update_state == 5 ? AppTheme.danger-soft : (update_state == 3 ? AppTheme.success-soft : AppTheme.accent-soft);
+                    Icon {
+                        width: 26px;
+                        height: 26px;
+                        source: update_state == 5 ? @image-url("icons/alert.svg") : (update_state == 3 ? @image-url("icons/check.svg") : @image-url("icons/download.svg"));
+                        tint: update_state == 5 ? AppTheme.danger : (update_state == 3 ? AppTheme.success-ink : AppTheme.accent);
+                    }
+                }
+                VerticalLayout {
+                    alignment: center;
+                    spacing: 3px;
+                    Text { text: update_title; color: AppTheme.ink; font-size: 20px; font-weight: 700; }
+                    Text { text: "Installed version " + app_version + " · stable channel"; color: AppTheme.ink-2; font-size: 13px; }
+                }
+            }
+            Text { text: update_message; color: update_state == 5 ? AppTheme.danger : AppTheme.ink-2; font-size: 13px; wrap: word-wrap; height: 40px; }
+            if update_state == 4: Rectangle {
+                height: 8px;
+                border-radius: 4px;
+                background: AppTheme.accent-soft;
+                Rectangle { x: 0px; height: parent.height; width: parent.width * (update_progress / 100); border-radius: 4px; background: AppTheme.accent; animate width { duration: AppTheme.motion ? 160ms : 0ms; } }
+            }
+            HorizontalLayout {
+                spacing: 10px;
+                ActionButton { label: update_state == 1 ? "Checking…" : "Check"; icon: @image-url("icons/refresh.svg"); has-icon: true; button-width: 150px; enabled: update_state != 1 && update_state != 4; activated => { root.check_updates(); } }
+                if update_state == 2 || update_state == 4: ActionButton { label: update_state == 4 ? "Downloading " + update_progress + "%" : "Install update"; icon: @image-url("icons/download.svg"); has-icon: true; primary: true; button-width: 232px; enabled: update_state == 2; activated => { root.install_update(); } }
+                Rectangle { horizontal-stretch: 1; }
+                ActionButton { label: "All releases"; icon: @image-url("icons/external.svg"); has-icon: true; kind: 2; button-width: 140px; activated => { root.open_release(); } }
+            }
+        }
+    }
+    Card {
+        card-height: notes.preferred-height;
+        notes := VerticalLayout {
+            padding: 20px;
+            spacing: 12px;
+            CardTitle { title: "What's new"; icon: @image-url("icons/list.svg"); }
+            Text {
+                wrap: word-wrap;
+                color: AppTheme.ink-2;
+                font-size: 13px;
+                text: release_notes == "" ? "Release notes appear here after a check.\n\ntile-rs checks at startup and then every 6 hours. When a new version is out, Windows shows a notification." : release_notes;
+            }
+        }
+    }
+}

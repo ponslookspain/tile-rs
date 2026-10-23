@@ -1,0 +1,130 @@
+import { Icon, Card, ActionButton, IconButton } from "launcher-components.slint";
+import { AppTheme } from "launcher-theme.slint";
+import { HotkeyRowData } from "launcher-types.slint";
+
+export component HotkeysPage inherits VerticalLayout {
+    in-out property <[HotkeyRowData]> hotkey_rows;
+    in-out property <int> recording;
+    in-out property <bool> recording_append;
+    callback key_captured(int, bool, string, bool, bool, bool, bool);
+    callback clear_keys(int);
+    callback reset_hotkeys();
+    callback apply_preset(int);
+
+    spacing: 14px;
+    Rectangle {
+        height: 56px;
+        border-radius: 16px;
+        background: recording >= 0 ? AppTheme.accent-soft : AppTheme.surface;
+        border-width: 1px;
+        border-color: recording >= 0 ? #b9d9fb : #e8ecf4;
+        HorizontalLayout {
+            padding-left: 18px;
+            padding-right: 10px;
+            spacing: 12px;
+            Icon { y: (parent.height - self.height) / 2; source: recording >= 0 ? @image-url("icons/record.svg") : @image-url("icons/info.svg"); tint: recording >= 0 ? AppTheme.accent : AppTheme.muted; }
+            Text {
+                text: recording >= 0 ? "Press a key combination. Esc cancels, Backspace removes the keys" : "Record keys with the circle";
+                color: recording >= 0 ? AppTheme.accent-ink : AppTheme.ink-2;
+                font-size: 13px;
+                vertical-alignment: center;
+                horizontal-stretch: 1;
+                overflow: elide;
+            }
+            ActionButton { y: (parent.height - self.height) / 2; label: "Alt keys"; kind: 2; compact: true; button-width: 110px; activated => { root.apply_preset(0); } }
+            ActionButton { y: (parent.height - self.height) / 2; label: "Win + Alt keys"; kind: 2; compact: true; button-width: 140px; activated => { root.apply_preset(1); } }
+            ActionButton { y: (parent.height - self.height) / 2; label: "Reset all"; icon: @image-url("icons/refresh.svg"); has-icon: true; kind: 2; compact: true; button-width: 148px; activated => { root.reset_hotkeys(); } }
+        }
+    }
+    key_capture := FocusScope {
+        width: 0px;
+        height: 0px;
+        key-pressed(event) => {
+            if (root.recording >= 0) {
+                root.key_captured(root.recording, root.recording_append, event.text, event.modifiers.alt, event.modifiers.control, event.modifiers.shift, event.modifiers.meta);
+                return accept;
+            }
+            return reject;
+        }
+    }
+    Card {
+        card-height: hk-list.preferred-height + 24px;
+        hk-list := VerticalLayout {
+            padding-top: 12px;
+            padding-bottom: 12px;
+            padding-left: 14px;
+            padding-right: 14px;
+            for row[index] in hotkey_rows: VerticalLayout {
+                property <bool> first-of-group: index == 0 || hotkey_rows[index - 1].group != row.group;
+                if first-of-group: VerticalLayout {
+                    padding-top: index == 0 ? 6px : 18px;
+                    padding-left: 10px;
+                    padding-bottom: 6px;
+                    Text { text: row.group; color: AppTheme.ink; font-size: 14px; font-weight: 600; }
+                }
+                Rectangle {
+                    height: 46px;
+                    border-radius: 12px;
+                    background: recording == index ? AppTheme.accent-soft : (row-touch.has-hover ? AppTheme.sunken : transparent);
+                    row-touch := TouchArea { }
+                    HorizontalLayout {
+                        padding-left: 10px;
+                        padding-right: 4px;
+                        spacing: 10px;
+                        Text { text: row.label; color: AppTheme.ink; font-size: 13px; vertical-alignment: center; width: 260px; overflow: elide; }
+                        HorizontalLayout {
+                            horizontal-stretch: 1;
+                            alignment: start;
+                            spacing: 10px;
+                            if recording == index || row.keys.length == 0: Rectangle {
+                                y: (parent.height - self.height) / 2;
+                                height: 28px;
+                                width: hint-text.preferred-width + 24px;
+                                border-radius: 8px;
+                                background: recording == index ? AppTheme.surface : transparent;
+                                border-width: 1px;
+                                border-color: recording == index ? #9ccdff : AppTheme.line;
+                                hint-text := Text {
+                                    text: recording == index ? "Press keys…" : "Not set";
+                                    color: recording == index ? AppTheme.accent-ink : AppTheme.muted;
+                                    font-size: 12px;
+                                    horizontal-alignment: center;
+                                    vertical-alignment: center;
+                                }
+                            }
+                            if recording != index: HorizontalLayout {
+                                spacing: 6px;
+                                for key in row.keys: Rectangle {
+                                    y: (parent.height - self.height) / 2;
+                                    height: 28px;
+                                    width: key-text.preferred-width + 22px;
+                                    border-radius: 8px;
+                                    background: row.conflict ? AppTheme.danger-soft : AppTheme.surface;
+                                    border-width: 1px;
+                                    border-color: row.conflict ? #f3c4c6 : #d9e0ec;
+                                    drop-shadow-offset-y: 1px;
+                                    drop-shadow-blur: 0px;
+                                    drop-shadow-color: #d9e0ec;
+                                    key-text := Text { text: key; color: row.conflict ? AppTheme.danger : AppTheme.ink; font-size: 12px; font-weight: 600; horizontal-alignment: center; vertical-alignment: center; }
+                                }
+                            }
+                            if row.refused && !row.conflict: HorizontalLayout {
+                                spacing: 6px;
+                                Icon { y: (parent.height - self.height) / 2; width: 16px; height: 16px; source: @image-url("icons/alert.svg"); tint: AppTheme.danger; }
+                                Text { text: "Taken by another app or by Windows"; color: AppTheme.danger; font-size: 12px; vertical-alignment: center; }
+                            }
+                            if row.conflict: HorizontalLayout {
+                                spacing: 6px;
+                                Icon { y: (parent.height - self.height) / 2; width: 16px; height: 16px; source: @image-url("icons/alert.svg"); tint: AppTheme.danger; }
+                                Text { text: "Already used"; color: AppTheme.danger; font-size: 12px; vertical-alignment: center; }
+                            }
+                        }
+                        IconButton { y: (parent.height - self.height) / 2; icon: @image-url("icons/record.svg"); label: "Record new keys"; activated => { root.recording = index; root.recording_append = false; key_capture.focus(); } }
+                        IconButton { y: (parent.height - self.height) / 2; icon: @image-url("icons/plus.svg"); label: "Add another combination"; activated => { root.recording = index; root.recording_append = true; key_capture.focus(); } }
+                        IconButton { y: (parent.height - self.height) / 2; icon: @image-url("icons/trash.svg"); label: "Remove keys"; danger: true; activated => { root.clear_keys(index); } }
+                    }
+                }
+            }
+        }
+    }
+}

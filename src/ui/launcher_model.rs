@@ -1,6 +1,5 @@
-//! Logic behind the settings launcher that does not depend on the UI toolkit: the hotkey table
-//! (rows, key capture, conflicts) and the application rules text. The Slint layer in `launcher.rs`
-//! only binds these to widgets, so a redesign of the UI never touches the rules below.
+//! Toolkit-independent settings validation and config conversion, hotkey editing and app rules.
+//! The Slint layer in `launcher.rs` binds these to widgets and handles platform operations.
 
 use std::collections::HashMap;
 
@@ -624,6 +623,291 @@ pub fn edit_rules(text: &str, rules: &[Rule]) -> String {
     out
 }
 
+/// Settings captured from the launcher, independent of Slint properties.
+#[derive(Clone, Debug, Default)]
+pub struct SettingsForm {
+    pub layout_index: i32,
+    pub indicator_size: i32,
+    pub inner_gap: String,
+    pub outer_gap: String,
+    pub animations: bool,
+    pub animation_ms: String,
+    pub easing: String,
+    pub resize_step: String,
+    pub min_tile_width: String,
+    pub min_tile_height: String,
+    pub max_tiles: String,
+    pub auto_overflow: bool,
+    pub smart_gaps: bool,
+    pub master_count: String,
+    pub show_indicator: bool,
+    pub focus_follows_mouse: bool,
+    pub highlight_window: bool,
+    pub border_color: String,
+    pub accent_color: String,
+    pub border_width: String,
+    pub fullscreen_windows: i32,
+    pub media_windows: i32,
+}
+
+impl SettingsForm {
+    /// Validate numeric input and build values for the existing top-level config editor.
+    pub fn config_pairs(&self) -> Result<Vec<(&'static str, String)>, String> {
+        let layout = layout_from_index(self.layout_index);
+        let indicator = indicator_from_index(self.indicator_size);
+        let easing = self.easing.to_string();
+        let border_color = self.border_color.to_string();
+        let accent_color = self.accent_color.to_string();
+        let mut bad: Option<String> = None;
+        let mut num = |label: &str, text: &str, min: i64, max: i64| -> String {
+            match text.trim().parse::<i64>() {
+                Ok(v) if (min..=max).contains(&v) => v.to_string(),
+                _ => {
+                    bad.get_or_insert_with(|| {
+                        format!("{label}: enter a number from {min} to {max}")
+                    });
+                    String::new()
+                }
+            }
+        };
+        let pairs: Vec<(&str, String)> = vec![
+            ("layout", format!("\"{}\"", layout.name())),
+            ("inner_gap", num("Between windows", &self.inner_gap, 0, 200)),
+            (
+                "outer_gap",
+                num("From screen edges", &self.outer_gap, 0, 200),
+            ),
+            ("animations", self.animations.to_string()),
+            (
+                "animation_ms",
+                num("Animation length", &self.animation_ms, 0, 1000),
+            ),
+            ("easing", format!("\"{easing}\"")),
+            ("resize_step", num("Resize step", &self.resize_step, 1, 500)),
+            (
+                "min_tile_width",
+                num("Minimum width", &self.min_tile_width, 100, 4000),
+            ),
+            (
+                "min_tile_height",
+                num("Minimum height", &self.min_tile_height, 100, 4000),
+            ),
+            (
+                "max_tiles",
+                num("Windows per workspace", &self.max_tiles, 0, 20),
+            ),
+            ("auto_overflow", self.auto_overflow.to_string()),
+            ("smart_gaps", self.smart_gaps.to_string()),
+            (
+                "master_count",
+                num("Windows in the main column", &self.master_count, 1, 8),
+            ),
+            ("workspace_indicator", self.show_indicator.to_string()),
+            (
+                "workspace_indicator_size",
+                format!("\"{}\"", indicator.name()),
+            ),
+            ("focus_follows_mouse", self.focus_follows_mouse.to_string()),
+            ("border", self.highlight_window.to_string()),
+            ("border_color", format!("\"{border_color}\"")),
+            ("accent_color", format!("\"{accent_color}\"")),
+            (
+                "border_width",
+                num("Border width", &self.border_width, 0, 20),
+            ),
+            (
+                "fullscreen_windows",
+                format!(
+                    "\"{}\"",
+                    if self.fullscreen_windows == 1 {
+                        "ignore"
+                    } else {
+                        "minimize"
+                    }
+                ),
+            ),
+            (
+                "media_windows",
+                format!(
+                    "\"{}\"",
+                    if self.media_windows == 1 {
+                        "tile"
+                    } else {
+                        "float"
+                    }
+                ),
+            ),
+        ];
+
+        match bad {
+            Some(message) => Err(message),
+            None => Ok(pairs),
+        }
+    }
+}
+
+pub fn layout_index(layout: config::Layout) -> i32 {
+    match layout {
+        config::Layout::Spiral => 0,
+        config::Layout::MasterStack => 1,
+        config::Layout::Grid => 2,
+        config::Layout::Columns => 3,
+    }
+}
+
+pub fn layout_from_index(index: i32) -> config::Layout {
+    match index {
+        1 => config::Layout::MasterStack,
+        2 => config::Layout::Grid,
+        3 => config::Layout::Columns,
+        _ => config::Layout::Spiral,
+    }
+}
+
+pub fn indicator_index(size: config::IndicatorSize) -> i32 {
+    match size {
+        config::IndicatorSize::Small => 0,
+        config::IndicatorSize::Medium => 1,
+        config::IndicatorSize::Large => 2,
+    }
+}
+
+pub fn indicator_from_index(index: i32) -> config::IndicatorSize {
+    match index {
+        0 => config::IndicatorSize::Small,
+        2 => config::IndicatorSize::Large,
+        _ => config::IndicatorSize::Medium,
+    }
+}
+
+pub fn fullscreen_index(mode: config::FullscreenWindows) -> i32 {
+    i32::from(mode == config::FullscreenWindows::Ignore)
+}
+
+pub fn media_index(mode: config::MediaWindows) -> i32 {
+    i32::from(mode == config::MediaWindows::Tile)
+}
+
+/// Windows colors store red in the low byte; the UI uses the config's #RRGGBB notation.
+pub fn color_hex(color: u32) -> String {
+    format!(
+        "#{:02x}{:02x}{:02x}",
+        color & 0xff,
+        (color >> 8) & 0xff,
+        (color >> 16) & 0xff
+    )
+}
+
+/// RGB for the swatches; invalid input maps to a transparent swatch in the UI.
+pub fn parse_hex_color(text: &str) -> Option<[u8; 3]> {
+    let hex = text.trim().trim_start_matches('#');
+    match (hex.len(), u32::from_str_radix(hex, 16)) {
+        (6, Ok(v)) => Some([(v >> 16) as u8, (v >> 8) as u8, v as u8]),
+        _ => None,
+    }
+}
+
+pub fn parse_refused(text: &str) -> Vec<(String, String)> {
+    text.lines()
+        .filter_map(|line| line.split_once('\t'))
+        .map(|(action, keys)| (action.trim().to_string(), keys.trim().to_string()))
+        .collect()
+}
+
+pub fn is_refused(row: &Row, refused: &[(String, String)]) -> bool {
+    refused.iter().any(|(action, key)| {
+        *action == row.action
+            && row
+                .keys
+                .iter()
+                .any(|k| config::parse_hotkey(k).ok() == config::parse_hotkey(key).ok())
+    })
+}
+
+pub fn easing_name(easing: crate::layout::geometry::Easing) -> &'static str {
+    use crate::layout::geometry::Easing;
+    match easing {
+        Easing::Linear => "linear",
+        Easing::OutQuad => "out_quad",
+        Easing::OutCubic => "out_cubic",
+        Easing::OutQuart => "out_quart",
+        Easing::InOutCubic => "in_out_cubic",
+    }
+}
+
+/// Add the selected process rule unless an equivalent process-only rule exists.
+/// Returns whether the rule list changed.
+pub fn add_process_rule(rules: &mut Vec<Rule>, process: String, kind: i32) -> bool {
+    let kind = kind.clamp(0, 9);
+    let rule = config::Rule {
+        process: Some(process),
+        action: (kind == 0).then(|| "float".to_string()),
+        workspace: (kind > 0).then_some(kind as u8),
+        ..config::Rule::default()
+    };
+    let same = |r: &config::Rule| {
+        r.process
+            .as_deref()
+            .zip(rule.process.as_deref())
+            .is_some_and(|(a, b)| a.eq_ignore_ascii_case(b))
+            && r.class.is_none()
+            && r.title.is_none()
+            && r.action == rule.action
+            && r.workspace == rule.workspace
+    };
+    if rules.iter().any(same) {
+        return false;
+    }
+    rules.push(rule);
+    true
+}
+
+/// Replaces the `[hotkeys]` section, leaving all unrelated config text untouched.
+pub fn edit_hotkeys(text: &str, lines: &str) -> String {
+    let nl = if text.contains("\r\n") { "\r\n" } else { "\n" };
+    let mut hot: Vec<String> = Vec::new();
+    for line in lines.lines() {
+        let value = line.trim();
+        if value.is_empty() || value.starts_with('#') {
+            continue;
+        }
+        if let Some((key, value)) = value.split_once('=') {
+            let key = key.trim();
+            let value = value.trim();
+            let value = if value.starts_with('[') || value.starts_with('"') {
+                value.to_string()
+            } else {
+                format!("\"{}\"", value.trim_matches('"'))
+            };
+            hot.push(format!("{key} = {value}"));
+        }
+    }
+    let mut out = Vec::new();
+    let mut in_hotkeys = false;
+    let mut found = false;
+    for line in text.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with('[') {
+            in_hotkeys = trimmed == "[hotkeys]";
+            found |= in_hotkeys;
+            out.push(line.to_string());
+            if in_hotkeys {
+                out.extend(hot.iter().cloned());
+            }
+        } else if !in_hotkeys {
+            out.push(line.to_string());
+        }
+    }
+    if !found {
+        out.push(String::new());
+        out.push("[hotkeys]".into());
+        out.extend(hot);
+    }
+    let mut output = out.join(nl);
+    output.push_str(nl);
+    output
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -634,6 +918,229 @@ mod tests {
             action: Some(action.into()),
             ..Rule::default()
         }
+    }
+
+    fn valid_form() -> SettingsForm {
+        SettingsForm {
+            layout_index: 1,
+            indicator_size: 2,
+            inner_gap: " 005 ".into(),
+            outer_gap: "0".into(),
+            animations: true,
+            animation_ms: "180".into(),
+            easing: "out_cubic".into(),
+            resize_step: "20".into(),
+            min_tile_width: "100".into(),
+            min_tile_height: "4000".into(),
+            max_tiles: "0".into(),
+            auto_overflow: true,
+            smart_gaps: false,
+            master_count: "1".into(),
+            show_indicator: true,
+            focus_follows_mouse: false,
+            highlight_window: true,
+            border_color: "#123456".into(),
+            accent_color: "#abcdef".into(),
+            border_width: "20".into(),
+            fullscreen_windows: 1,
+            media_windows: 1,
+        }
+    }
+
+    #[test]
+    fn settings_pairs_preserve_config_names_and_normalize_numbers() {
+        let pairs = valid_form().config_pairs().unwrap();
+        assert_eq!(pairs.len(), 22);
+        let value = |key| pairs.iter().find(|(k, _)| *k == key).unwrap().1.as_str();
+        assert_eq!(value("inner_gap"), "5");
+        assert_eq!(value("layout"), "\"master_stack\"");
+        assert_eq!(value("workspace_indicator_size"), "\"large\"");
+        assert_eq!(value("fullscreen_windows"), "\"ignore\"");
+        assert_eq!(value("media_windows"), "\"tile\"");
+        assert_eq!(value("easing"), "\"out_cubic\"");
+        let text = config::edit_top(&config::default_config(), &pairs);
+        let parsed = config::parse(&text).expect("form values still use the public config format");
+        assert_eq!(parsed.inner_gap, 5);
+        assert_eq!(parsed.layout, config::Layout::MasterStack);
+        assert_eq!(parsed.border_color, 0x563412);
+        assert_eq!(parsed.accent_color, 0xefcdab);
+    }
+
+    #[test]
+    fn numeric_fields_enforce_each_existing_range() {
+        type NumberField = fn(&mut SettingsForm) -> &mut String;
+        let fields: [(&str, i64, i64, NumberField); 9] = [
+            ("Between windows", 0, 200, |f| &mut f.inner_gap),
+            ("From screen edges", 0, 200, |f| &mut f.outer_gap),
+            ("Animation length", 0, 1000, |f| &mut f.animation_ms),
+            ("Resize step", 1, 500, |f| &mut f.resize_step),
+            ("Minimum width", 100, 4000, |f| &mut f.min_tile_width),
+            ("Minimum height", 100, 4000, |f| &mut f.min_tile_height),
+            ("Windows per workspace", 0, 20, |f| &mut f.max_tiles),
+            ("Windows in the main column", 1, 8, |f| &mut f.master_count),
+            ("Border width", 0, 20, |f| &mut f.border_width),
+        ];
+        for (label, min, max, field) in fields {
+            for boundary in [min, max] {
+                let mut form = valid_form();
+                *field(&mut form) = format!(" +{boundary} ");
+                assert!(form.config_pairs().is_ok(), "{label} = {boundary}");
+            }
+            for invalid in [
+                (min - 1).to_string(),
+                (max + 1).to_string(),
+                "".into(),
+                "1.5".into(),
+                "9223372036854775808".into(),
+            ] {
+                let mut form = valid_form();
+                *field(&mut form) = invalid;
+                assert_eq!(
+                    form.config_pairs().unwrap_err(),
+                    format!("{label}: enter a number from {min} to {max}")
+                );
+            }
+        }
+        let mut form = valid_form();
+        form.inner_gap = "bad".into();
+        form.border_width = "bad".into();
+        assert_eq!(
+            form.config_pairs().unwrap_err(),
+            "Between windows: enter a number from 0 to 200"
+        );
+    }
+
+    #[test]
+    fn enum_indices_round_trip_and_keep_existing_fallbacks() {
+        for layout in [
+            config::Layout::Spiral,
+            config::Layout::MasterStack,
+            config::Layout::Grid,
+            config::Layout::Columns,
+        ] {
+            assert_eq!(layout_from_index(layout_index(layout)), layout);
+        }
+        for size in [
+            config::IndicatorSize::Small,
+            config::IndicatorSize::Medium,
+            config::IndicatorSize::Large,
+        ] {
+            assert_eq!(indicator_from_index(indicator_index(size)), size);
+        }
+        for index in [-1, 99] {
+            assert_eq!(layout_from_index(index), config::Layout::Spiral);
+            assert_eq!(indicator_from_index(index), config::IndicatorSize::Medium);
+            let mut form = valid_form();
+            form.fullscreen_windows = index;
+            form.media_windows = index;
+            let pairs = form.config_pairs().unwrap();
+            assert!(pairs.contains(&("fullscreen_windows", "\"minimize\"".into())));
+            assert!(pairs.contains(&("media_windows", "\"float\"".into())));
+        }
+        assert_eq!(fullscreen_index(config::FullscreenWindows::Minimize), 0);
+        assert_eq!(fullscreen_index(config::FullscreenWindows::Ignore), 1);
+        assert_eq!(media_index(config::MediaWindows::Float), 0);
+        assert_eq!(media_index(config::MediaWindows::Tile), 1);
+    }
+
+    #[test]
+    fn color_conversion_keeps_byte_order_and_swatch_acceptance() {
+        assert_eq!(color_hex(0x563412), "#123456");
+        assert_eq!(
+            parse_hex_color(&color_hex(0x563412)),
+            Some([0x12, 0x34, 0x56])
+        );
+        assert_eq!(parse_hex_color("  ##aBcDeF  "), Some([0xab, 0xcd, 0xef]));
+        assert_eq!(parse_hex_color("123456"), Some([0x12, 0x34, 0x56]));
+        for invalid in ["", "#fff", "#1234567", "#gggggg", "привет"] {
+            assert_eq!(parse_hex_color(invalid), None, "{invalid}");
+        }
+    }
+
+    #[test]
+    fn hotkey_editing_preserves_other_sections_and_line_endings() {
+        for nl in ["\n", "\r\n"] {
+            let text = [
+                "# keep",
+                "inner_gap = 7",
+                "[hotkeys]",
+                "close = \"alt+q\"",
+                "",
+                "[[rules]]",
+                "process = \"Example\"",
+                "action = \"float\"",
+                "",
+            ]
+            .join(nl);
+            let lines = "# ignored\nclose = alt+f4\nquit = [\"ctrl+alt+q\", \"ctrl+alt+x\"]\n";
+            let edited = edit_hotkeys(&text, lines);
+            assert_eq!(
+                edited,
+                [
+                    "# keep",
+                    "inner_gap = 7",
+                    "[hotkeys]",
+                    "close = \"alt+f4\"",
+                    "quit = [\"ctrl+alt+q\", \"ctrl+alt+x\"]",
+                    "[[rules]]",
+                    "process = \"Example\"",
+                    "action = \"float\"",
+                    ""
+                ]
+                .join(nl)
+            );
+            assert_eq!(edit_hotkeys(&edited, lines), edited);
+            let cfg = config::parse(&edited).unwrap();
+            assert_eq!(cfg.bindings.len(), 3);
+            assert_eq!(cfg.rules.len(), 1);
+        }
+        assert_eq!(
+            edit_hotkeys("inner_gap = 7\n", ""),
+            "inner_gap = 7\n\n[hotkeys]\n"
+        );
+    }
+
+    #[test]
+    fn process_rules_deduplicate_case_insensitively_without_losing_specific_rules() {
+        let mut rules = vec![Rule {
+            title: Some("Editor".into()),
+            ..rule("Example", "float")
+        }];
+        assert!(add_process_rule(&mut rules, "Example".into(), -1));
+        assert!(!add_process_rule(&mut rules, "EXAMPLE".into(), 0));
+        assert!(add_process_rule(&mut rules, "example".into(), 99));
+        assert_eq!(rules.len(), 3);
+        assert_eq!(rules[1].action.as_deref(), Some("float"));
+        assert_eq!(rules[1].workspace, None);
+        assert_eq!(rules[2].action, None);
+        assert_eq!(rules[2].workspace, Some(9));
+    }
+
+    #[test]
+    fn refused_hotkeys_match_action_and_canonical_combination() {
+        let refused = parse_refused(" close \t Shift+Alt+Q \r\ninvalid\nquit\talt+x\n");
+        assert_eq!(refused.len(), 2);
+        let row = Row {
+            action: "close".into(),
+            label: String::new(),
+            group: String::new(),
+            keys: vec!["alt+shift+q".into()],
+        };
+        assert!(is_refused(&row, &refused));
+        assert!(!is_refused(
+            &Row {
+                action: "pause".into(),
+                ..row.clone()
+            },
+            &refused
+        ));
+        assert!(!is_refused(
+            &Row {
+                keys: vec!["alt+w".into()],
+                ..row
+            },
+            &refused
+        ));
     }
 
     #[test]

@@ -1,0 +1,50 @@
+import { Card, CardTitle, ActionButton, ToggleRow } from "launcher-components.slint";
+import { AppTheme } from "launcher-theme.slint";
+import { AboutSlint } from "std-widgets.slint";
+
+export component AdvancedSection inherits VerticalLayout {
+    in-out property <bool> autostart;
+    in property <string> app_version;
+    callback open_github();
+    callback open_support();
+    callback open_config();
+    callback open_log();
+
+    spacing: 18px;
+    Card {
+        card-height: 186px;
+        VerticalLayout {
+            padding: 20px;
+            spacing: 8px;
+            CardTitle { title: "Startup and troubleshooting"; icon: @image-url("icons/adjustments.svg"); }
+            ToggleRow { label: "Start tile-rs when Windows starts"; checked: autostart; changed(value) => { autostart = value; } }
+            HorizontalLayout {
+                padding-left: 10px;
+                spacing: 10px;
+                alignment: start;
+                ActionButton { label: "Open config file"; icon: @image-url("icons/file.svg"); has-icon: true; compact: true; button-width: 168px; activated => { root.open_config(); } }
+                ActionButton { label: "Open log"; icon: @image-url("icons/list.svg"); has-icon: true; compact: true; button-width: 168px; activated => { root.open_log(); } }
+            }
+        }
+    }
+    Card {
+        card-height: 226px;
+        VerticalLayout {
+            padding: 20px;
+            spacing: 8px;
+            CardTitle { title: "About"; subtitle: "tile-rs " + app_version + " · open source, MIT license"; icon: @image-url("icons/info.svg"); }
+            Text { text: "The settings window is built with Slint under the Slint Royalty-Free license."; color: AppTheme.ink-2; font-size: 12px; wrap: word-wrap; }
+            HorizontalLayout {
+                spacing: 24px;
+                alignment: start;
+                AboutSlint { width: 160px; height: 100px; }
+                VerticalLayout {
+                    alignment: center;
+                    spacing: 8px;
+                    ActionButton { label: "Support tile-rs"; icon: @image-url("icons/external.svg"); has-icon: true; compact: true; button-width: 196px; activated => { root.open_support(); } }
+                    ActionButton { label: "GitHub page"; icon: @image-url("icons/external.svg"); has-icon: true; compact: true; button-width: 196px; activated => { root.open_github(); } }
+                }
+            }
+        }
+    }
+}

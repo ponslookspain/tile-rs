@@ -1,0 +1,74 @@
+import { Card, CardTitle, ToggleRow, FieldRow, Divider, LayoutPreview, Stepper } from "launcher-components.slint";
+import { AppTheme } from "launcher-theme.slint";
+
+export component LayoutSection inherits VerticalLayout {
+    in-out property <bool> auto_overflow;
+    in-out property <string> resize_step;
+    in-out property <string> min_tile_width;
+    in-out property <string> min_tile_height;
+    in-out property <string> max_tiles;
+    in-out property <bool> smart_gaps;
+    in-out property <string> master_count;
+    in-out property <string> master_hint;
+    in property <length> preview_gap;
+
+    spacing: 18px;
+    HorizontalLayout {
+        spacing: 18px;
+        Card {
+            horizontal-stretch: 1;
+            card-height: 238px;
+            VerticalLayout {
+                padding: 20px;
+                spacing: 10px;
+                CardTitle { title: "Main column"; subtitle: "Only for the Main window layout"; icon: @image-url("icons/layout.svg"); }
+                HorizontalLayout {
+                    spacing: 18px;
+                    LayoutPreview { width: 170px; height: 112px; mode: 1; masters: master_count.to-float(); gap: preview_gap; }
+                    VerticalLayout {
+                        alignment: center;
+                        spacing: 8px;
+                        Text { text: "Windows in the main column"; color: AppTheme.ink; font-size: 13px; }
+                        Stepper { value <=> master_count; minimum: 1; maximum: 8; }
+                        Text { text: master_hint; color: AppTheme.muted; font-size: 12px; }
+                    }
+                }
+            }
+        }
+        Card {
+            horizontal-stretch: 1;
+            card-height: 238px;
+            VerticalLayout {
+                padding: 20px;
+                spacing: 6px;
+                CardTitle { title: "Layout behaviour"; icon: @image-url("icons/overflow.svg"); }
+                ToggleRow { label: "Send new windows onward"; hint: "When the current workspace is full"; checked: auto_overflow; changed(value) => { auto_overflow = value; } }
+                ToggleRow { label: "No gaps for a single window"; hint: "A lone window fills the screen"; checked: smart_gaps; changed(value) => { smart_gaps = value; } }
+            }
+        }
+    }
+    Card {
+        card-height: 212px;
+        VerticalLayout {
+            padding: 20px;
+            spacing: 6px;
+            CardTitle { title: "Sizes and limits"; subtitle: "Tiles never get smaller than this"; icon: @image-url("icons/resize.svg"); }
+            Rectangle { height: 4px; }
+            HorizontalLayout {
+                spacing: 24px;
+                VerticalLayout {
+                    horizontal-stretch: 1;
+                    FieldRow { label: "Minimum width"; hint: "Pixels"; value <=> min_tile_width; minimum: 100; maximum: 4000; step: 20; }
+                    Divider { }
+                    FieldRow { label: "Minimum height"; hint: "Pixels"; value <=> min_tile_height; minimum: 100; maximum: 4000; step: 20; }
+                }
+                VerticalLayout {
+                    horizontal-stretch: 1;
+                    FieldRow { label: "Windows per workspace"; hint: "0 picks it automatically"; value <=> max_tiles; minimum: 0; maximum: 20; step: 1; }
+                    Divider { }
+                    FieldRow { label: "Resize step"; hint: "Pixels per press of the grow key"; value <=> resize_step; minimum: 1; maximum: 500; step: 10; }
+                }
+            }
+        }
+    }
+}

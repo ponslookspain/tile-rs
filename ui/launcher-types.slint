@@ -1,0 +1,19 @@
+// Models shared by the launcher pages and its Rust bindings.
+export struct HotkeyRowData {
+    action: string,
+    label: string,
+    group: string,
+    keys: [string],
+    conflict: bool,
+    refused: bool,
+}
+
+export struct WelcomeItem {
+    keys: string,
+    what: string,
+}
+
+export struct TourStep {
+    text: string,
+    done: bool,
+}
