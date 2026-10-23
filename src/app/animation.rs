@@ -522,6 +522,9 @@ pub(super) fn cancel_anim_timer(s: &mut State) {
 
 /// One animation frame (called from the frame timer).
 pub(super) fn anim_tick() {
+    if SESSION_ENDING.with(Cell::get) {
+        return;
+    }
     let tick_started = Instant::now();
     let had_animations = STATE.with(|s| !s.borrow().anims.is_empty());
     divider::tick();

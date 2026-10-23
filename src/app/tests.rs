@@ -968,3 +968,17 @@ fn monitor_slot_map_uses_nearest_survivor_when_a_display_disappears() {
     assert!(exact[0]);
     assert!(!exact[1]);
 }
+
+#[test]
+fn session_latch_suppresses_parking_and_resets_after_cancellation() {
+    SESSION_ENDING.with(|ending| ending.set(false));
+    let mut s = State::default();
+    assert!(!s.session_ending());
+    SESSION_ENDING.with(|ending| ending.set(true));
+    assert!(s.session_ending());
+    assert!(s.session_ending);
+    park(&mut s, HWND::default());
+    assert!(s.parked.is_empty());
+    SESSION_ENDING.with(|ending| ending.set(false));
+    assert!(!s.session_ending());
+}

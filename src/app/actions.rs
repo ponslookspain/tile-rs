@@ -179,6 +179,7 @@ pub(super) fn minimize_focused() {
         let mut s = s.borrow_mut();
         // the user chose to minimize it: do not restore it on the next workspace switch
         s.fs_hidden.remove(&h);
+        HIDDEN_FULLSCREEN.with(|hidden| hidden.borrow_mut().remove(&h));
     });
     unsafe {
         let _ = ShowWindowAsync(fg, SW_MINIMIZE);

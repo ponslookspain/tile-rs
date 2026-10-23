@@ -62,6 +62,7 @@ pub(super) fn drop_window_data(s: &mut State, h: isize) -> bool {
     tracked |= s.fs_ws.remove(&h).is_some();
     tracked |= s.fs_mon.remove(&h).is_some();
     tracked |= s.fs_hidden.remove(&h);
+    HIDDEN_FULLSCREEN.with(|hidden| hidden.borrow_mut().remove(&h));
     tracked |= s.manual_float.remove(&h);
     tracked |= s.capacity_float.remove(&h);
     tracked |= s.float_reasons.remove(&h).is_some();
@@ -298,6 +299,9 @@ pub(super) unsafe extern "system" fn on_event(
     _thread: u32,
     _time: u32,
 ) {
+    if SESSION_ENDING.with(Cell::get) {
+        return;
+    }
     // Only whole-window events (OBJID_WINDOW == 0, no child element). Popup menus report
     // OBJID_CLIENT and would be filtered out here, but they matter: our border would otherwise be
     // left sitting above the menu.

@@ -175,6 +175,7 @@ pub(super) fn reconcile_fullscreen(s: &mut State, wins: &[Win]) {
         .collect();
     for h in excluded {
         // Release only hiding performed by us; never restore an app the user minimized.
+        HIDDEN_FULLSCREEN.with(|hidden| hidden.borrow_mut().remove(&h));
         if s.fs_hidden.remove(&h) {
             unsafe {
                 let _ = ShowWindowAsync(HWND(h as *mut _), SW_RESTORE);
@@ -224,6 +225,7 @@ pub(super) fn reconcile_fullscreen(s: &mut State, wins: &[Win]) {
     let fs_ws = &s.fs_ws;
     s.fs_mon.retain(|h, _| fs_ws.contains_key(h));
     s.fs_hidden.retain(|h| fs_ws.contains_key(h));
+    HIDDEN_FULLSCREEN.with(|hidden| hidden.borrow_mut().clone_from(&s.fs_hidden));
 }
 
 /// The first workspace (starting after `cur`, wrapping) that has no windows at all - used for a
@@ -252,7 +254,7 @@ pub(super) fn next_free_workspace(s: &State, mi: usize, cur: u8) -> u8 {
 /// Minimizes the fullscreen windows whose workspace is not shown, and restores the ones we hid
 /// when their workspace becomes the current one.
 pub(super) fn apply_fullscreen(s: &mut State) {
-    if s.paused || config::fullscreen_windows() == FullscreenWindows::Ignore {
+    if s.session_ending() || s.paused || config::fullscreen_windows() == FullscreenWindows::Ignore {
         return;
     }
     let items: Vec<(isize, u8)> = s.fs_ws.iter().map(|(h, w)| (*h, *w)).collect();
@@ -276,13 +278,18 @@ pub(super) fn apply_fullscreen(s: &mut State) {
                     let _ = ShowWindowAsync(hw, SW_RESTORE);
                 }
                 s.fs_hidden.remove(&h);
+                HIDDEN_FULLSCREEN.with(|hidden| hidden.borrow_mut().remove(&h));
                 changed = true;
             }
             FsAction::Hide => {
+                if s.session_ending() {
+                    return;
+                }
+                s.fs_hidden.insert(h);
+                HIDDEN_FULLSCREEN.with(|hidden| hidden.borrow_mut().insert(h));
                 unsafe {
                     let _ = ShowWindowAsync(hw, SW_MINIMIZE);
                 }
-                s.fs_hidden.insert(h);
                 changed = true;
             }
             FsAction::None => {}
@@ -293,6 +300,7 @@ pub(super) fn apply_fullscreen(s: &mut State) {
 
 /// Restores every fullscreen window we minimized (pause, quit), so nothing stays hidden.
 pub(super) fn restore_hidden_fullscreen(s: &mut State) {
+    HIDDEN_FULLSCREEN.with(|hidden| hidden.borrow_mut().clear());
     for h in std::mem::take(&mut s.fs_hidden) {
         let hw = HWND(h as *mut _);
         if unsafe { IsWindow(Some(hw)) }.as_bool() && unsafe { IsIconic(hw) }.as_bool() {
@@ -327,6 +335,9 @@ pub(super) fn apply_window_pos(
     }
     if prof::on() {
         prof::PLACEMENTS.fetch_add(1, Ordering::Relaxed);
+    }
+    if SESSION_ENDING.with(Cell::get) {
+        return false;
     }
     // A slow client must not block this thread's input, capture cleanup and watchdogs.
     // Success means the request was accepted; geometry is checked by the verify timer.
@@ -636,13 +647,16 @@ pub(super) fn is_parked(hwnd: HWND) -> bool {
 /// Move a window off-screen (keeps its size) and record where it came from, so a crash can be
 /// undone from the persisted list. The caller saves `s.parked` once after a batch of parks.
 pub(super) fn park(s: &mut State, hwnd: HWND) {
-    if is_parked(hwnd) {
+    if s.session_ending() || is_parked(hwnd) {
         return;
     }
     let mut original = RECT::default();
     if unsafe { GetWindowRect(hwnd, &mut original) }.is_ok() {
         s.parked.insert(hwnd.0 as isize, original);
-        s.parked_dirty = true;
+        // A shutdown query can re-enter while STATE is borrowed: its disk-only fallback must
+        // already know about this window before the asynchronous move is submitted.
+        parked::save(&s.parked);
+        s.parked_dirty = false;
     }
     let _ = apply_window_pos(
         hwnd,

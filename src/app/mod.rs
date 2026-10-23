@@ -48,6 +48,7 @@ pub(crate) use interaction::{
     begin_divider, end_divider, request_relayout, settle_divider, ui_state, update_divider,
 };
 pub(crate) use report::export_diagnostics;
+pub(crate) use startup::{end_session, query_end_session};
 
 use window::{collect, is_fullscreen, visible_rect, Verdict, Win};
 
@@ -235,6 +236,8 @@ struct State {
     /// cloaked / minimized): a full `EnumWindows` walk (`retile`) is due.
     windows_changed: bool,
     paused: bool,
+    /// No windows may be parked while Windows is ending the session.
+    session_ending: bool,
     timer: usize,
     dirty_since: Option<Instant>,
     /// A window of another workspace got focus (taskbar / Alt+Tab): follow it.
@@ -298,6 +301,10 @@ struct State {
 type PendingEvent = (u32, HWND, i32, i32, u32, u32);
 
 thread_local! {
+    static SESSION_ENDING: Cell<bool> = const { Cell::new(false) };
+    static SESSION_ENDED: Cell<bool> = const { Cell::new(false) };
+    static EVENT_HOOKS: RefCell<Vec<HWINEVENTHOOK>> = const { RefCell::new(Vec::new()) };
+    static HIDDEN_FULLSCREEN: RefCell<HashSet<isize>> = RefCell::new(HashSet::new());
     static STATE: RefCell<State> = RefCell::new(State::default());
     static PENDING_EVENTS: RefCell<event_queue::DeferredQueue<PendingEvent, isize>> = RefCell::new(event_queue::DeferredQueue::default());
     static PENDING_WAKE_POSTED: Cell<bool> = const { Cell::new(false) };
@@ -305,8 +312,14 @@ thread_local! {
 }
 
 const WM_PENDING_EVENTS: u32 = 0x8000 + 42;
+const WM_SESSION_CANCELLED: u32 = 0x8000 + 43;
 
 impl State {
+    fn session_ending(&mut self) -> bool {
+        self.session_ending = SESSION_ENDING.with(Cell::get);
+        self.session_ending
+    }
+
     /// A new configuration must be allowed to probe smaller sizes again.
     /// Old learned constraints and pending placements belong to the previous layout.
     fn invalidate_layout_constraints(&mut self) {

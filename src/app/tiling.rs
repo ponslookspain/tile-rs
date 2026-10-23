@@ -342,6 +342,9 @@ pub(super) fn fast_add(s: &mut State, hwnd: HWND) -> bool {
 }
 
 pub(super) fn retile() {
+    if SESSION_ENDING.with(Cell::get) {
+        return;
+    }
     if STATE.with(|s| s.borrow().divider.is_some()) {
         end_divider(false);
     }

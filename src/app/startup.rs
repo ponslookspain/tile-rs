@@ -2,6 +2,75 @@
 
 use super::*;
 
+/// The latch is separate from STATE because Windows can send this during a native call that
+/// already borrows STATE. The fallback still restores windows before answering the query.
+pub(crate) fn query_end_session() {
+    SESSION_ENDING.with(|ending| ending.set(true));
+    let saved = STATE.with(|state| {
+        let Ok(mut s) = state.try_borrow_mut() else {
+            return None;
+        };
+        s.session_ending = true;
+        s.anims.clear();
+        cancel_anim_timer(&mut s);
+        Some(s.parked.clone())
+    });
+    let restored = if let Some(mut saved) = saved {
+        for (h, r) in parked::load() {
+            saved.entry(h).or_insert(r);
+        }
+        parked::restore_saved_sync(&saved)
+    } else {
+        parked::restore_persisted_sync()
+    };
+    // Mirrored before minimizing so this is available even when STATE is borrowed.
+    let hidden = HIDDEN_FULLSCREEN.with(|hidden| std::mem::take(&mut *hidden.borrow_mut()));
+    for h in hidden {
+        let hwnd = HWND(h as *mut _);
+        if unsafe { IsWindow(Some(hwnd)) }.as_bool() && unsafe { IsIconic(hwnd) }.as_bool() {
+            unsafe {
+                let _ = windows::Win32::UI::WindowsAndMessaging::ShowWindow(hwnd, SW_RESTORE);
+            }
+        }
+    }
+    log(format!(
+        "session ending: restored {restored} parked window(s)"
+    ));
+}
+
+fn remove_event_hooks() {
+    let hooks = EVENT_HOOKS.with(|hooks| std::mem::take(&mut *hooks.borrow_mut()));
+    for hook in hooks {
+        unsafe {
+            let _ = UnhookWinEvent(hook);
+        }
+    }
+}
+
+pub(crate) fn end_session(ending: bool) {
+    if !ending {
+        SESSION_ENDING.with(|value| value.set(false));
+        // Defer state access until any native call that delivered WM_ENDSESSION has returned.
+        unsafe {
+            let _ = windows::Win32::UI::WindowsAndMessaging::PostThreadMessageW(
+                windows::Win32::System::Threading::GetCurrentThreadId(),
+                WM_SESSION_CANCELLED,
+                WPARAM(0),
+                LPARAM(0),
+            );
+        }
+        log("session ending cancelled");
+        return;
+    }
+    SESSION_ENDED.with(|value| value.set(true));
+    remove_event_hooks();
+    tray::remove();
+    log("bye (Windows session ended)");
+    unsafe {
+        PostQuitMessage(0);
+    }
+}
+
 /// `interactive` = started by double-click (launcher): may show dialogs.
 pub(super) fn start(interactive: bool) {
     unsafe {
@@ -105,6 +174,7 @@ pub(super) fn start(interactive: bool) {
             "Window tracking may be incomplete. Check tile-rs.log for the failed hooks.",
         );
     }
+    EVENT_HOOKS.with(|hooks| *hooks.borrow_mut() = event_hooks);
     let failed = register_hotkeys();
     tray::create();
     launcher::create();
@@ -175,6 +245,17 @@ pub(super) fn start(interactive: bool) {
                     quit = true;
                     break;
                 }
+                if msg.message == WM_SESSION_CANCELLED {
+                    STATE.with(|state| {
+                        let mut s = state.borrow_mut();
+                        s.session_ending = false;
+                        s.fs_hidden.clear();
+                        s.clear_layouts();
+                        s.no_anim = true;
+                    });
+                    request_relayout();
+                    continue;
+                }
                 if msg.message == WM_PENDING_EVENTS {
                     PENDING_WAKE_POSTED.with(|p| p.set(false));
                     replay_events();
@@ -221,7 +302,9 @@ pub(super) fn start(interactive: bool) {
         s.anims.clear();
         cancel_anim_timer(&mut s);
     });
-    bring_everything_back();
+    if !SESSION_ENDED.with(Cell::get) {
+        bring_everything_back();
+    }
     tray::remove();
     launcher::destroy();
     overlay::destroy_indicator();
@@ -242,9 +325,9 @@ pub(super) fn start(interactive: bool) {
     }
     unsafe {
         let _ = CloseHandle(anim_timer);
-        for hook in event_hooks {
-            let _ = UnhookWinEvent(hook);
-        }
     }
-    log("bye");
+    remove_event_hooks();
+    if !SESSION_ENDED.with(Cell::get) {
+        log("bye");
+    }
 }

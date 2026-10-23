@@ -16,8 +16,8 @@ use windows::Win32::UI::WindowsAndMessaging::{
     RegisterWindowMessageW, SendMessageTimeoutW, SetForegroundWindow, TrackPopupMenu, HICON,
     ICONINFO, MF_CHECKED, MF_GRAYED, MF_POPUP, MF_SEPARATOR, MF_STRING, SMTO_ABORTIFHUNG,
     SPI_SETWORKAREA, SW_SHOWNORMAL, TPM_RETURNCMD, TPM_RIGHTBUTTON, WINDOW_EX_STYLE, WM_APP,
-    WM_DESTROY, WM_DISPLAYCHANGE, WM_LBUTTONUP, WM_NULL, WM_RBUTTONUP, WM_SETTINGCHANGE, WNDCLASSW,
-    WS_EX_TOOLWINDOW, WS_OVERLAPPED,
+    WM_DESTROY, WM_DISPLAYCHANGE, WM_ENDSESSION, WM_LBUTTONUP, WM_NULL, WM_QUERYENDSESSION,
+    WM_RBUTTONUP, WM_SETTINGCHANGE, WNDCLASSW, WS_EX_TOOLWINDOW, WS_OVERLAPPED,
 };
 
 use crate::config::{self, Action};
@@ -531,6 +531,14 @@ fn show_hotkeys() {
 }
 
 unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+    if msg == WM_QUERYENDSESSION {
+        crate::app::query_end_session();
+        return LRESULT(1);
+    }
+    if msg == WM_ENDSESSION {
+        crate::app::end_session(wparam.0 != 0);
+        return LRESULT(0);
+    }
     if msg == WM_DIAGNOSTICS || msg == WM_DIAGNOSTICS_WITH_TITLES {
         crate::app::export_diagnostics(msg == WM_DIAGNOSTICS_WITH_TITLES);
         return LRESULT(0);

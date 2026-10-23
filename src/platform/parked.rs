@@ -6,8 +6,8 @@ use std::path::PathBuf;
 use windows::Win32::Foundation::{HWND, RECT};
 use windows::Win32::Graphics::Gdi::{MonitorFromRect, MONITOR_DEFAULTTONULL};
 use windows::Win32::UI::WindowsAndMessaging::{
-    GetWindowRect, IsIconic, IsWindow, SetWindowPos, SWP_ASYNCWINDOWPOS, SWP_NOACTIVATE,
-    SWP_NOOWNERZORDER, SWP_NOSIZE, SWP_NOZORDER,
+    GetWindowRect, IsIconic, IsWindow, SetWindowPos, SET_WINDOW_POS_FLAGS, SWP_ASYNCWINDOWPOS,
+    SWP_NOACTIVATE, SWP_NOOWNERZORDER, SWP_NOSIZE, SWP_NOZORDER,
 };
 
 /// Parking spot. Deliberately not (-32000, -32000): Windows uses that spot for minimized windows,
@@ -86,52 +86,80 @@ pub fn load() -> Saved {
 
 /// Put a parked window back: at its saved position when that is still on a monitor, otherwise
 /// near the top-left corner of the primary area.
-fn restore_one(h: isize, saved: Option<RECT>) -> bool {
+fn restore_flags(synchronous: bool) -> SET_WINDOW_POS_FLAGS {
+    let flags = SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOOWNERZORDER;
+    if synchronous {
+        flags
+    } else {
+        flags | SWP_ASYNCWINDOWPOS
+    }
+}
+
+fn restore_one(h: isize, saved: Option<RECT>, synchronous: bool) -> windows::core::Result<bool> {
     let hwnd = HWND(h as *mut _);
     unsafe {
         if !IsWindow(Some(hwnd)).as_bool() || !at_park_spot(hwnd) {
-            return false;
+            return Ok(false);
         }
         let (x, y) = match saved {
             Some(r) if !MonitorFromRect(&r, MONITOR_DEFAULTTONULL).is_invalid() => (r.left, r.top),
             _ => (100, 100),
         };
-        let _ = SetWindowPos(
-            hwnd,
-            None,
-            x,
-            y,
-            0,
-            0,
-            SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOOWNERZORDER | SWP_ASYNCWINDOWPOS,
-        );
+        SetWindowPos(hwnd, None, x, y, 0, 0, restore_flags(synchronous))?;
     }
-    true
+    Ok(true)
 }
 
 /// Restore every window recorded in the persisted list that is still parked, then forget the
 /// list. Touches no application state, so it is safe from a panic hook. Returns how many windows
 /// were brought back.
 pub fn restore_persisted() -> usize {
-    let saved = load();
-    let n = saved
-        .iter()
-        .filter(|(h, r)| restore_one(**h, Some(**r)))
-        .count();
-    if !saved.is_empty() {
-        save(&Saved::new());
+    restore_saved(&load(), false)
+}
+
+/// Session shutdown must finish placing windows before other applications exit.
+pub fn restore_saved_sync(saved: &Saved) -> usize {
+    restore_saved(saved, true)
+}
+
+pub fn restore_persisted_sync() -> usize {
+    restore_saved_sync(&load())
+}
+
+fn restore_saved(saved: &Saved, synchronous: bool) -> usize {
+    let mut restored = 0;
+    let mut failed = Saved::new();
+    for (h, r) in saved {
+        match restore_one(*h, Some(*r), synchronous) {
+            Ok(true) => restored += 1,
+            Ok(false) => {}
+            Err(error) => {
+                crate::diagnostics::log(format!("could not restore parked window {h:#x}: {error}"));
+                failed.insert(*h, *r);
+            }
+        }
     }
-    n
+    if !saved.is_empty() {
+        save(&failed);
+    }
+    restored
 }
 
 /// Restore a parked window that is not in the persisted list (parked by an older build).
 pub fn restore_unlisted(h: isize) -> bool {
-    restore_one(h, None)
+    restore_one(h, None, false).unwrap_or(false)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn session_restore_is_synchronous_but_recovery_stays_asynchronous() {
+        assert!(!restore_flags(true).contains(SWP_ASYNCWINDOWPOS));
+        assert!(restore_flags(false).contains(SWP_ASYNCWINDOWPOS));
+        assert!(restore_flags(true).contains(SWP_NOACTIVATE | SWP_NOZORDER));
+    }
 
     #[test]
     fn minimized_spot_is_not_a_park_spot_but_legacy_park_is_recovered() {
