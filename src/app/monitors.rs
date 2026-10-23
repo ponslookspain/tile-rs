@@ -148,10 +148,19 @@ pub(super) fn reconcile_monitor_slots(old: &[monitor::Monitor], new: &[monitor::
             s.fs_mon.insert(h, dest);
         }
 
+        // sizes of a display that went away wait for it to come back
+        for old_i in 0..MON {
+            if let Some(device) = s.monitor_ids[old_i].clone() {
+                for (ws, rs) in std::mem::take(&mut s.ratios[old_i]) {
+                    s.ratios_offline.insert((device.clone(), ws), rs);
+                }
+            }
+        }
         s.cur = new_cur;
         s.order = new_order;
         s.ratios = new_ratios;
         s.monitor_ids = std::array::from_fn(|i| new.get(i).map(|mon| mon.device.clone()));
+        s.adopt_offline_ratios();
         for i in 0..MON {
             s.last[i].clear();
             s.rects[i].clear();

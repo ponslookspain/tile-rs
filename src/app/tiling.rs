@@ -64,6 +64,7 @@ pub(super) fn resize_focused(width: bool, grow: bool) {
             }
             rs.clone()
         };
+        s.touch_ratios();
         let monocle = is_monocle(&s, mi, cur);
         let (tiles, regions) = fitted(monitor_work(mi), &s.last[mi], &ratios, &s.min_size, monocle);
         if !valid_layout(mi, &s.last[mi], &tiles, &s.min_size) {

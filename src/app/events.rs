@@ -580,6 +580,7 @@ pub(super) unsafe extern "system" fn on_event(
                                 config::inner_gap(),
                             );
                             s.ratios[mi].insert(cur, rs);
+                            s.touch_ratios();
                             let (tiles, regions) = layout_tiles(
                                 config::layout(),
                                 monitor_work(mi),
@@ -984,10 +985,14 @@ pub(super) fn handle_debounce_timer(wparam: usize) {
         trim_working_set();
         return;
     }
-    let (timer, ffm, drag_timer, dragging) = STATE.with(|s| {
+    let (timer, ffm, drag_timer, dragging, save_timer) = STATE.with(|s| {
         let s = s.borrow();
-        (s.timer, s.ffm_timer, s.drag_timer, s.dragging)
+        (s.timer, s.ffm_timer, s.drag_timer, s.dragging, s.save_timer)
     });
+    if save_timer != 0 && wparam == save_timer {
+        STATE.with(|s| ratios_store::flush(&mut s.borrow_mut()));
+        return;
+    }
     if ffm != 0 && wparam == ffm {
         focus_follows_tick();
         return;
@@ -1099,4 +1104,13 @@ pub(super) fn handle_debounce_timer(wparam: usize) {
     }
     sync_border();
     sync_dividers();
+    announce_elevated();
+}
+
+/// Tell the user once about programs whose elevated windows are left alone.
+pub(super) fn announce_elevated() {
+    let programs = window::take_new_elevated();
+    if !programs.is_empty() {
+        tray::notify_elevated(&programs);
+    }
 }

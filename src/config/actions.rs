@@ -45,6 +45,8 @@ pub enum Action {
     MoveToMonitor(i8),
     ReloadConfig,
     EditConfig,
+    /// Open the settings on the hotkeys page (the cheat sheet of every key).
+    ShowHotkeys,
     /// Show the focused window alone on the whole screen (the rest stay stacked underneath);
     /// press again to go back to the normal layout of the workspace.
     ToggleMonocle,
@@ -127,6 +129,7 @@ pub(super) fn parse_action(name: &str) -> Option<Action> {
         "master_count_dec" => Some(Action::MasterCount(-1)),
         "reload_config" => Some(Action::ReloadConfig),
         "edit_config" => Some(Action::EditConfig),
+        "show_hotkeys" => Some(Action::ShowHotkeys),
         _ => None,
     }
 }
@@ -170,6 +173,7 @@ pub(crate) fn action_name(a: Action) -> String {
         }
         Action::ReloadConfig => "reload_config".into(),
         Action::EditConfig => "edit_config".into(),
+        Action::ShowHotkeys => "show_hotkeys".into(),
         Action::ToggleMonocle => "toggle_monocle".into(),
         Action::FocusLast => "focus_last".into(),
         Action::WorkspaceBack => "workspace_back_and_forth".into(),

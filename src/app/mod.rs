@@ -9,6 +9,7 @@ mod events;
 mod interaction;
 mod monitors;
 mod placement;
+mod ratios_store;
 mod report;
 mod startup;
 #[cfg(test)]
@@ -278,6 +279,13 @@ struct State {
     drop_dot: Option<(usize, u8)>,
     /// Split ratios per workspace (see `spiral`), per monitor.
     ratios: [HashMap<u8, Vec<f32>>; MON],
+    /// Saved ratios of displays that are not connected right now (see `ratios_store`).
+    ratios_offline: ratios_store::Stored,
+    /// What the ratios file holds, and whether the user changed the ratios since it was written.
+    ratios_saved: String,
+    ratios_dirty: bool,
+    /// Debounce timer of the ratios save (0 = none pending).
+    save_timer: usize,
     /// Free region each window of the last layout was cut out of (same indices as `last`), per
     /// monitor.
     regions: [Vec<RECT>; MON],

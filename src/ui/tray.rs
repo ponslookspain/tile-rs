@@ -198,6 +198,22 @@ pub fn notify_paused() {
     );
 }
 
+/// Explains why windows of the given programs are not tiled: they run as administrator and
+/// tile-rs does not.
+pub fn notify_elevated(programs: &[String]) {
+    let shown: Vec<&str> = programs.iter().take(3).map(String::as_str).collect();
+    let more = programs.len().saturating_sub(shown.len());
+    let mut names = shown.join(", ");
+    if more > 0 {
+        names.push_str(&format!(" and {more} more"));
+    }
+    balloon(
+        "tile-rs can't tile some windows",
+        &format!("{names} runs as administrator. Start tile-rs as administrator to tile it too."),
+        false,
+    );
+}
+
 fn balloon(title: &str, message: &str, update: bool) {
     let raw = TRAY_HWND.load(Ordering::Relaxed);
     if raw == 0 {

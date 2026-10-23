@@ -35,14 +35,19 @@ pub fn create() -> bool {
 
 /// Start the UI process, or bring the existing launcher to the foreground.
 pub fn show() {
-    show_page(false);
+    show_page(&[]);
 }
 
 pub fn show_updates() {
-    show_page(true);
+    show_page(&["--updates"]);
 }
 
-fn show_page(updates: bool) {
+/// The settings on the Hotkeys page. An already open settings window is only brought forward.
+pub fn show_hotkeys() {
+    show_page(&["--page", "4"]);
+}
+
+fn show_page(args: &[&str]) {
     let exe = match std::env::current_exe() {
         Ok(path) => path,
         Err(err) => {
@@ -54,10 +59,7 @@ fn show_page(updates: bool) {
         }
     };
     let mut command = Command::new(exe);
-    command.arg("--launcher-ui");
-    if updates {
-        command.arg("--updates");
-    }
+    command.arg("--launcher-ui").args(args);
     if let Err(err) = command.spawn() {
         crate::platform::dialogs::notify("tile-rs", &format!("Cannot open settings: {err}"));
     }

@@ -277,6 +277,7 @@ pub(super) fn finish_divider(finish: DividerFinish) {
         }
         if let Some((ratios, tiles, regions)) = result {
             s.ratios[mi].insert(gesture.workspace, ratios);
+            s.touch_ratios();
             s.rects[mi] = tiles;
             s.regions[mi] = regions;
         }

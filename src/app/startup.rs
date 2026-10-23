@@ -131,6 +131,7 @@ pub(super) fn start(interactive: bool) {
 
     window::SKIP_ZOOMED.store(true, Ordering::Relaxed);
     remember_monitor_slots();
+    ratios_store::load();
     recover_parked();
     // A panic must not strand windows of other workspaces off-screen: bring them back from the
     // persisted list (it needs no application state), then run the normal hook.
@@ -201,6 +202,7 @@ pub(super) fn start(interactive: bool) {
         );
     }
     retile();
+    announce_elevated();
     refresh_border();
     STATE.with(|s| schedule_trim(&mut s.borrow_mut()));
     if interactive {
@@ -301,6 +303,7 @@ pub(super) fn start(interactive: bool) {
         let mut s = s.borrow_mut();
         s.anims.clear();
         cancel_anim_timer(&mut s);
+        ratios_store::flush(&mut s);
     });
     if !SESSION_ENDED.with(Cell::get) {
         bring_everything_back();

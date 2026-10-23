@@ -288,6 +288,39 @@ thread_local! {
     static SELF_ELEVATED: std::cell::Cell<Option<bool>> = const { std::cell::Cell::new(None) };
 }
 
+thread_local! {
+    /// Programs with an elevated window that tile-rs cannot manage: every program seen so far
+    /// (so each is announced once), and those not announced yet.
+    static ELEVATED_SEEN: RefCell<(HashSet<String>, Vec<String>)> =
+        RefCell::new((HashSet::new(), Vec::new()));
+}
+
+/// Remembers the program of a skipped elevated window so the user can be told why it is not
+/// tiled. Windows without a title and windows a rule floats anyway need no hint.
+fn note_elevated(w: &mut Win, rules: &[Rule]) {
+    if w.title.is_empty() {
+        return;
+    }
+    let process = process_name_cached(w.pid);
+    let rule_ws = w.rule_ws;
+    let action = apply_rules(w, rules, &process);
+    w.rule_ws = rule_ws;
+    if matches!(action, RuleAction::Float) {
+        return;
+    }
+    ELEVATED_SEEN.with(|seen| {
+        let mut seen = seen.borrow_mut();
+        if seen.0.insert(process.clone()) {
+            seen.1.push(process);
+        }
+    });
+}
+
+/// Programs of elevated windows found since the last call (each program only once per run).
+pub fn take_new_elevated() -> Vec<String> {
+    ELEVATED_SEEN.with(|seen| std::mem::take(&mut seen.borrow_mut().1))
+}
+
 fn process_elevated_cached(pid: u32) -> bool {
     with_process_info(pid, |info| info.elevated).unwrap_or(false)
 }
@@ -616,7 +649,7 @@ pub fn classify(hwnd: HWND, rules: &[Rule]) -> Verdict {
     if !unsafe { IsWindowVisible(hwnd) }.as_bool() {
         return Verdict::Ignore;
     }
-    let w = win_info(hwnd);
+    let mut w = win_info(hwnd);
     // The Slint settings window runs in a child tile-rs process. Keep it out of the managed
     // window set so opening settings never resizes or moves the UI itself.
     if w.title == "tile-rs Settings" && process_name_cached(w.pid).eq_ignore_ascii_case("tile-rs") {
@@ -630,6 +663,7 @@ pub fn classify(hwnd: HWND, rules: &[Rule]) -> Verdict {
         };
     }
     if !self_elevated() && process_elevated_cached(w.pid) {
+        note_elevated(&mut w, rules);
         return Verdict::Skipped(w, ELEVATED_REASON);
     }
     let pn = process_name_cached(w.pid);

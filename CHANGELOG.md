@@ -6,6 +6,20 @@ follows [Semantic Versioning](https://semver.org) (see [docs/RELEASING.md](docs/
 
 ## [Unreleased]
 
+### Added
+- Window sizes you set by dragging or with the keyboard are remembered per screen and workspace
+  and come back after a restart.
+- `Alt+[` / `Alt+]` focus the previous / next monitor, `Alt+Shift+[` / `Alt+Shift+]` send the
+  window there. Older configs get the keys added on start-up.
+- `Alt+/` opens the settings on the Hotkeys page.
+- tile-rs says once per program when it leaves a window alone because the program runs as
+  administrator.
+
+### Fixed
+- The workspace dots stay above a window you are dragging, also above other always-on-top windows.
+- After the computer wakes from sleep or hibernation the layout is rebuilt, and once more a few
+  seconds later for monitors that come back late.
+
 ## [0.7.1] - 2026-10-23
 
 ### Security

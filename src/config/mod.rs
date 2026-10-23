@@ -310,6 +310,11 @@ quit          = "ctrl+alt+q"
     s.push_str("workspace_prev = \"alt+shift+comma\"\n");
     s.push_str("move_to_next_workspace = \"ctrl+alt+period\"\n");
     s.push_str("move_to_prev_workspace = \"ctrl+alt+comma\"\n");
+    s.push_str("focus_prev_monitor = \"alt+bracketleft\"\n");
+    s.push_str("focus_next_monitor = \"alt+bracketright\"\n");
+    s.push_str("move_to_prev_monitor = \"alt+shift+bracketleft\"\n");
+    s.push_str("move_to_next_monitor = \"alt+shift+bracketright\"\n");
+    s.push_str("show_hotkeys = \"alt+slash\"\n");
     s.push_str(
         r#"
 # Rules. A window matches when ALL given fields match
@@ -391,6 +396,11 @@ pub fn migrate(text: &str) -> Option<String> {
         ("workspace_prev", "alt+shift+comma"),
         ("move_to_next_workspace", "ctrl+alt+period"),
         ("move_to_prev_workspace", "ctrl+alt+comma"),
+        ("focus_prev_monitor", "alt+bracketleft"),
+        ("focus_next_monitor", "alt+bracketright"),
+        ("move_to_prev_monitor", "alt+shift+bracketleft"),
+        ("move_to_next_monitor", "alt+shift+bracketright"),
+        ("show_hotkeys", "alt+slash"),
     ] {
         if !has(key) {
             hot.push(format!("{key} = \"{spec}\""));
@@ -1195,7 +1205,7 @@ mod tests {
         let once = migrate(OLD_CONFIG).unwrap();
         assert!(migrate(&once).is_none(), "second run must change nothing");
         // a key the user commented out or turned off is not re-added
-        let custom = "layout = \"spiral\"\ngap = 5\nanimations = false\n# animation_ms = 99\neasing = \"linear\"\nfullscreen_windows = \"ignore\"\nmedia_windows = \"tile\"\nresize_step = 10\nborder = false\n# border_color = \"#112233\"\nborder_width = 3\nmin_tile_width = 400\nmin_tile_height = 300\nmax_tiles = 6\nauto_overflow = false\nworkspace_indicator = false\nworkspace_indicator_size = \"small\"\nfocus_follows_mouse = true\nsmart_gaps = false\nmaster_count = 2\naccent_color = \"#008cff\"\n\n[hotkeys]\n# grow_width = \"alt+plus\"\n# shrink_width = \"alt+minus\"\nminimize = \"alt+shift+m\"\ntoggle_float = \"alt+shift+f\"\nclose = \"alt+shift+q\"\ncycle_layout = \"ctrl+alt+l\"\ntoggle_monocle = \"alt+m\"\nfocus_last = \"alt+z\"\nworkspace_back_and_forth = \"alt+shift+z\"\nmaster_count_inc = \"alt+period\"\nmaster_count_dec = \"alt+comma\"\nquit = \"ctrl+alt+q\"\nworkspace_next = \"alt+shift+period\"\nworkspace_prev = \"alt+shift+comma\"\nmove_to_next_workspace = \"ctrl+alt+period\"\nmove_to_prev_workspace = \"ctrl+alt+comma\"\n";
+        let custom = "layout = \"spiral\"\ngap = 5\nanimations = false\n# animation_ms = 99\neasing = \"linear\"\nfullscreen_windows = \"ignore\"\nmedia_windows = \"tile\"\nresize_step = 10\nborder = false\n# border_color = \"#112233\"\nborder_width = 3\nmin_tile_width = 400\nmin_tile_height = 300\nmax_tiles = 6\nauto_overflow = false\nworkspace_indicator = false\nworkspace_indicator_size = \"small\"\nfocus_follows_mouse = true\nsmart_gaps = false\nmaster_count = 2\naccent_color = \"#008cff\"\n\n[hotkeys]\n# grow_width = \"alt+plus\"\n# shrink_width = \"alt+minus\"\nminimize = \"alt+shift+m\"\ntoggle_float = \"alt+shift+f\"\nclose = \"alt+shift+q\"\ncycle_layout = \"ctrl+alt+l\"\ntoggle_monocle = \"alt+m\"\nfocus_last = \"alt+z\"\nworkspace_back_and_forth = \"alt+shift+z\"\nmaster_count_inc = \"alt+period\"\nmaster_count_dec = \"alt+comma\"\nquit = \"ctrl+alt+q\"\nworkspace_next = \"alt+shift+period\"\nworkspace_prev = \"alt+shift+comma\"\nmove_to_next_workspace = \"ctrl+alt+period\"\nmove_to_prev_workspace = \"ctrl+alt+comma\"\nfocus_prev_monitor = \"alt+bracketleft\"\nfocus_next_monitor = \"alt+bracketright\"\nmove_to_prev_monitor = \"alt+shift+bracketleft\"\nmove_to_next_monitor = \"alt+shift+bracketright\"\nshow_hotkeys = \"alt+slash\"\n";
         let custom = format!("animation_fps_limit = 30\nsnapshot_animations = false\n{custom}");
         assert!(migrate(&custom).is_none());
         assert!(!parse(&custom).unwrap().animations);

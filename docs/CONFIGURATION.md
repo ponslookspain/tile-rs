@@ -91,10 +91,11 @@ you which one and carries on with the rest.
 | `focus_last` | Focus the window that was focused before the current one, switching workspace if needed. |
 | `workspace_back_and_forth` | Return to the workspace the active monitor showed before the current one. |
 | `master_count_inc` / `master_count_dec` | Master-stack: put one more / one fewer window in the master column. |
-| `focus_next_monitor`, `focus_prev_monitor` | Move keyboard focus to the next / previous monitor (no default key; bind it in `[hotkeys]`). |
-| `move_to_next_monitor`, `move_to_prev_monitor` | Send the focused tiled window to the next / previous monitor, into the workspace that monitor is showing (no default key). |
+| `focus_next_monitor`, `focus_prev_monitor` | Move keyboard focus to the next / previous monitor (default `Alt+[` / `Alt+]`). |
+| `move_to_next_monitor`, `move_to_prev_monitor` | Send the focused tiled window to the next / previous monitor, into the workspace that monitor is showing (default `Alt+Shift+[` / `Alt+Shift+]`). |
 | `reload_config` | Re-read `config.toml`. |
 | `edit_config` | Open `config.toml` in Notepad. |
+| `show_hotkeys` | Open the settings on the Hotkeys page, the list of every key (default `Alt+/`). |
 
 An unknown action name is an error (it is reported on reload, with the name).
 
@@ -117,6 +118,9 @@ An unknown action name is an error (it is reported on reload, with the name).
 | `focus_last` | `alt+z` |
 | `workspace_back_and_forth` | `alt+shift+z` |
 | `master_count_inc` / `master_count_dec` | `alt+period` / `alt+comma` |
+| `focus_prev_monitor` / `focus_next_monitor` | `alt+bracketleft` / `alt+bracketright` |
+| `move_to_prev_monitor` / `move_to_next_monitor` | `alt+shift+bracketleft` / `alt+shift+bracketright` |
+| `show_hotkeys` | `alt+slash` |
 | `pause` | `ctrl+alt+p`, `alt+shift+p` |
 | `quit` | `ctrl+alt+q` |
 
@@ -126,7 +130,8 @@ No default keys: `grow_height`, `shrink_height`, `retile`, `reload_config`, `edi
 An older `config.toml` is updated in place on start-up: missing `toggle_float`, `close`,
 `cycle_layout`, `toggle_monocle`, `focus_last`, `workspace_back_and_forth`, `master_count_inc`,
 `master_count_dec`, `quit`, `workspace_next`, `workspace_prev`, `move_to_next_workspace` and
-`move_to_prev_workspace` bindings are added (a commented-out or removed one is left alone).
+`move_to_prev_workspace`, `focus_prev_monitor`, `focus_next_monitor`, `move_to_prev_monitor` and
+`move_to_next_monitor` and `show_hotkeys` bindings are added (a commented-out or removed one is left alone).
 
 ## Window rules
 
