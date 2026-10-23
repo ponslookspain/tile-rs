@@ -372,6 +372,42 @@ pub(super) fn workspace_visibility(
         .partition(|h| s.ws[h] != s.cur[mi])
 }
 
+/// Windows that fill a monitor without being tiled still cover the workspace they are on:
+/// - a maximized window (also one that opened maximized) belongs to the workspace it appeared on,
+///   like a tiled one, so it is hidden when that workspace is left and tiled when un-maximized;
+/// - a floating window that fills its monitor (a media viewer, a window floated with
+///   `toggle_float`) is pinned to its workspace while it does, and is free again afterwards.
+///   Small floating windows stay visible everywhere.
+pub(super) fn track_covering_windows(s: &mut State, c: &window::Collector) {
+    for w in &c.maximized {
+        let h = w.hwnd.0 as isize;
+        if s.ws.contains_key(&h) || s.fs_ws.contains_key(&h) {
+            continue;
+        }
+        let mi = monitor::of_window(w.hwnd).min(MON - 1);
+        s.ws.insert(h, w.rule_ws.unwrap_or(s.cur[mi]));
+        s.mon.insert(h, mi);
+        if !s.order[mi].contains(&h) {
+            s.order[mi].push(h);
+        }
+        remember_identity(s, w.hwnd);
+    }
+    let covering: HashSet<isize> = c.covering.iter().map(|w| w.hwnd.0 as isize).collect();
+    for w in &c.covering {
+        let h = w.hwnd.0 as isize;
+        if !s.pinned.contains_key(&h) {
+            let mi = monitor::of_window(w.hwnd).min(MON - 1);
+            s.pinned.insert(h, (mi, s.cur[mi]));
+        }
+    }
+    // one we minimized stays pinned until it is back; one that is no longer covering is free
+    let hidden: HashSet<isize> = s.max_hidden.keys().copied().collect();
+    s.pinned.retain(|h, _| {
+        unsafe { IsWindow(Some(HWND(*h as *mut _))) }.as_bool()
+            && (covering.contains(h) || hidden.contains(h))
+    });
+}
+
 pub(super) fn retile() {
     if SESSION_ENDING.with(Cell::get) {
         return;
@@ -428,6 +464,7 @@ pub(super) fn retile() {
         }
         reconcile_fullscreen(&mut s, &c.fullscreen);
         apply_fullscreen(&mut s);
+        track_covering_windows(&mut s, &c);
         let present: Vec<isize> = c.tileable.iter().map(|w| w.hwnd.0 as isize).collect();
         let present_set: HashSet<isize> = present.iter().copied().collect();
         // windows we have not seen before are placed instantly; known ones glide

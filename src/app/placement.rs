@@ -312,10 +312,11 @@ pub(super) fn apply_fullscreen(s: &mut State) {
 pub(super) const MINIMIZE_GRACE: Duration = Duration::from_millis(1500);
 
 /// Maximized windows are tracked like any other window (`State::ws`) but are not tiled while
-/// maximized, and a maximized window left in place would cover the workspace the user switched
-/// to. So the ones whose workspace is not shown are minimized, and restored (Windows brings them
-/// back maximized) when their workspace is shown again. Only windows this function minimized are
-/// ever restored by it: an app the user minimized stays minimized.
+/// maximized, and floating windows that fill their monitor are pinned (`State::pinned`). Left in
+/// place they would cover the workspace the user switched to. So the ones whose workspace is not
+/// shown are minimized, and restored (Windows brings them back maximized / fullscreen) when their
+/// workspace is shown again. Only windows this function minimized are ever restored by it: an
+/// app the user minimized stays minimized.
 pub(super) fn apply_maximized(s: &mut State) {
     if s.session_ending() || s.paused {
         return;
@@ -325,7 +326,7 @@ pub(super) fn apply_maximized(s: &mut State) {
         .max_hidden
         .keys()
         .copied()
-        .filter(|h| !s.ws.contains_key(h))
+        .filter(|h| !s.ws.contains_key(h) && !s.pinned.contains_key(h))
         .collect();
     for h in orphans {
         s.max_hidden.remove(&h);
@@ -337,24 +338,22 @@ pub(super) fn apply_maximized(s: &mut State) {
             }
         }
     }
-    let items: Vec<(isize, u8)> = s
+    // (window, monitor, workspace) of everything this function looks after
+    let mut items: Vec<(isize, usize, u8)> = s
         .suspended
         .iter()
-        .filter_map(|h| s.ws.get(h).map(|ws| (*h, *ws)))
-        .chain(
-            s.max_hidden
-                .keys()
-                .filter(|h| !s.suspended.contains(h))
-                .filter_map(|h| s.ws.get(h).map(|ws| (*h, *ws))),
-        )
+        .chain(s.max_hidden.keys())
+        .filter_map(|h| s.ws.get(h).map(|ws| (*h, s.mi(*h), *ws)))
+        .chain(s.pinned.iter().map(|(h, (mi, ws))| (*h, *mi, *ws)))
         .collect();
+    items.sort_unstable();
+    items.dedup();
     let mut changed = false;
-    for (h, ws) in items {
+    for (h, mi, ws) in items {
         let hw = HWND(h as *mut _);
         if !unsafe { IsWindow(Some(hw)) }.as_bool() {
             continue;
         }
-        let mi = s.mi(h);
         let cur = s.cur[mi];
         let hidden = s.max_hidden.contains_key(&h);
         let minimized = unsafe { IsIconic(hw) }.as_bool();
@@ -368,8 +367,12 @@ pub(super) fn apply_maximized(s: &mut State) {
         if hidden && !minimized && ws != cur && settled {
             s.max_hidden.remove(&h);
             HIDDEN_FULLSCREEN.with(|hidden| hidden.borrow_mut().remove(&h));
-            s.ws.insert(h, cur);
-            s.mon.insert(h, mi);
+            if let Some(pin) = s.pinned.get_mut(&h) {
+                *pin = (mi, cur);
+            } else {
+                s.ws.insert(h, cur);
+                s.mon.insert(h, mi);
+            }
             changed = true;
             continue;
         }
@@ -383,7 +386,7 @@ pub(super) fn apply_maximized(s: &mut State) {
                 changed = true;
             }
             // visible and not cloaked: a window on another Windows virtual desktop is left alone
-            FsAction::Hide if unsafe { IsZoomed(hw) }.as_bool() && border_window_shown(hw) => {
+            FsAction::Hide if window::covers_monitor(hw) && border_window_shown(hw) => {
                 s.max_hidden.insert(h, Instant::now());
                 HIDDEN_FULLSCREEN.with(|hidden| hidden.borrow_mut().insert(h));
                 unsafe {

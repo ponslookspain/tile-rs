@@ -213,6 +213,9 @@ struct State {
     /// Maximized windows of other workspaces that were minimized by tile-rs (see
     /// `apply_maximized`); only these are restored when their workspace is shown again.
     max_hidden: HashMap<isize, Instant>,
+    /// Floating windows (media viewers, `toggle_float`) that fill their monitor, with the monitor
+    /// and workspace they belong to, so they can be hidden when that workspace is left.
+    pinned: HashMap<isize, (usize, u8)>,
     /// Windows the user floated with `toggle_float` (never tiled this session).
     manual_float: HashSet<isize>,
     /// Windows currently parked off-screen with their original rectangles (mirrored to disk).

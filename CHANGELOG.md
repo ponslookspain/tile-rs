@@ -32,6 +32,10 @@ follows [Semantic Versioning](https://semver.org) (see [docs/RELEASING.md](docs/
 - A window maximized on one workspace no longer stays on top when you switch to another
   workspace: it is minimized and comes back maximized when you return. A window you minimized
   yourself is left alone, and one you bring back from the taskbar joins the workspace you are on.
+  This also covers windows that open maximized (browsers, Explorer) and floating windows that fill
+  their monitor, such as a video player or a photo viewer in fullscreen.
+- More video players are recognised and left floating: Movies & TV, the Media Player of Windows 11,
+  SMPlayer, GOM Player, Kodi, Plex, Stremio and others.
 - With "No gaps for a single window" (`smart_gaps`) turned on, windows are tiled again: the lone
   first window filled the screen without gaps but was then checked against the gapped area,
   rejected, and every window was left floating.

@@ -76,6 +76,7 @@ pub(super) fn drop_window_data(s: &mut State, h: isize) -> bool {
     tracked |= s.live_borders.remove(&h).is_some();
     tracked |= s.slid.remove(&h);
     tracked |= s.max_hidden.remove(&h).is_some();
+    tracked |= s.pinned.remove(&h).is_some();
     tracked |= s.ws.remove(&h).is_some();
     tracked |= s.mon.remove(&h).is_some();
     tracked |= s.tracked.remove(&h).is_some();
@@ -832,7 +833,12 @@ pub(super) unsafe extern "system" fn on_event(
                     .copied()
                     .unwrap_or_else(|| monitor::of_window(HWND(h as *mut _)))
                     .min(MON - 1);
-                let ws = s.ws.get(&h).copied().or_else(|| s.fs_ws.get(&h).copied());
+                let ws = s
+                    .ws
+                    .get(&h)
+                    .copied()
+                    .or_else(|| s.fs_ws.get(&h).copied())
+                    .or_else(|| s.pinned.get(&h).map(|(_, ws)| *ws));
                 match ws {
                     Some(w) if w != s.cur[mi] && !s.paused && !recently => {
                         s.follow = Some((mi, w, h));
@@ -848,7 +854,7 @@ pub(super) unsafe extern "system" fn on_event(
                                 s.manual_float.union(&s.capacity_float).copied().collect();
                             if matches!(
                                 window::classify_with_manual(hwnd, &config::rules(), &ignored),
-                                Verdict::Tileable(_) | Verdict::Fullscreen(_)
+                                Verdict::Tileable(_) | Verdict::Fullscreen(_) | Verdict::Maximized(_)
                             ) {
                                 s.windows_changed = true;
                                 dirty = true;

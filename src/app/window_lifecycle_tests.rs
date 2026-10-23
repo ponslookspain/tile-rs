@@ -1014,3 +1014,77 @@ fn a_window_the_user_brings_back_joins_the_workspace_they_are_on() {
     assert_eq!(state.ws[&window.h()], 0);
     assert!(state.max_hidden.is_empty());
 }
+
+#[test]
+fn a_pinned_fullscreen_floating_window_is_minimized_off_its_workspace_and_restored() {
+    use windows::Win32::UI::WindowsAndMessaging::{IsZoomed, SW_MAXIMIZE};
+    let _config = ConfigGuard::new(|_| {});
+    let video = Fixture::new();
+    unsafe {
+        let _ = ShowWindow(video.0, SW_MAXIMIZE);
+    }
+    assert!(unsafe { IsZoomed(video.0) }.as_bool());
+    // a media viewer: floating, so not in `ws`, but pinned to workspace 2 while it covers the screen
+    let mut state = State::default();
+    state.pinned.insert(video.h(), (0, 1));
+    state.cur[0] = 0;
+
+    apply_maximized(&mut state);
+    assert!(state.max_hidden.contains_key(&video.h()));
+    pump_until(video.0, || unsafe { IsIconic(video.0) }.as_bool());
+    assert!(unsafe { IsIconic(video.0) }.as_bool());
+
+    state.cur[0] = 1;
+    apply_maximized(&mut state);
+    assert!(state.max_hidden.is_empty());
+    pump_until(video.0, || !unsafe { IsIconic(video.0) }.as_bool());
+    assert!(!unsafe { IsIconic(video.0) }.as_bool());
+    assert!(unsafe { IsZoomed(video.0) }.as_bool());
+    assert_eq!(state.pinned[&video.h()], (0, 1), "it stays pinned to its workspace");
+}
+
+#[test]
+fn a_floating_window_that_does_not_cover_the_screen_is_never_hidden() {
+    let _config = ConfigGuard::new(|_| {});
+    let small = Fixture::new();
+    let mut state = State::default();
+    state.pinned.insert(small.h(), (0, 1));
+    state.cur[0] = 0;
+    apply_maximized(&mut state);
+    assert!(state.max_hidden.is_empty());
+    assert!(!unsafe { IsIconic(small.0) }.as_bool());
+}
+
+#[test]
+fn a_window_that_opens_maximized_joins_the_workspace_it_appeared_on() {
+    use windows::Win32::UI::WindowsAndMessaging::SW_MAXIMIZE;
+    let _config = ConfigGuard::new(|_| {});
+    let window = Fixture::new();
+    unsafe {
+        let _ = ShowWindow(window.0, SW_MAXIMIZE);
+    }
+    let mut state = State::default();
+    state.cur[0] = 2;
+    let collected = window::Collector {
+        tileable: Vec::new(),
+        fullscreen: Vec::new(),
+        maximized: vec![window::Win {
+            hwnd: window.0,
+            title: "opened maximized".into(),
+            class: "Fixture".into(),
+            pid: 1,
+            rule_ws: None,
+        }],
+        covering: Vec::new(),
+        skipped: Vec::new(),
+    };
+    track_covering_windows(&mut state, &collected);
+    assert_eq!(state.ws.get(&window.h()), Some(&2));
+    assert!(state.order[state.mi(window.h())].contains(&window.h()));
+    // it is hidden when that workspace is left, and not counted against the tile budget
+    state.suspended.insert(window.h());
+    state.cur[0] = 0;
+    apply_maximized(&mut state);
+    assert!(state.max_hidden.contains_key(&window.h()));
+    assert!(workspace_windows(&state, 0, 2).is_empty());
+}

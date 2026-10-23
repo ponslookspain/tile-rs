@@ -160,9 +160,18 @@ A rule needs at least one of `process`, `class`, `title`, and all given fields m
 Use `tile-rs.exe list` to see what the windows on your screen are called.
 
 Windows that are never tiled regardless of rules: invisible or minimized windows, dialogs
-(owned windows), child/no-activate/tool windows, the taskbar and desktop, windows
-you have maximized yourself, and the windows of elevated (administrator) processes while tile-rs
+(owned windows), child/no-activate/tool windows, the taskbar and desktop,
+and the windows of elevated (administrator) processes while tile-rs
 itself is not running as administrator.
+
+A window you maximized (or that opens maximized) is not tiled while it is maximized, but it
+belongs to the workspace it is on: switching away minimizes it and coming back restores it
+maximized, so it never covers another workspace. Un-maximizing makes it a normal tile of that
+workspace. A floating window that fills its whole monitor (a media viewer or player in fullscreen,
+a window floated with `toggle_float` and then maximized) is treated the same way while it does;
+small floating windows stay visible on every workspace, and a window with a `float` rule is never
+touched. A window you minimized yourself stays minimized, and one you bring back from the taskbar
+while its workspace is not shown joins the workspace you are on.
 
 Known console hosts are eligible even when their native style omits the usual resizable flag.
 Match the window host (`conhost`, `OpenConsole`, `WindowsTerminal`) rather than assuming that
