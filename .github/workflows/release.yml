@@ -15,12 +15,12 @@ jobs:
     env:
       TAG: ${{ github.ref_name }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Rust toolchain
         run: rustup toolchain install stable --profile minimal --component rustfmt --component clippy
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
           shared-key: windows-msvc
           save-if: ${{ startsWith(github.ref, 'refs/tags/v') }}
@@ -32,6 +32,21 @@ jobs:
           $ver = (Select-String -Path Cargo.toml -Pattern '^version\s*=\s*"([^"]+)"' |
               Select-Object -First 1).Matches[0].Groups[1].Value
           if ($tagVersion -ne $ver) { throw "Tag $env:TAG does not match Cargo.toml version $ver" }
+
+      - name: Code signing must be configured
+        shell: pwsh
+        env:
+          CERT_PFX: ${{ secrets.WINDOWS_CERT_PFX_BASE64 }}
+          CERT_THUMBPRINT: ${{ secrets.WINDOWS_CERT_THUMBPRINT }}
+          ALLOW_UNSIGNED: ${{ vars.ALLOW_UNSIGNED_RELEASE }}
+        run: |
+          if ($env:CERT_PFX -or $env:CERT_THUMBPRINT) {
+              "TILE_RS_REQUIRE_SIGNING=1" | Add-Content -LiteralPath $env:GITHUB_ENV
+          } elseif ($env:ALLOW_UNSIGNED -eq 'true') {
+              Write-Warning 'Publishing an UNSIGNED release (ALLOW_UNSIGNED_RELEASE=true).'
+          } else {
+              throw 'No Authenticode certificate is configured. Add the WINDOWS_CERT_* secrets (docs/RELEASING.md), or set the repository variable ALLOW_UNSIGNED_RELEASE=true to publish unsigned on purpose.'
+          }
 
       - name: Format
         run: cargo fmt --all -- --check

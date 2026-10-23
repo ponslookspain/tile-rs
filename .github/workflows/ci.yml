@@ -12,7 +12,7 @@ jobs:
   build:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Rust toolchain
         run: rustup toolchain install stable --profile minimal --component rustfmt --component clippy
@@ -20,7 +20,7 @@ jobs:
       - name: Format
         run: cargo fmt --all -- --check
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
           shared-key: windows-msvc
           save-if: ${{ github.ref == 'refs/heads/main' }}
@@ -33,3 +33,13 @@ jobs:
 
       - name: Release build
         run: cargo build --locked --release
+
+  deny:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Dependency advisories, licenses and sources
+        uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2
+        with:
+          command: check
