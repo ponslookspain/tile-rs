@@ -346,7 +346,7 @@ pub(crate) fn ui_state() -> (u8, bool) {
 /// The screen work area changed (display mode, taskbar size / auto-hide): rebuild the layout.
 pub(crate) fn request_relayout() {
     end_divider(false);
-    DISPLAY_HZ.with(|cache| cache.set(None));
+    DISPLAY_HZ.with(|cache| *cache.borrow_mut() = None);
     let old_monitors = monitor::list();
     monitor::refresh();
     let new_monitors = monitor::list();

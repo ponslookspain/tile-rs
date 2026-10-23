@@ -34,6 +34,20 @@ fn frame_rate_limits_bound_visual_work_without_busy_polling() {
 }
 
 #[test]
+fn slower_monitor_skips_ticks_of_a_faster_timer_but_never_lags_by_more_than_a_tick() {
+    let ms = Duration::from_millis;
+    // A 144 Hz timer (7 ms ticks) drives a 60 Hz window (17 ms frames).
+    assert!(!frame_due(ms(7), 17, 7));
+    assert!(frame_due(ms(14), 17, 7)); // the nearest tick, not the one after
+    assert!(frame_due(ms(21), 17, 7));
+    // A window on the fastest monitor takes every tick.
+    assert!(frame_due(ms(7), 7, 7));
+    // With the timer at the window's own rate nothing is skipped, even with some jitter.
+    assert!(frame_due(ms(16), 17, 17));
+    assert!(frame_due(ms(9), 17, 17));
+}
+
+#[test]
 fn unknown_destroy_does_not_schedule_a_desktop_scan() {
     STATE.with(|state| *state.borrow_mut() = State::default());
     unsafe {
@@ -578,6 +592,7 @@ fn slow_frames_suspend_animations_and_finish_running_ones() {
         t0: Instant::now(),
         dur_ms: 500,
         last: None,
+        frame_at: None,
     });
     // fast frames reset the streak
     note_frame_cost(&mut s, Duration::from_millis(40), interval);
@@ -887,6 +902,7 @@ fn repeating_an_animation_target_preserves_its_start_time() {
         t0: started,
         dur_ms: 140,
         last: None,
+        frame_at: None,
     });
     move_window(&mut state, HWND(11usize as *mut _), target, true);
     assert_eq!(state.anims.len(), 1);
@@ -1018,6 +1034,41 @@ fn closing_a_window_discards_its_pending_monitor_transfer() {
     assert!(s.tracked.is_empty());
 }
 
+/// A per-window collection added to `State` must be cleaned when its window closes. This reads
+/// the source so that forgetting `drop_window_data` for a new field fails here instead of leaking.
+#[test]
+fn every_per_window_collection_in_state_is_released_by_drop_window_data() {
+    let state_source = include_str!("mod.rs");
+    let body = state_source
+        .split("struct State {")
+        .nth(1)
+        .and_then(|rest| rest.split("\n}").next())
+        .expect("State struct");
+    let cleanup = include_str!("events.rs")
+        .split("fn drop_window_data")
+        .nth(1)
+        .and_then(|rest| rest.split("\n}").next())
+        .expect("drop_window_data");
+    let per_window = ["HashMap<isize", "HashSet<isize", "Vec<isize"];
+    let mut checked = 0;
+    for line in body.lines().map(str::trim) {
+        let Some((field, ty)) = line.split_once(": ") else {
+            continue;
+        };
+        if field.contains(' ') || field.starts_with("//") {
+            continue;
+        }
+        if per_window.iter().any(|keyed| ty.contains(keyed)) {
+            checked += 1;
+            assert!(
+                cleanup.contains(&format!("s.{field}")),
+                "State::{field} is keyed by window but drop_window_data never touches it"
+            );
+        }
+    }
+    assert!(checked >= 15, "found only {checked} per-window collections");
+}
+
 #[test]
 fn closing_window_removes_every_cached_entry_and_reference() {
     let mut s = State::default();
@@ -1058,6 +1109,7 @@ fn closing_window_removes_every_cached_entry_and_reference() {
             t0: now,
             dur_ms: 140,
             last: None,
+            frame_at: None,
         });
         for mi in 0..MON {
             s.order[mi].push(h);

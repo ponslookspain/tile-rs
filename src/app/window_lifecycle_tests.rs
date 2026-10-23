@@ -889,6 +889,7 @@ fn closed_window_is_discarded_during_animation_before_another_placement_is_submi
             t0: Instant::now(),
             dur_ms: 1000,
             last: None,
+            frame_at: None,
         });
         arm_anim_timer(&mut s);
         assert!(s.frame_armed);

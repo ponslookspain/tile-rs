@@ -296,6 +296,8 @@ struct State {
     frame_armed: bool,
     /// The waitable timer is a one-shot re-armed at every display refresh (see `rearm_frame_timer`).
     frame_oneshot: bool,
+    /// Interval (ms) the frame timer was armed with: the fastest monitor that is animating.
+    frame_ms: u32,
     /// Consecutive animation frames that took far longer than a frame interval.
     slow_frames: u32,
     /// While set and in the future, windows move instantly: the machine could not keep up.
@@ -321,7 +323,8 @@ thread_local! {
     static STATE: RefCell<State> = RefCell::new(State::default());
     static PENDING_EVENTS: RefCell<event_queue::DeferredQueue<PendingEvent, isize>> = RefCell::new(event_queue::DeferredQueue::default());
     static PENDING_WAKE_POSTED: Cell<bool> = const { Cell::new(false) };
-    static DISPLAY_HZ: Cell<Option<u32>> = const { Cell::new(None) };
+    /// Refresh rate of every monitor (same indices as `monitor::list`), cached until a display change.
+    static DISPLAY_HZ: RefCell<Option<Vec<u32>>> = const { RefCell::new(None) };
 }
 
 const WM_PENDING_EVENTS: u32 = 0x8000 + 42;
