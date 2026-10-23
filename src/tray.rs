@@ -53,6 +53,10 @@ const M_AUTOSTART: usize = 8;
 const M_HOTKEYS: usize = 9;
 const M_UPDATE: usize = 11;
 const M_QUIT: usize = 10;
+const M_SUPPORT: usize = 13;
+
+/// Where "Support tile-rs" leads: Buy Me a Coffee needs no GitHub account, so anyone can use it.
+pub const SUPPORT_URL: &str = "https://buymeacoffee.com/ponslooksp1";
 
 pub fn wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(std::iter::once(0)).collect()
@@ -432,6 +436,7 @@ fn show_menu(hwnd: HWND) {
             "Start with Windows",
             crate::autostart_enabled(),
         );
+        item(menu, M_SUPPORT, "Support tile-rs", false);
         let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
         item(menu, M_QUIT, "Quit tile-rs", false);
 
@@ -474,6 +479,7 @@ fn show_menu(hwnd: HWND) {
                     crate::notify("tile-rs", "Could not change the autostart setting.");
                 }
             }
+            M_SUPPORT => open(SUPPORT_URL, ""),
             M_QUIT => crate::dispatch(Action::Quit),
             _ => {}
         }

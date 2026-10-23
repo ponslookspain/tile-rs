@@ -623,6 +623,7 @@ export component MainWindow inherits Window {
     callback open_release();
     callback check_updates();
     callback open_github();
+    callback open_support();
     callback save();
     callback key_captured(int, bool, string, bool, bool, bool, bool);
     callback clear_keys(int);
@@ -1300,6 +1301,8 @@ export component MainWindow inherits Window {
                                     AboutSlint { width: 160px; height: 100px; }
                                     VerticalLayout {
                                         alignment: center;
+                                        spacing: 8px;
+                                        ActionButton { label: "Support tile-rs"; icon: @image-url("icons/external.svg"); has-icon: true; compact: true; button-width: 196px; activated => { root.open_support(); } }
                                         ActionButton { label: "GitHub page"; icon: @image-url("icons/external.svg"); has-icon: true; compact: true; button-width: 196px; activated => { root.open_github(); } }
                                     }
                                 }

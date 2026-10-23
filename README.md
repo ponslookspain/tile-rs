@@ -265,6 +265,17 @@ back when you switch), so they still show up in the taskbar and in `Alt+Tab`.
 - Do not run it together with another window manager (GlazeWM, Komorebi, ...).
 - The executable and the installer are not code-signed yet.
 
+## Support the project
+
+tile-rs is free and open source, and it stays that way. If it makes your day easier, you can
+support its development:
+
+- [GitHub Sponsors](https://github.com/sponsors/ponslookspain): one-time or monthly
+- [Buy Me a Coffee](https://buymeacoffee.com/ponslooksp1): a one-time tip, no GitHub account needed
+
+The same links are in the tray menu (*Support tile-rs*) and in Settings -> Advanced -> About.
+Starring the repository and telling others about it helps too.
+
 ## Contributing & versions
 
 See [CONTRIBUTING.md](CONTRIBUTING.md). Versions follow [Semantic Versioning](https://semver.org);

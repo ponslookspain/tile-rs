@@ -163,6 +163,9 @@ pub fn run() {
     ui.on_open_github(|| {
         crate::tray::open("https://github.com/ponslookspain/tile-rs", "");
     });
+    ui.on_open_support(|| {
+        crate::tray::open(crate::tray::SUPPORT_URL, "");
+    });
     ui.on_open_config(|| {
         config::ensure_default();
         crate::tray::open(
