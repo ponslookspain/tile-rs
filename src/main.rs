@@ -2961,6 +2961,8 @@ unsafe extern "system" fn on_event(
     // Did this event ask for any actual work? Only then is the debounce timer armed: an event we
     // ignore (e.g. an unrelated window moving) must not cause a whole re-collect 40 ms later.
     let mut dirty = false;
+    // A dragged window dropped onto a workspace dot: (window, monitor, workspace).
+    let mut dot_drop: Option<(isize, usize, u8)> = None;
     STATE.with(|s| {
         let mut s = s.borrow_mut();
         if event == EVENT_OBJECT_CREATE && s.identities.contains_key(&h) {
@@ -3041,7 +3043,26 @@ unsafe extern "system" fn on_event(
                     let new_mi = monitor::of_window(hwnd).min(MON - 1);
                     let affected = s.last[old_mi].clone();
                     s.live_resize.forget(&affected);
-                    if old_mi != new_mi {
+                    overlay::set_drop_target(None);
+                    let mut p = POINT::default();
+                    let on_dot = if !s.resizing && GetCursorPos(&mut p).is_ok() {
+                        overlay::dot_at_screen(p.x, p.y)
+                    } else {
+                        None
+                    };
+                    if let Some((dot_mi, n)) = on_dot {
+                        // dropped onto a workspace dot: the window goes to that workspace (see
+                        // `send_to_workspace`); undo the swap preview and let it snap back first
+                        if let Some((pi, ph)) = s.drag_preview.take() {
+                            if pi < s.rects[old_mi].len() {
+                                let back = s.rects[old_mi][pi];
+                                move_window(&mut s, HWND(ph as *mut _), back, true);
+                            }
+                        }
+                        s.resizing = false;
+                        s.live = false;
+                        dot_drop = Some((h, dot_mi, n));
+                    } else if old_mi != new_mi {
                         // A manual cross-monitor drag is an explicit move to the destination
                         // monitor's currently visible workspace. Do not interpret its final size
                         // as a resize of a split on the source monitor.
@@ -3189,7 +3210,25 @@ unsafe extern "system" fn on_event(
                             // Coalesce input to the next frame without resetting its deadline.
                             arm_anim_timer(&mut s);
                         } else {
-                            update_drag_preview(&mut s, h);
+                            // over a workspace dot: highlight it instead of previewing a swap
+                            let mut p = POINT::default();
+                            let dot = if GetCursorPos(&mut p).is_ok() {
+                                overlay::dot_at_screen(p.x, p.y)
+                            } else {
+                                None
+                            };
+                            overlay::set_drop_target(dot);
+                            if dot.is_some() {
+                                let mi = s.mi(h);
+                                if let Some((pi, ph)) = s.drag_preview.take() {
+                                    if pi < s.rects[mi].len() {
+                                        let back = s.rects[mi][pi];
+                                        move_window(&mut s, HWND(ph as *mut _), back, true);
+                                    }
+                                }
+                            } else {
+                                update_drag_preview(&mut s, h);
+                            }
                         }
                     }
                     return;
@@ -3343,6 +3382,9 @@ unsafe extern "system" fn on_event(
             }
         }
     });
+    if let Some((window, mi, n)) = dot_drop {
+        send_to_workspace(window, mi, n);
+    }
     if reposition {
         // the borrow above is released: move the border onto the window that just got focus
         sync_border();
@@ -4084,6 +4126,96 @@ fn focus_workspace(mi: usize, n: u8) {
     match fs {
         Some(h) => focus_hwnd(h),
         None => focus_first_or_desktop(),
+    }
+}
+
+/// A window dropped onto workspace dot `n` of monitor `mi` (or sent there from the dot's menu)
+/// moves to that workspace. The user stays where they are, like dropping a file onto a folder.
+fn send_to_workspace(h: isize, mi: usize, n: u8) {
+    let hwnd = HWND(h as *mut _);
+    let plan = STATE.with(|s| {
+        let s = s.borrow();
+        if s.paused || n >= WS_COUNT || mi >= MON || !s.ws.contains_key(&h) || s.fs_ws.contains_key(&h)
+        {
+            return None;
+        }
+        Some(s.mi(h))
+    });
+    let Some(from) = plan else {
+        return;
+    };
+    if from != mi {
+        // `retile` derives a window's monitor from where it is: put it on the target first
+        let work = monitor::work(mi);
+        let moved = unsafe {
+            SetWindowPos(
+                hwnd,
+                None,
+                work.left + 40,
+                work.top + 40,
+                0,
+                0,
+                SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOOWNERZORDER,
+            )
+        };
+        if moved.is_err() {
+            return;
+        }
+    }
+    STATE.with(|s| {
+        let mut s = s.borrow_mut();
+        if from != mi {
+            s.order[from].retain(|window| *window != h);
+            if !s.order[mi].contains(&h) {
+                s.order[mi].push(h);
+            }
+            s.mon.insert(h, mi);
+        }
+        s.ws.insert(h, n);
+        s.last[from].clear();
+        s.last[mi].clear();
+    });
+    retile();
+    log(format!(
+        "sent a window to workspace {} on monitor {}",
+        n + 1,
+        mi + 1
+    ));
+}
+
+/// Right-click on a workspace dot: switch to it, or move the active window there.
+fn dot_menu(mi: usize, n: u8) {
+    // read before the menu takes the foreground
+    let fg = unsafe { GetForegroundWindow() }.0 as isize;
+    let tracked = STATE.with(|s| {
+        let s = s.borrow();
+        s.ws.contains_key(&fg) && !s.fs_ws.contains_key(&fg)
+    });
+    let open = format!("Open workspace {}", n + 1);
+    let send = format!("Move the active window here");
+    let items: Vec<&str> = if tracked {
+        vec![&open, &send]
+    } else {
+        vec![&open]
+    };
+    match tray::pick(&items) {
+        Some(0) => switch_ws_on_monitor(mi, n),
+        Some(1) => {
+            send_to_workspace(fg, mi, n);
+            focus_hwnd_if_visible(fg);
+        }
+        _ => {}
+    }
+}
+
+/// Gives focus back to `h` after a menu took it, unless the window just left the screen.
+fn focus_hwnd_if_visible(h: isize) {
+    let visible = STATE.with(|s| {
+        let s = s.borrow();
+        s.ws.get(&h).is_some_and(|ws| *ws == s.cur[s.mi(h)])
+    });
+    if visible {
+        focus_hwnd(h);
     }
 }
 
@@ -4921,6 +5053,7 @@ fn start(interactive: bool) {
     overlay::set_border_color(config::border_color_value());
     overlay::set_indicator_accent(config::accent_color_value());
     overlay::set_indicator_click(switch_ws_on_monitor);
+    overlay::set_indicator_menu(dot_menu);
     overlay::create_indicator(monitor::count());
     let anim_timer = create_anim_timer();
     STATE.with(|s| s.borrow_mut().anim_timer = anim_timer);

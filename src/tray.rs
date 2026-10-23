@@ -292,6 +292,37 @@ fn item(
     }
 }
 
+/// Shows a small popup menu at the cursor and returns the 0-based index of the chosen item.
+pub fn pick(items: &[&str]) -> Option<usize> {
+    let raw = TRAY_HWND.load(Ordering::Relaxed);
+    if raw == 0 {
+        return None;
+    }
+    let hwnd = HWND(raw as *mut _);
+    unsafe {
+        let menu = CreatePopupMenu().ok()?;
+        for (i, text) in items.iter().enumerate() {
+            item(menu, i + 1, text, false);
+        }
+        let mut pt = POINT::default();
+        let _ = GetCursorPos(&mut pt);
+        // required so the menu closes when the user clicks elsewhere
+        let _ = SetForegroundWindow(hwnd);
+        let cmd = TrackPopupMenu(
+            menu,
+            TPM_RETURNCMD | TPM_RIGHTBUTTON,
+            pt.x,
+            pt.y,
+            Some(0),
+            hwnd,
+            None,
+        );
+        let _ = PostMessageW(Some(hwnd), WM_NULL, WPARAM(0), LPARAM(0));
+        let _ = DestroyMenu(menu);
+        (cmd.0 as usize).checked_sub(1)
+    }
+}
+
 fn show_menu(hwnd: HWND) {
     let (_, paused) = crate::ui_state();
     unsafe {

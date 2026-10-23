@@ -23,7 +23,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DestroyWindow, GetClientRect, GetWindowLongPtrW,
     IsWindowVisible, KillTimer, LoadCursorW, RegisterClassW, SetLayeredWindowAttributes, SetTimer,
     SetWindowLongPtrW, SetWindowPos, ShowWindow, GWLP_USERDATA, IDC_HAND, LWA_COLORKEY,
-    SWP_NOACTIVATE, SWP_NOZORDER, SW_HIDE, SW_SHOWNA, WM_ERASEBKGND, WM_LBUTTONUP, WM_MOUSEMOVE,
+    SWP_NOACTIVATE, SWP_NOZORDER, SW_HIDE, SW_SHOWNA, WM_ERASEBKGND, WM_LBUTTONUP, WM_MOUSEMOVE, WM_RBUTTONUP,
     WM_PAINT, WM_TIMER, WNDCLASSW, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
     WS_EX_TRANSPARENT, WS_POPUP,
 };
@@ -371,6 +371,56 @@ pub fn set_indicator_click(f: fn(usize, u8)) {
     let _ = IND_CLICK.set(f);
 }
 
+/// Callback run when the user right-clicks a workspace dot: (monitor index, 0-based workspace).
+static IND_MENU: OnceLock<fn(usize, u8)> = OnceLock::new();
+
+/// Registers the callback run when the user right-clicks a workspace dot.
+pub fn set_indicator_menu(f: fn(usize, u8)) {
+    let _ = IND_MENU.set(f);
+}
+
+/// The workspace dot under screen point (`x`, `y`), as (monitor index, 0-based workspace).
+/// Used while a window is dragged: the indicator gets no mouse messages then.
+pub fn dot_at_screen(x: i32, y: i32) -> Option<(usize, u8)> {
+    INDS.iter().enumerate().find_map(|(mi, ind)| {
+        let raw = ind.hwnd.load(Ordering::Relaxed);
+        if raw == 0 || !unsafe { IsWindowVisible(HWND(raw as *mut _)) }.as_bool() {
+            return None;
+        }
+        let r: Vec<i32> = ind.rect.iter().map(|a| a.load(Ordering::Relaxed)).collect();
+        if x < r[0] || x >= r[2] || y < r[1] || y >= r[3] {
+            return None;
+        }
+        let idx = dot_at_x(
+            x - r[0],
+            ind.dpi.load(Ordering::Relaxed),
+            ind.cur.load(Ordering::Relaxed) as i32,
+        );
+        (idx >= 0).then_some((mi, idx as u8))
+    })
+}
+
+/// Highlights the dot a dragged window would be dropped onto (`None`: no dot), the same way a
+/// hovered dot is highlighted.
+pub fn set_drop_target(target: Option<(usize, u8)>) {
+    for (mi, ind) in INDS.iter().enumerate() {
+        let raw = ind.hwnd.load(Ordering::Relaxed);
+        if raw == 0 {
+            continue;
+        }
+        let want = match target {
+            Some((m, n)) if m == mi => n as i32,
+            _ => -1,
+        };
+        if ind.hover.load(Ordering::Relaxed) != want {
+            ind.hover.store(want, Ordering::Relaxed);
+            unsafe {
+                SetTimer(Some(HWND(raw as *mut _)), TIMER_HOVER, 15, None);
+            }
+        }
+    }
+}
+
 /// The dot whose click target (the dot plus half a gap on each side, and the pill's padding at the
 /// ends) contains window x `x`, or -1.
 fn dot_at_x(x: i32, dpi: u32, cur: i32) -> i32 {
@@ -677,6 +727,20 @@ unsafe extern "system" fn indicator_wndproc(
             );
             if idx >= 0 {
                 if let Some(f) = IND_CLICK.get() {
+                    f(mi, idx as u8);
+                }
+            }
+            LRESULT(0)
+        }
+        WM_RBUTTONUP => {
+            let x = (lparam.0 & 0xFFFF) as u16 as i16 as i32;
+            let idx = dot_at_x(
+                x,
+                ind.dpi.load(Ordering::Relaxed),
+                ind.cur.load(Ordering::Relaxed) as i32,
+            );
+            if idx >= 0 {
+                if let Some(f) = IND_MENU.get() {
                     f(mi, idx as u8);
                 }
             }
