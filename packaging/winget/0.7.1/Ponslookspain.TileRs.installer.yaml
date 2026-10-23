@@ -1,0 +1,14 @@
+# yaml-language-server: $schema=https://aka.ms/winget-manifest.installer.1.6.0.schema.json
+PackageIdentifier: Ponslookspain.TileRs
+PackageVersion: 0.7.1
+InstallerType: inno
+Scope: user
+MinimumOSVersion: 10.0.0.0
+UpgradeBehavior: install
+ProductCode: '{7B5E9F1C-2C4A-4E5B-9D3E-6C1F0A2B4D77}_is1'
+Installers:
+  - Architecture: x64
+    InstallerUrl: https://github.com/ponslookspain/tile-rs/releases/download/v0.7.1/tile-rs-0.7.1-setup.exe
+    InstallerSha256: 5489564ED1FF900160FCADF4A521572178127922F5CB18ADB30D227DAC4F361D
+ManifestType: installer
+ManifestVersion: 1.6.0

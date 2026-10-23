@@ -197,7 +197,8 @@ moved off-screen and come back when you switch. Do not run it together with anot
 
 ## Support the project
 
-tile-rs is free and open source, and it stays that way. If it saves you time, you can support it:
+tile-rs is free and open source (MIT), and what it can do today stays free. If it saves you time,
+you can support it:
 
 - [**Buy Me a Coffee**](https://buymeacoffee.com/ponslook): a one-time tip, no account needed
 - [**GitHub Sponsors**](https://github.com/sponsors/ponslookspain): one-time or monthly

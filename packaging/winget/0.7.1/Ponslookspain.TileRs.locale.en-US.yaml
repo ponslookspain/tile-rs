@@ -1,0 +1,22 @@
+# yaml-language-server: $schema=https://aka.ms/winget-manifest.defaultLocale.1.6.0.schema.json
+PackageIdentifier: Ponslookspain.TileRs
+PackageVersion: 0.7.1
+PackageLocale: en-US
+Publisher: ponslookspain
+PublisherUrl: https://github.com/ponslookspain
+PublisherSupportUrl: https://github.com/ponslookspain/tile-rs/issues
+PackageName: tile-rs
+PackageUrl: https://github.com/ponslookspain/tile-rs
+License: MIT
+LicenseUrl: https://github.com/ponslookspain/tile-rs/blob/v0.7.1/LICENSE
+ShortDescription: A small tiling window manager for Windows 10/11 with workspaces and a settings window.
+Description: tile-rs arranges windows in a spiral, master-stack, columns or grid layout, with 9 workspaces per monitor, live mouse resizing, animations and a graphical settings window. It runs from the system tray.
+Moniker: tile-rs
+Tags:
+  - tiling
+  - window-manager
+  - windows
+  - workspaces
+ReleaseNotesUrl: https://github.com/ponslookspain/tile-rs/releases/tag/v0.7.1
+ManifestType: defaultLocale
+ManifestVersion: 1.6.0
