@@ -15,6 +15,8 @@ pub(super) struct Anim {
     pub(super) dur_ms: u32,
     /// Last visible frame we actually applied (to skip frames that do not move the window).
     pub(super) last: Option<RECT>,
+    /// When this window last took a frame; a monitor slower than the timer skips the ticks between.
+    pub(super) frame_at: Option<Instant>,
 }
 
 /// Put the *visible* frame of a window at `vis`, given its invisible border.
@@ -178,12 +180,15 @@ pub(super) fn move_window(s: &mut State, hwnd: HWND, target: RECT, animate: bool
         t0: Instant::now(),
         dur_ms,
         last: None,
+        frame_at: None,
     });
     if was_empty {
         if prof::on() {
             anim_prof_reset();
         }
         arm_anim_timer(s);
+    } else {
+        retarget_frame_timer(s); // the new window may sit on a faster monitor than the timer
     }
 }
 
@@ -365,38 +370,77 @@ pub(super) fn create_anim_timer() -> HANDLE {
     }
 }
 
-/// Cache display queries until a display change; cap visual work independently of input.
-pub(super) fn anim_frame_ms() -> u32 {
+/// Runs `f` on the refresh rate of every monitor (same indices as `monitor::list`). The rates are
+/// cached until a display change. A monitor whose rate cannot be read takes the fastest known
+/// one, or 60 when none can be read.
+fn with_monitor_rates<T>(f: impl FnOnce(&[u32]) -> T) -> T {
     use windows::Win32::Graphics::Gdi::{EnumDisplaySettingsW, DEVMODEW, ENUM_CURRENT_SETTINGS};
-    let hz = DISPLAY_HZ.with(|cache| {
-        if let Some(hz) = cache.get() {
-            return hz;
-        }
-        let hz = monitor::list()
-            .iter()
-            .filter_map(|mon| {
-                let device: Vec<u16> = mon.device.encode_utf16().chain(Some(0)).collect();
-                let mut mode = DEVMODEW {
-                    dmSize: size_of::<DEVMODEW>() as u16,
-                    ..Default::default()
-                };
-                if unsafe {
-                    EnumDisplaySettingsW(PCWSTR(device.as_ptr()), ENUM_CURRENT_SETTINGS, &mut mode)
-                }
-                .as_bool()
-                    && (30..=1000).contains(&mode.dmDisplayFrequency)
-                {
-                    Some(mode.dmDisplayFrequency)
-                } else {
-                    None
-                }
-            })
-            .max()
-            .unwrap_or(60);
-        cache.set(Some(hz));
-        hz
-    });
-    frame_interval_ms(hz, config::animation_fps_limit())
+    DISPLAY_HZ.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        let rates = cache.get_or_insert_with(|| {
+            let read: Vec<Option<u32>> = monitor::list()
+                .iter()
+                .map(|mon| {
+                    let device: Vec<u16> = mon.device.encode_utf16().chain(Some(0)).collect();
+                    let mut mode = DEVMODEW {
+                        dmSize: size_of::<DEVMODEW>() as u16,
+                        ..Default::default()
+                    };
+                    (unsafe {
+                        EnumDisplaySettingsW(
+                            PCWSTR(device.as_ptr()),
+                            ENUM_CURRENT_SETTINGS,
+                            &mut mode,
+                        )
+                    }
+                    .as_bool()
+                        && (30..=1000).contains(&mode.dmDisplayFrequency))
+                    .then_some(mode.dmDisplayFrequency)
+                })
+                .collect();
+            let fastest = read.iter().flatten().copied().max().unwrap_or(60);
+            read.into_iter().map(|hz| hz.unwrap_or(fastest)).collect()
+        });
+        f(rates)
+    })
+}
+
+/// Refresh rate of the fastest monitor.
+fn display_hz() -> u32 {
+    with_monitor_rates(|rates| rates.iter().copied().max().unwrap_or(60))
+}
+
+/// Refresh rate of the monitor a gliding window is heading to.
+fn anim_hz(a: &Anim) -> u32 {
+    let centre = POINT {
+        x: (a.to.left + a.to.right) / 2,
+        y: (a.to.top + a.to.bottom) / 2,
+    };
+    let mi = monitor::at(centre);
+    with_monitor_rates(|rates| {
+        rates
+            .get(mi)
+            .copied()
+            .unwrap_or_else(|| rates.iter().copied().max().unwrap_or(60))
+    })
+}
+
+/// The refresh rate that drives the frame timer: the fastest monitor that has a window gliding on
+/// it, or the fastest monitor overall while only a divider drag needs frames.
+fn driving_hz(anims: &[Anim]) -> u32 {
+    anims.iter().map(anim_hz).max().unwrap_or_else(display_hz)
+}
+
+/// Frame interval of the timer: the display rate that drives it, capped by `animation_fps_limit`.
+pub(super) fn anim_frame_ms(s: &State) -> u32 {
+    frame_interval_ms(driving_hz(&s.anims), config::animation_fps_limit())
+}
+
+/// A window on a monitor slower than the timer sits out the ticks between its own frames.
+/// `tick_ms` is the timer interval; half a tick of slack picks the nearest tick instead of the
+/// next one, so a 60 Hz monitor driven by a 144 Hz timer keeps close to 60 frames a second.
+pub(super) fn frame_due(elapsed: Duration, interval_ms: u32, tick_ms: u32) -> bool {
+    elapsed.as_micros() * 2 + u128::from(tick_ms) * 1000 >= u128::from(interval_ms) * 2000
 }
 
 pub(super) fn frame_interval_ms(display_hz: u32, fps_limit: u32) -> u32 {
@@ -449,11 +493,12 @@ pub(super) fn vsync_frame_due() -> Option<i64> {
     )
 }
 
-/// Frames follow the display refresh unless the user capped the frame rate below it.
-pub(super) fn frames_follow_vsync() -> bool {
-    let _ = anim_frame_ms(); // fills the cached refresh rate
-    let hz = DISPLAY_HZ.with(|cache| cache.get()).unwrap_or(60);
-    config::animation_fps_limit() >= hz
+/// Frames follow the display refresh unless the user capped the frame rate below it. The
+/// compositor reports one refresh clock, so only the fastest monitor can be followed: when just a
+/// slower monitor is animating, a plain timer at its rate is used instead.
+pub(super) fn frames_follow_vsync(s: &State) -> bool {
+    let hz = driving_hz(&s.anims);
+    hz >= display_hz() && config::animation_fps_limit() >= hz
 }
 
 /// After a vsync-aligned frame: schedule the next one for the next refresh. (A periodic timer
@@ -468,7 +513,7 @@ pub(super) fn rearm_frame_timer(s: &mut State) {
         },
         None => {
             // timing info became unavailable: fall back to a plain periodic timer
-            let frame = anim_frame_ms().max(1);
+            let frame = anim_frame_ms(s).max(1);
             let due = -(frame as i64) * 10_000;
             s.frame_oneshot = false;
             unsafe {
@@ -484,8 +529,9 @@ pub(super) fn arm_anim_timer(s: &mut State) {
     if s.frame_armed {
         return;
     }
-    let frame = anim_frame_ms().max(1);
-    let synced = if frames_follow_vsync() {
+    let frame = anim_frame_ms(s).max(1);
+    s.frame_ms = frame;
+    let synced = if frames_follow_vsync(s) {
         vsync_frame_due()
     } else {
         None
@@ -500,6 +546,15 @@ pub(super) fn arm_anim_timer(s: &mut State) {
             s.frame_fallback = SetTimer(None, s.frame_fallback, frame, None);
             s.frame_armed = s.frame_fallback != 0;
         }
+    }
+}
+
+/// Re-arms a running frame timer when the monitor that drives it changed: a window started on a
+/// faster monitor, or the last one on the fast monitor finished and a slower one is left.
+pub(super) fn retarget_frame_timer(s: &mut State) {
+    if s.frame_armed && s.frame_ms != anim_frame_ms(s).max(1) {
+        s.frame_armed = false;
+        arm_anim_timer(s);
     }
 }
 
@@ -574,9 +629,11 @@ pub(super) fn anim_tick() {
         let mut keep = Vec::with_capacity(s.anims.len());
         let mut setpos = Duration::ZERO;
         let mut min_size_changed = false;
+        let tick_ms = anim_frame_ms(&s);
+        let fps_limit = config::animation_fps_limit();
         // Pass 1: where is every window supposed to be in this frame?
         let mut frame: Vec<(Anim, RECT, bool, bool)> = Vec::with_capacity(s.anims.len());
-        for a in std::mem::take(&mut s.anims) {
+        for mut a in std::mem::take(&mut s.anims) {
             if !s.animation_current(a.hwnd) {
                 continue;
             }
@@ -585,6 +642,17 @@ pub(super) fn anim_tick() {
             }
             let dur = (a.dur_ms.max(1) as f32) / 1000.0;
             let t = (now - a.t0).as_secs_f32() / dur;
+            // The final frame is never skipped: the window must land exactly on its tile.
+            if t < 1.0
+                && a.frame_at.is_some_and(|at| {
+                    let interval = frame_interval_ms(anim_hz(&a), fps_limit);
+                    !frame_due(now.saturating_duration_since(at), interval, tick_ms)
+                })
+            {
+                keep.push(a);
+                continue;
+            }
+            a.frame_at = Some(now);
             let (rect, done) = if t >= 1.0 {
                 (a.to, true) // exact final position
             } else {
@@ -682,12 +750,10 @@ pub(super) fn anim_tick() {
     STATE.with(|s| {
         let mut s = s.borrow_mut();
         if had_animations {
-            note_frame_cost(
-                &mut s,
-                tick_started.elapsed(),
-                Duration::from_millis(anim_frame_ms().into()),
-            );
+            let interval = Duration::from_millis(anim_frame_ms(&s).into());
+            note_frame_cost(&mut s, tick_started.elapsed(), interval);
         }
+        retarget_frame_timer(&mut s);
         rearm_frame_timer(&mut s);
         if s.anims.is_empty() {
             schedule_trim(&mut s);

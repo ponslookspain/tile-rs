@@ -27,9 +27,11 @@ use windows::Win32::Security::Cryptography::{
 
 const API_URL: &str = "https://api.github.com/repos/ponslookspain/tile-rs/releases/latest";
 const ASSET_PREFIX: &str = "https://github.com/ponslookspain/tile-rs/releases/download/";
-// Set to Some("<64 hex characters>") before publishing signed updates; see docs/RELEASING.md.
-// No production key has been provisioned: builds/tests work, installation fails closed.
-const UPDATE_VERIFYING_KEY: Option<&str> = None;
+/// Ed25519 public key (64 hex characters) that update checksums must be signed with. The private
+/// half lives only with the maintainer and in the UPDATE_SIGNING_KEY Actions secret; see
+/// docs/RELEASING.md before rotating it.
+const UPDATE_VERIFYING_KEY: Option<&str> =
+    Some("0625782274728e1f3c12f717f50dbef06692188af108c44b0d54a20cb3bd8bb9");
 const MAX_BODY: usize = 1024 * 1024;
 const MAX_INSTALLER: usize = 256 * 1024 * 1024;
 static CHECK_RUNNING: AtomicBool = AtomicBool::new(false);

@@ -39,6 +39,7 @@ $password = $env:TILE_RS_SIGN_CERT_PASSWORD
 $thumbprint = $env:TILE_RS_SIGN_THUMBPRINT
 
 if (-not $b64 -and -not $thumbprint) {
+    if ($env:TILE_RS_REQUIRE_SIGNING -eq '1') { throw 'Code signing is required for this build but no certificate is configured.' }
     Write-Host 'Code signing is not configured: skipping.' -ForegroundColor Yellow
     Write-Host 'Set TILE_RS_SIGN_CERT_PFX_BASE64 (and TILE_RS_SIGN_CERT_PASSWORD) or TILE_RS_SIGN_THUMBPRINT to sign.'
     exit 0

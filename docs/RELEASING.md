@@ -92,12 +92,12 @@ through a pull request, then release `X.Y.(Z+1)` as above.
 Do not move or delete tags. Mark the release as a pre-release or edit its notes with a warning,
 and publish a fixed `PATCH` version.
 
-## Code signing (optional)
+## Code signing (required for releases)
 
 `scripts/sign.ps1` code-signs a file with `signtool.exe` (SHA-256, DigiCert RFC 3161 timestamp).
 It is called from `scripts/package.ps1` (the zipped exe) and `scripts/build-installer.ps1` (the
-`dist\tile-rs.exe` and the installer), and it is a **no-op unless a certificate is configured**, so
-local builds and unsigned releases keep working.
+`dist\tile-rs.exe` and the installer). Locally it is a **no-op unless a certificate is configured**; the
+release workflow sets `TILE_RS_REQUIRE_SIGNING=1` and fails when no certificate is available.
 
 To sign a release, add these repository secrets (Settings → Secrets and variables → Actions) and
 they are passed to the packaging steps automatically:
@@ -111,10 +111,17 @@ they are passed to the packaging steps automatically:
 `WINDOWS_CERT_PFX_BASE64` takes precedence; set only one of the two. The signing machine needs the
 Windows SDK (for `signtool.exe`); the GitHub `windows-latest` runner has it.
 
+A release run **fails** when neither `WINDOWS_CERT_PFX_BASE64` nor `WINDOWS_CERT_THUMBPRINT` is set.
+To publish unsigned on purpose, set the repository **variable** (not secret)
+`ALLOW_UNSIGNED_RELEASE=true` under Settings → Secrets and variables → Actions → Variables, and
+remove it afterwards. A free certificate for open-source projects is available through
+[SignPath Foundation](https://signpath.org/); it signs inside its own service rather than with a
+local `.pfx`, so using it needs a separate workflow step that is not set up here.
+
 ## Binaries and trust
 
 Release binaries are built by GitHub Actions from the tagged commit; the zip's SHA-256 is
-published next to it. The executable is **not code-signed** until a certificate is configured as
+published next to it. The executable is **not code-signed** when a release was published with `ALLOW_UNSIGNED_RELEASE`, or until a certificate is configured as
 above (Windows SmartScreen shows a warning on the first start until then).
 
 ## Updates in installed applications
@@ -159,13 +166,13 @@ The checksum signature is a raw 64-byte Ed25519 signature over the **exact bytes
 `tile-rs-X.Y.Z-setup.exe.sha256.sig`. `scripts/sign-update.ps1` uses OpenSSL 3 (`pkeyutl -sign -rawin`),
 checks that the private key matches the embedded public key, and verifies the output before publication.
 
-No production signing key is included. `UPDATE_VERIFYING_KEY` in `src/platform/update.rs` is
-explicitly `None`: ordinary builds and CI remain green, but in-app installation fails closed with
-a configuration error. The release workflow refuses to publish until both the public key and the
-`UPDATE_SIGNING_KEY` secret are configured. This avoids an intentionally failing reminder test
-while ensuring an unsigned update is never installed or published by this workflow.
+The public key is embedded as `UPDATE_VERIFYING_KEY` in `src/platform/update.rs`; the private
+half is never in the repository. The release workflow refuses to publish unless the
+`UPDATE_SIGNING_KEY` secret is set to the matching private key, so an unsigned update is never
+published, and the app never installs one.
 
-Before the first release with signature verification:
+The steps below are how the current pair was made. Repeat them only to create a new pair
+(see the rotation note at the end):
 
 1. On a trusted machine, in a private directory **outside the repository**, generate the key pair:
    ```powershell

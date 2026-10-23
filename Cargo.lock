@@ -4429,7 +4429,7 @@ dependencies = [
 
 [[package]]
 name = "tile-rs"
-version = "0.7.0"
+version = "0.7.1"
 dependencies = [
  "ed25519-dalek",
  "serde",
