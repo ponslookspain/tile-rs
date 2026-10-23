@@ -6,6 +6,8 @@ follows [Semantic Versioning](https://semver.org) (see [docs/RELEASING.md](docs/
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-10-24
+
 ### Added
 - Window sizes you set by dragging or with the keyboard are remembered per screen and workspace
   and come back after a restart.
@@ -387,7 +389,8 @@ First working prototype.
 - Tray icon with menu, autostart, single-instance guard, first-run dialog.
 - `config.toml`: gap, animations, hotkeys, per-application rules (float / workspace).
 
-[Unreleased]: https://github.com/ponslookspain/tile-rs/compare/v0.7.1...HEAD
+[Unreleased]: https://github.com/ponslookspain/tile-rs/compare/v0.8.0...HEAD
+[0.8.0]: https://github.com/ponslookspain/tile-rs/compare/v0.7.1...v0.8.0
 [0.7.1]: https://github.com/ponslookspain/tile-rs/compare/v0.7.0...v0.7.1
 [0.7.0]: https://github.com/ponslookspain/tile-rs/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/ponslookspain/tile-rs/compare/v0.5.0...v0.6.0
