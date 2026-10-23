@@ -2694,6 +2694,7 @@ fn forget_window(s: &mut State, h: isize) -> bool {
         s.live_borders.clear();
         s.drop_dot = None;
         overlay::set_drop_target(None);
+        overlay::raise_indicators(false);
         s.dragging = None;
         s.drag_started = None;
         s.resizing = false;
@@ -2999,6 +3000,7 @@ unsafe extern "system" fn on_event(
                         if k < s.rects[mi].len() {
                             s.drop_dot = None;
                             s.dragging = Some(h);
+                            overlay::raise_indicators(true);
                             s.placement_failures.remove(&h);
                             s.geometry_retries.remove(&h);
                             s.drag_started = Some(Instant::now());
@@ -3051,6 +3053,7 @@ unsafe extern "system" fn on_event(
                     let affected = s.last[old_mi].clone();
                     s.live_resize.forget(&affected);
                     overlay::set_drop_target(None);
+                    overlay::raise_indicators(false);
                     let on_dot = s.drop_dot.take().filter(|_| !s.resizing);
                     if let Some((dot_mi, n)) = on_dot {
                         // dropped onto a workspace dot: the window goes to that workspace (see

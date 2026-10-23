@@ -23,7 +23,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DestroyWindow, GetClientRect, GetWindowLongPtrW,
     IsWindowVisible, KillTimer, LoadCursorW, RegisterClassW, SetLayeredWindowAttributes, SetTimer,
     SetWindowLongPtrW, SetWindowPos, ShowWindow, GWLP_USERDATA, IDC_HAND, LWA_COLORKEY,
-    SWP_NOACTIVATE, SWP_NOZORDER, SW_HIDE, SW_SHOWNA, WM_ERASEBKGND, WM_LBUTTONUP, WM_MOUSEMOVE, WM_RBUTTONUP,
+    HWND_NOTOPMOST, HWND_TOPMOST, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SW_HIDE, SW_SHOWNA, WM_ERASEBKGND, WM_LBUTTONUP, WM_MOUSEMOVE, WM_RBUTTONUP,
     WM_PAINT, WM_TIMER, WNDCLASSW, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
     WS_EX_TRANSPARENT, WS_POPUP,
 };
@@ -379,8 +379,33 @@ pub fn set_indicator_menu(f: fn(usize, u8)) {
     let _ = IND_MENU.set(f);
 }
 
+/// While a window is dragged the dots are kept above every window, so the dragged window cannot
+/// cover the place it is about to be dropped on. They go back to normal afterwards: always on top
+/// they would float over fullscreen videos and games.
+pub fn raise_indicators(raise: bool) {
+    let after = if raise { HWND_TOPMOST } else { HWND_NOTOPMOST };
+    for ind in &INDS {
+        let raw = ind.hwnd.load(Ordering::Relaxed);
+        if raw == 0 {
+            continue;
+        }
+        unsafe {
+            let _ = SetWindowPos(
+                HWND(raw as *mut _),
+                Some(after),
+                0,
+                0,
+                0,
+                0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+            );
+        }
+    }
+}
+
 /// The workspace dot under screen point (`x`, `y`), as (monitor index, 0-based workspace).
-/// Used while a window is dragged: the indicator gets no mouse messages then.
+/// Used while a window is dragged: the indicator gets no mouse messages then. The drop zone
+/// reaches one indicator height below the dots, so a dragged window is easy to aim.
 pub fn dot_at_screen(x: i32, y: i32) -> Option<(usize, u8)> {
     INDS.iter().enumerate().find_map(|(mi, ind)| {
         let raw = ind.hwnd.load(Ordering::Relaxed);
@@ -388,7 +413,8 @@ pub fn dot_at_screen(x: i32, y: i32) -> Option<(usize, u8)> {
             return None;
         }
         let r: Vec<i32> = ind.rect.iter().map(|a| a.load(Ordering::Relaxed)).collect();
-        if x < r[0] || x >= r[2] || y < r[1] || y >= r[3] {
+        let below = r[3] - r[1];
+        if x < r[0] || x >= r[2] || y < r[1] || y >= r[3] + below {
             return None;
         }
         let idx = dot_at_x(
