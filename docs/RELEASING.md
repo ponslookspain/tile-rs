@@ -194,3 +194,16 @@ The steps below are how the current pair was made. Repeat them only to create a 
 Existing verifier-enabled installations trust their embedded key. Preserve the pair for future
 releases; rotating it requires an explicit migration release trusted by the previous key.
 Production secrets and release publication remain maintainer actions.
+
+## winget package
+
+`scripts/winget-manifest.ps1 -Version X.Y.Z` writes the winget manifest of a published release to
+`packaging\winget\X.Y.Z\` (the installer hash comes from the release's `.sha256` asset, so run it
+after the release is public) and `winget validate --manifest packaging\winget\X.Y.Z` checks it.
+
+Getting it into winget is manual and happens outside this repository: fork
+[microsoft/winget-pkgs](https://github.com/microsoft/winget-pkgs), copy the three files to
+`manifests/p/Ponslookspain/TileRs/X.Y.Z/` and open a pull request. The first submission is reviewed
+by hand and is scanned by Defender and SmartScreen; an installer that is not code-signed
+(see above) can be held up or rejected, so sign releases before submitting. Later versions can be
+submitted with `wingetcreate update Ponslookspain.TileRs --version X.Y.Z --urls <installer-url> --submit`.
