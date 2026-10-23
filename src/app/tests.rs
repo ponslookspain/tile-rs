@@ -989,16 +989,22 @@ fn monitor_transfer_retains_target_until_native_geometry_acknowledges_it() {
     let h = 42;
     s.ws.insert(h, 3);
     s.mon.insert(h, 1);
-    s.pending_mon.insert(h, 1);
+    s.update_tracked(h, |window| window.pending_monitor = Some(1));
     for _ in 0..4 {
         s.observe_monitor(h, 0);
         assert_eq!(s.mi(h), 1);
-        assert_eq!(s.pending_mon.get(&h), Some(&1));
+        assert_eq!(
+            s.tracked.get(&h).and_then(|window| window.pending_monitor),
+            Some(1)
+        );
         assert_eq!(s.ws[&h], 3);
     }
     s.observe_monitor(h, 1);
     assert_eq!(s.mi(h), 1);
-    assert!(!s.pending_mon.contains_key(&h));
+    assert!(s
+        .tracked
+        .get(&h)
+        .is_none_or(|window| window.pending_monitor.is_none()));
     // Once acknowledged, an ordinary user move may change the monitor again.
     s.observe_monitor(h, 0);
     assert_eq!(s.mi(h), 0);
@@ -1007,7 +1013,182 @@ fn monitor_transfer_retains_target_until_native_geometry_acknowledges_it() {
 #[test]
 fn closing_a_window_discards_its_pending_monitor_transfer() {
     let mut s = State::default();
-    s.pending_mon.insert(42, 1);
+    s.update_tracked(42, |window| window.pending_monitor = Some(1));
     assert!(drop_window_data(&mut s, 42));
-    assert!(s.pending_mon.is_empty());
+    assert!(s.tracked.is_empty());
+}
+
+#[test]
+fn closing_window_removes_every_cached_entry_and_reference() {
+    let mut s = State::default();
+    let closed = 11;
+    let other = 22;
+    let now = Instant::now();
+    let rect = RECT {
+        right: 400,
+        bottom: 300,
+        ..Default::default()
+    };
+    for h in [closed, other] {
+        s.ws.insert(h, 0);
+        s.mon.insert(h, 0);
+        s.update_tracked(h, |window| window.pending_monitor = Some(1));
+        s.min_size.insert(h, (200, 100));
+        s.fs_ws.insert(h, 0);
+        s.fs_mon.insert(h, 0);
+        s.fs_hidden.insert(h);
+        HIDDEN_FULLSCREEN.with(|hidden| hidden.borrow_mut().insert(h));
+        s.manual_float.insert(h);
+        s.parked.insert(h, rect);
+        s.capacity_float.insert(h);
+        s.update_tracked(h, |window| window.float_reason = Some("fixture".into()));
+        s.suspended.insert(h);
+        s.update_tracked(h, |window| window.identity = Some((1, 2)));
+        s.placement_failures.insert(h, (rect, 1));
+        s.geometry_retries.insert(h, (rect, 1));
+        s.expected.insert(h, (rect, now));
+        s.placements
+            .insert(h, PlacementRequest::new(1, Some(rect), rect, now));
+        s.live_borders.insert(h, (1, 1, 1, 1));
+        s.anims.push(Anim {
+            hwnd: h,
+            from: rect,
+            to: rect,
+            border: (0, 0, 0, 0),
+            t0: now,
+            dur_ms: 140,
+            last: None,
+        });
+        for mi in 0..MON {
+            s.order[mi].push(h);
+            s.last[mi].push(h);
+            s.rects[mi].push(rect);
+            s.regions[mi].push(rect);
+        }
+    }
+    s.follow = Some((0, 0, closed));
+    s.focus_cur = Some(closed);
+    s.focus_prev = Some(closed);
+    s.ffm_last = Some(closed);
+    s.dragging = Some(closed);
+    s.drag_preview = Some((0, closed));
+    s.border_on = Some(closed);
+    s.divider = Some(divider::Resize {
+        handle: divider::Handle {
+            monitor: 0,
+            split: 0,
+            vertical: true,
+            rect,
+        },
+        layout: Layout::Spiral,
+        area: rect,
+        gaps: 8.into(),
+        windows: vec![closed, other],
+        workspace: 0,
+        ratios: vec![0.5],
+        tiles: vec![rect; 2],
+        preview: vec![rect; 2],
+        regions: vec![rect; 2],
+        minimums: vec![(1, 1); 2],
+        origin: POINT::default(),
+        last_pointer_axis: 0,
+    });
+    assert!(forget_window(&mut s, closed));
+    macro_rules! map_is_clean {
+        ($($field:ident),+ $(,)?) => {$(
+            assert!(!s.$field.contains_key(&closed), "{} retains closed HWND", stringify!($field));
+            assert!(s.$field.contains_key(&other), "{} lost unrelated HWND", stringify!($field));
+        )+};
+    }
+    map_is_clean!(
+        ws,
+        mon,
+        tracked,
+        min_size,
+        fs_ws,
+        fs_mon,
+        parked,
+        placement_failures,
+        geometry_retries,
+        expected,
+        placements
+    );
+    for collection in [
+        &s.fs_hidden,
+        &s.manual_float,
+        &s.capacity_float,
+        &s.suspended,
+    ] {
+        assert!(!collection.contains(&closed));
+        assert!(collection.contains(&other));
+    }
+    assert!(s.parked_dirty);
+    assert!(!HIDDEN_FULLSCREEN.with(|hidden| hidden.borrow().contains(&closed)));
+    HIDDEN_FULLSCREEN.with(|hidden| hidden.borrow_mut().remove(&other));
+    for mi in 0..MON {
+        assert_eq!(s.order[mi], vec![other]);
+        assert!(!s.last[mi].contains(&closed));
+    }
+    assert_eq!(
+        s.anims.iter().map(|a| a.hwnd).collect::<Vec<_>>(),
+        vec![other]
+    );
+    assert!(s.live_borders.is_empty()); // ending a dragged window cancels the whole live gesture
+    assert!(s.follow.is_none() && s.focus_cur.is_none() && s.focus_prev.is_none());
+    assert!(s.ffm_last.is_none() && s.dragging.is_none() && s.drag_preview.is_none());
+    assert!(s.border_on.is_none() && s.divider.is_none());
+}
+
+#[test]
+fn closing_window_forgets_pending_and_sent_resize_without_losing_another_window() {
+    let mut s = State::default();
+    let now = Instant::now();
+    let before = RECT::default();
+    let target = RECT {
+        right: 400,
+        bottom: 300,
+        ..Default::default()
+    };
+    s.ws.insert(11, 0);
+    s.ws.insert(22, 0);
+    s.live_resize.queue(&[(11, target), (22, target)]);
+    assert_eq!(s.live_resize.take_ready(now, |_| Some(before)).len(), 2);
+    s.live_resize.queue(&[(11, target), (22, target)]);
+    assert!(forget_window(&mut s, 11));
+    assert_eq!(
+        s.live_resize
+            .take_ready(now + Duration::from_millis(100), |_| Some(before)),
+        vec![(22, target)]
+    );
+    let constrained = RECT {
+        right: 600,
+        bottom: 500,
+        ..Default::default()
+    };
+    assert_eq!(
+        s.live_resize
+            .constrained_targets(now + Duration::from_millis(200), |_| Some(constrained)),
+        vec![(22, target)]
+    );
+}
+
+#[test]
+fn optional_tracked_fields_preserve_siblings_and_discard_empty_entries() {
+    let mut s = State::default();
+    s.update_tracked(11, |window| {
+        window.identity = Some((1, 2));
+        window.pending_monitor = Some(1);
+        window.float_reason = Some("fixture".into());
+    });
+    s.observe_monitor(11, 1);
+    assert_eq!(s.tracked[&11].identity, Some((1, 2)));
+    assert_eq!(s.tracked[&11].float_reason.as_deref(), Some("fixture"));
+    assert!(s.tracked[&11].pending_monitor.is_none());
+    s.invalidate_layout_constraints();
+    assert_eq!(s.tracked[&11].identity, Some((1, 2)));
+    assert!(s.tracked[&11].float_reason.is_none());
+    s.update_tracked(11, |window| window.identity = None);
+    assert!(!s.tracked.contains_key(&11));
+    s.update_tracked(22, |window| window.pending_monitor = None);
+    assert!(s.tracked.is_empty());
 }

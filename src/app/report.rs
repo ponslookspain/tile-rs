@@ -19,8 +19,9 @@ pub(super) fn diagnostic_report(
             .copied()
             .collect();
         let tracked: HashSet<_> = state
-            .identities
-            .keys()
+            .tracked
+            .iter()
+            .filter_map(|(h, window)| window.identity.map(|_| h))
             .chain(state.ws.keys())
             .chain(state.fs_ws.keys())
             .copied()
@@ -69,7 +70,7 @@ pub(super) fn diagnostic_report(
                 "target": target.map(diagnostic_rect),
                 "suspended": state.suspended.contains(&h),
                 "manual_float": state.manual_float.contains(&h),
-                "automatic_float_reason": state.float_reasons.get(&h),
+                "automatic_float_reason": state.tracked.get(&h).and_then(|window| window.float_reason.as_ref()),
                 "learned_minimum": state.min_size.get(&h),
                 "geometry_retries": state.geometry_retries.get(&h).map(|(_, attempts)| attempts),
                 "placement": state.placements.get(&h).map(|request| serde_json::json!({

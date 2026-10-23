@@ -211,7 +211,7 @@ pub(super) fn toggle_float() {
         let mut s = s.borrow_mut();
         let was_manual = s.manual_float.remove(&h);
         let was_capacity = s.capacity_float.remove(&h);
-        s.float_reasons.remove(&h);
+        s.update_tracked(h, |window| window.float_reason = None);
         if was_manual || was_capacity {
             false
         } else {
@@ -298,7 +298,7 @@ pub(super) fn move_to_monitor(step: i8) {
         let from = s.mi(fg);
         s.ws.insert(fg, workspace);
         s.mon.insert(fg, to);
-        s.pending_mon.insert(fg, to);
+        s.update_tracked(fg, |window| window.pending_monitor = Some(to));
         s.last[to].clear();
         s.last[from].clear();
     });

@@ -172,7 +172,23 @@ impl PlacementRequest {
 }
 
 #[derive(Default)]
+struct TrackedWindow {
+    /// PID/thread identity guards HWND reuse when a destroy notification is lost.
+    identity: Option<(u32, u32)>,
+    /// An accepted asynchronous move whose monitor geometry has not caught up yet.
+    pending_monitor: Option<usize>,
+    float_reason: Option<String>,
+}
+
+impl TrackedWindow {
+    fn is_empty(&self) -> bool {
+        self.identity.is_none() && self.pending_monitor.is_none() && self.float_reason.is_none()
+    }
+}
+
+#[derive(Default)]
 struct State {
+    tracked: HashMap<isize, TrackedWindow>,
     divider: Option<divider::Resize>,
     /// Rects of the layout last applied, same indices as `last`, per monitor.
     rects: [Vec<RECT>; MON],
@@ -197,11 +213,8 @@ struct State {
     parked_dirty: bool,
     /// Automatic safety fallback when no workspace can accommodate an ordinary window.
     capacity_float: HashSet<isize>,
-    float_reasons: HashMap<isize, String>,
     /// Live but temporarily unavailable windows keep their workspace without taking a tile.
     suspended: HashSet<isize>,
-    /// PID/thread identity guards stale assignments when a destroy notification is lost.
-    identities: HashMap<isize, (u32, u32)>,
     /// Timer polling the pointer for `focus_follows_mouse` (0 = disabled).
     ffm_timer: usize,
     /// Watchdog for a lost EVENT_SYSTEM_MOVESIZEEND notification.
@@ -223,8 +236,6 @@ struct State {
     last: [Vec<isize>; MON],
     /// Monitor of every known window (an index into `monitor::list`).
     mon: HashMap<isize, usize>,
-    /// Accepted asynchronous monitor moves, retained until native geometry reaches the target.
-    pending_mon: HashMap<isize, usize>,
     /// Failed placement count by HWND and target rectangle (bounded retries per target).
     placement_failures: HashMap<isize, (RECT, u8)>,
     geometry_retries: HashMap<isize, (RECT, u8)>,
@@ -317,6 +328,15 @@ const WM_PENDING_EVENTS: u32 = 0x8000 + 42;
 const WM_SESSION_CANCELLED: u32 = 0x8000 + 43;
 
 impl State {
+    /// Field removal must not leave a new tracked entry that changes membership semantics.
+    fn update_tracked(&mut self, h: isize, update: impl FnOnce(&mut TrackedWindow)) {
+        let window = self.tracked.entry(h).or_default();
+        update(window);
+        if window.is_empty() {
+            self.tracked.remove(&h);
+        }
+    }
+
     fn session_ending(&mut self) -> bool {
         self.session_ending = SESSION_ENDING.with(Cell::get);
         self.session_ending
@@ -328,7 +348,10 @@ impl State {
         self.min_size.clear();
         self.min_size_reflow = false;
         self.capacity_float.clear();
-        self.float_reasons.clear();
+        self.tracked.retain(|_, window| {
+            window.float_reason = None;
+            !window.is_empty()
+        });
         self.clear_placement_history();
         self.clear_layouts();
     }
@@ -375,10 +398,14 @@ impl State {
     /// Native geometry can lag an accepted asynchronous monitor move across several layout passes.
     fn observe_monitor(&mut self, h: isize, observed: usize) {
         let observed = observed.min(MON - 1);
-        let assigned = match self.pending_mon.get(&h).copied() {
+        let assigned = match self
+            .tracked
+            .get(&h)
+            .and_then(|window| window.pending_monitor)
+        {
             Some(target) if target != observed => target,
             _ => {
-                self.pending_mon.remove(&h);
+                self.update_tracked(h, |window| window.pending_monitor = None);
                 observed
             }
         };

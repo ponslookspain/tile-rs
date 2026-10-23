@@ -73,7 +73,10 @@ pub(super) fn reconcile_monitor_slots(old: &[monitor::Monitor], new: &[monitor::
         let mut s = state.borrow_mut();
         let (old_to_new, exact) = monitor_slot_map(old, new, &s.monitor_ids);
         // Display changes supersede requests made against the previous monitor slots.
-        s.pending_mon.clear();
+        s.tracked.retain(|_, window| {
+            window.pending_monitor = None;
+            !window.is_empty()
+        });
 
         let mut new_cur = [0u8; MON];
         let mut new_ratios: [HashMap<u8, Vec<f32>>; MON] = std::array::from_fn(|_| HashMap::new());

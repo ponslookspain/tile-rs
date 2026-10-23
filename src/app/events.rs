@@ -56,19 +56,34 @@ pub(super) fn wake_pending_events() {
 /// added here, and it is then forgotten (and counted as tracked) everywhere.
 pub(super) fn drop_window_data(s: &mut State, h: isize) -> bool {
     let mut tracked = false;
+    if s.parked.remove(&h).is_some() {
+        s.parked_dirty = true;
+        tracked = true;
+    }
+    for reference in [&mut s.focus_cur, &mut s.focus_prev, &mut s.ffm_last] {
+        if *reference == Some(h) {
+            *reference = None;
+            tracked = true;
+        }
+    }
+    if s.divider
+        .as_ref()
+        .is_some_and(|gesture| gesture.windows.contains(&h))
+    {
+        s.divider = None;
+        tracked = true;
+    }
     tracked |= s.live_borders.remove(&h).is_some();
     tracked |= s.ws.remove(&h).is_some();
     tracked |= s.mon.remove(&h).is_some();
-    tracked |= s.pending_mon.remove(&h).is_some();
+    tracked |= s.tracked.remove(&h).is_some();
     tracked |= s.fs_ws.remove(&h).is_some();
     tracked |= s.fs_mon.remove(&h).is_some();
     tracked |= s.fs_hidden.remove(&h);
     HIDDEN_FULLSCREEN.with(|hidden| hidden.borrow_mut().remove(&h));
     tracked |= s.manual_float.remove(&h);
     tracked |= s.capacity_float.remove(&h);
-    tracked |= s.float_reasons.remove(&h).is_some();
     tracked |= s.suspended.remove(&h);
-    tracked |= s.identities.remove(&h).is_some();
     tracked |= s.min_size.remove(&h).is_some();
     tracked |= s.placement_failures.remove(&h).is_some();
     tracked |= s.geometry_retries.remove(&h).is_some();
@@ -103,10 +118,20 @@ pub(super) fn drop_window_data(s: &mut State, h: isize) -> bool {
 }
 
 pub(super) fn forget_window(s: &mut State, h: isize) -> bool {
+    let divider_windows = s
+        .divider
+        .as_ref()
+        .filter(|gesture| gesture.windows.contains(&h))
+        .map(|gesture| gesture.windows.clone());
     // `live_resize` has no membership query; forgetting an unknown window is a no-op
     s.live_resize.forget(&[h]);
     if !drop_window_data(s, h) {
         return false;
+    }
+    if let Some(windows) = divider_windows {
+        divider::release();
+        s.live_resize.forget(&windows);
+        s.live_borders.retain(|h, _| !windows.contains(h));
     }
     if s.dragging == Some(h) {
         s.live_resize.clear();
@@ -145,7 +170,7 @@ pub(super) fn native_identity(hwnd: HWND) -> Option<(u32, u32)> {
 
 pub(super) fn remember_identity(s: &mut State, hwnd: HWND) {
     if let Some(identity) = native_identity(hwnd) {
-        s.identities.insert(hwnd.0 as isize, identity);
+        s.update_tracked(hwnd.0 as isize, |window| window.identity = Some(identity));
     }
 }
 
@@ -190,7 +215,12 @@ pub(super) fn retain_assignments(
             .collect();
     s.ws.retain(|h, _| retained.contains(h));
     s.mon.retain(|h, _| retained.contains(h));
-    s.pending_mon.retain(|h, _| retained.contains(h));
+    s.tracked.retain(|h, window| {
+        if !retained.contains(h) {
+            window.pending_monitor = None;
+        }
+        !window.is_empty()
+    });
     s.suspended = retained.difference(present).copied().collect();
     if s.follow
         .is_some_and(|(_, _, h)| !s.ws.contains_key(&h) && !s.fs_ws.contains_key(&h))
@@ -202,10 +232,13 @@ pub(super) fn retain_assignments(
 /// Remove cached identity before a missed destroy can transfer state to another process.
 pub(super) fn prune_identities(s: &mut State) {
     let stale: Vec<_> = s
-        .identities
+        .tracked
         .iter()
-        .filter_map(|(h, identity)| {
-            (native_identity(HWND(*h as *mut _)) != Some(*identity)).then_some(*h)
+        .filter_map(|(h, window)| {
+            window
+                .identity
+                .filter(|identity| native_identity(HWND(*h as *mut _)) != Some(*identity))
+                .map(|_| *h)
         })
         .collect();
     for h in stale {
@@ -221,10 +254,12 @@ pub(super) fn float_for_capacity(s: &mut State, h: isize, reason: &str) {
         .unwrap_or_else(|| monitor::of_window(HWND(h as *mut _)).min(MON - 1));
     s.ws.remove(&h);
     s.mon.remove(&h);
-    s.pending_mon.remove(&h);
+    s.update_tracked(h, |window| {
+        window.pending_monitor = None;
+        window.float_reason = Some(reason.to_owned());
+    });
     s.suspended.remove(&h);
     s.capacity_float.insert(h);
-    s.float_reasons.insert(h, reason.to_owned());
     s.anims.retain(|animation| animation.hwnd != h);
     s.placements.remove(&h);
     s.expected.remove(&h);
@@ -396,7 +431,11 @@ pub(super) unsafe extern "system" fn on_event(
     let mut dot_drop: Option<(isize, usize, u8)> = None;
     STATE.with(|s| {
         let mut s = s.borrow_mut();
-        if event == EVENT_OBJECT_CREATE && s.identities.contains_key(&h) {
+        if event == EVENT_OBJECT_CREATE
+            && s.tracked
+                .get(&h)
+                .is_some_and(|window| window.identity.is_some())
+        {
             // CREATE is a lifecycle boundary even when the old HWND was reused by
             // the same process/thread and its DESTROY notification was missed.
             forget_window(&mut s, h);
@@ -431,7 +470,7 @@ pub(super) unsafe extern "system" fn on_event(
                 return;
             }
             EVENT_SYSTEM_MOVESIZESTART => {
-                s.pending_mon.remove(&h);
+                s.update_tracked(h, |window| window.pending_monitor = None);
                 // let the user drag freely; we decide what to do while / when they let go
                 if !s.paused {
                     let mi = s.mi(h);

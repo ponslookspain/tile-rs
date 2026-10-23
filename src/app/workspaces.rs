@@ -231,9 +231,9 @@ pub(super) fn send_to_workspace(h: isize, mi: usize, n: u8) {
     STATE.with(|s| {
         let mut s = s.borrow_mut();
         if actual != mi {
-            s.pending_mon.insert(h, mi);
+            s.update_tracked(h, |window| window.pending_monitor = Some(mi));
         } else {
-            s.pending_mon.remove(&h);
+            s.update_tracked(h, |window| window.pending_monitor = None);
         }
         if from != mi {
             s.order[from].retain(|window| *window != h);

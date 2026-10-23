@@ -668,7 +668,10 @@ fn create_event_clears_stale_state_even_when_process_and_thread_identity_match()
         state.min_size.insert(h, (1000, 900));
         state.follow = Some((0, 3, h));
         remember_identity(&mut state, window.0);
-        assert_eq!(state.identities.get(&h).copied(), native_identity(window.0));
+        assert_eq!(
+            state.tracked.get(&h).and_then(|window| window.identity),
+            native_identity(window.0)
+        );
         note_placement_result(&mut state, window.0, rect(400, 300), Some(before), true);
     });
     unsafe {
@@ -686,7 +689,10 @@ fn create_event_clears_stale_state_even_when_process_and_thread_identity_match()
         let state = cell.borrow();
         assert!(!state.ws.contains_key(&h) && !state.mon.contains_key(&h));
         assert!(!state.manual_float.contains(&h) && !state.min_size.contains_key(&h));
-        assert!(!state.identities.contains_key(&h));
+        assert!(state
+            .tracked
+            .get(&h)
+            .is_none_or(|window| window.identity.is_none()));
         assert!(state.follow.is_none());
         assert!(!state.expected.contains_key(&h) && !state.placements.contains_key(&h));
         assert!(!state.order[0].contains(&h) && !state.last[0].contains(&h));
