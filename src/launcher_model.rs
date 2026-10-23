@@ -240,6 +240,21 @@ pub enum Capture {
     Reject(String),
 }
 
+/// The layout-independent character for a held virtual key: letters, digits and the punctuation
+/// hotkeys can use. Slint's `text` follows the keyboard layout and Shift (Alt+Shift+1 arrives as
+/// `!`, Alt+H as `р` on a Russian layout), so the physical key is preferred when one is held.
+pub fn vk_char(vk: u16) -> Option<char> {
+    match vk {
+        0x30..=0x39 => Some(vk as u8 as char),
+        0x41..=0x5a => Some((vk as u8).to_ascii_lowercase() as char),
+        0xbb => Some('+'),
+        0xbc => Some(','),
+        0xbd => Some('-'),
+        0xbe => Some('.'),
+        _ => None,
+    }
+}
+
 /// Translates a Slint key event (its `text` and the modifier flags) into a hotkey.
 pub fn capture_key(text: &str, alt: bool, ctrl: bool, shift: bool, meta: bool) -> Capture {
     let mut chars = text.chars();
@@ -506,6 +521,19 @@ mod tests {
             capture_key("!", true, false, true, false),
             Capture::Reject(_)
         ));
+    }
+
+    #[test]
+    fn physical_keys_ignore_layout_and_shift() {
+        assert_eq!(vk_char(0x31), Some('1'));
+        assert_eq!(vk_char(0x48), Some('h'));
+        assert_eq!(vk_char(0xbe), Some('.'));
+        assert_eq!(vk_char(0x25), None); // arrows come from the Slint text
+        let one = vk_char(0x31).unwrap().to_string();
+        assert_eq!(
+            capture_key(&one, true, false, true, false),
+            Capture::Spec("alt+shift+1".into())
+        );
     }
 
     #[test]

@@ -20,7 +20,8 @@ use windows::Win32::UI::HiDpi::{
     SetProcessDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    FindWindowW, SetForegroundWindow, ShowWindow, SW_RESTORE,
+    FindWindowW, MessageBoxW, SetForegroundWindow, ShowWindow, IDNO, IDYES, MB_ICONQUESTION,
+    MB_YESNOCANCEL, MESSAGEBOX_RESULT, SW_RESTORE,
 };
 
 slint::include_modules!();
@@ -517,7 +518,8 @@ fn wire_editors(ui: &MainWindow) {
                 ui.set_recording(-1);
                 return;
             };
-            match launcher_model::capture_key(text.as_str(), alt, ctrl, shift, meta) {
+            let text = held_key().map_or_else(|| text.to_string(), String::from);
+            match launcher_model::capture_key(&text, alt, ctrl, shift, meta) {
                 Capture::Wait => {}
                 Capture::Cancel => ui.set_recording(-1),
                 Capture::Clear => {
@@ -634,12 +636,54 @@ fn wire_editors(ui: &MainWindow) {
 
     ui.on_save({
         let weak = ui.as_weak();
+        let editor = editor.clone();
         move || {
             if let Some(ui) = weak.upgrade() {
                 save(&ui, &mut editor.borrow_mut());
             }
         }
     });
+
+    ui.window().on_close_requested({
+        let weak = ui.as_weak();
+        move || {
+            use slint::CloseRequestResponse::{HideWindow, KeepWindowShown};
+            let Some(ui) = weak.upgrade() else { return HideWindow };
+            if !ui.get_dirty() {
+                return HideWindow;
+            }
+            match ask_save_on_close() {
+                IDYES => {
+                    save(&ui, &mut editor.borrow_mut());
+                    // a failed save keeps the window open with its status message
+                    if ui.get_dirty() { KeepWindowShown } else { HideWindow }
+                }
+                IDNO => HideWindow,
+                _ => KeepWindowShown,
+            }
+        }
+    });
+}
+
+/// The letter, digit or punctuation key physically held right now, independent of the keyboard
+/// layout and of Shift; `None` for arrows, F-keys and the like, which Slint reports reliably.
+fn held_key() -> Option<char> {
+    use windows::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState;
+    (0x30u16..=0xbe)
+        .filter(|vk| unsafe { GetAsyncKeyState(i32::from(*vk)) } < 0)
+        .find_map(launcher_model::vk_char)
+}
+
+fn ask_save_on_close() -> MESSAGEBOX_RESULT {
+    let owner = unsafe { FindWindowW(PCWSTR::null(), LAUNCHER_TITLE) }.ok();
+    unsafe {
+        MessageBoxW(
+            owner,
+            w!("Есть несохранённые изменения. Сохранить их перед закрытием?"),
+            LAUNCHER_TITLE,
+            MB_YESNOCANCEL | MB_ICONQUESTION,
+        )
+    }
 }
 
 fn save(ui: &MainWindow, editor: &mut Editor) {
