@@ -313,6 +313,20 @@ fn strip_exe_ci(s: &str) -> &str {
     }
 }
 
+/// Case-insensitive "title contains needle". `title_lc` is already lower-case; an ASCII needle is
+/// matched without allocating, anything else falls back to lower-casing the needle.
+fn title_contains(title_lc: &str, needle: &str) -> bool {
+    if needle.is_ascii() {
+        let n = needle.as_bytes();
+        return n.is_empty()
+            || title_lc
+                .as_bytes()
+                .windows(n.len())
+                .any(|w| w.eq_ignore_ascii_case(n));
+    }
+    title_lc.contains(&needle.to_lowercase())
+}
+
 /// `proc_name` is the window's executable name, already lower-case and without ".exe"; `title_lc`
 /// is the window title already lower-cased once for the whole rule list.
 fn rule_matches(r: &Rule, w: &Win, proc_name: &str, title_lc: &str) -> bool {
@@ -327,7 +341,7 @@ fn rule_matches(r: &Rule, w: &Win, proc_name: &str, title_lc: &str) -> bool {
         }
     }
     if let Some(t) = &r.title {
-        if !title_lc.contains(&t.to_lowercase()) {
+        if !title_contains(title_lc, t) {
             return false;
         }
     }
@@ -870,6 +884,15 @@ pub fn diagnostic_snapshots(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn title_contains_ignores_case_without_breaking_unicode() {
+        assert!(super::title_contains("untitled - notepad", "NOTEpad"));
+        assert!(super::title_contains("anything", ""));
+        assert!(!super::title_contains("untitled", "notepad"));
+        assert!(!super::title_contains("hi", "longer than title"));
+        assert!(super::title_contains("привет, мир", "МИР"));
+    }
+
     use super::*;
 
     fn sample_window(title: &str, class: &str) -> Win {
