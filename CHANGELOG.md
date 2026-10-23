@@ -6,6 +6,24 @@ follows [Semantic Versioning](https://semver.org) (see [docs/RELEASING.md](docs/
 
 ## [Unreleased]
 
+## [0.7.1] - 2026-10-23
+
+### Security
+- Updates are now verified with a digital signature in addition to the checksum, so an update
+  can only be installed if it was published by the tile-rs maintainer. Installing an update no
+  longer runs PowerShell.
+
+### Fixed
+- Windows left on other workspaces are brought back before Windows signs out or shuts down, so
+  apps no longer remember an off-screen position and reopen out of sight.
+- Moving a window to another monitor no longer freezes tile-rs while that app is not responding.
+- The list of hidden windows is written safely, so a crash cannot leave it half-written.
+
+### Changed
+- With monitors of different refresh rates, animations on the slower monitor no longer run at
+  the faster monitor's pace.
+- The settings window code was reorganised; it looks and behaves the same.
+
 ## [0.7.0] - 2026-10-23
 
 ### Added
@@ -324,7 +342,8 @@ First working prototype.
 - Tray icon with menu, autostart, single-instance guard, first-run dialog.
 - `config.toml`: gap, animations, hotkeys, per-application rules (float / workspace).
 
-[Unreleased]: https://github.com/ponslookspain/tile-rs/compare/v0.7.0...HEAD
+[Unreleased]: https://github.com/ponslookspain/tile-rs/compare/v0.7.1...HEAD
+[0.7.1]: https://github.com/ponslookspain/tile-rs/compare/v0.7.0...v0.7.1
 [0.7.0]: https://github.com/ponslookspain/tile-rs/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/ponslookspain/tile-rs/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/ponslookspain/tile-rs/compare/v0.4.0...v0.5.0
