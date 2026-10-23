@@ -223,6 +223,8 @@ struct State {
     last: [Vec<isize>; MON],
     /// Monitor of every known window (an index into `monitor::list`).
     mon: HashMap<isize, usize>,
+    /// Accepted asynchronous monitor moves, retained until native geometry reaches the target.
+    pending_mon: HashMap<isize, usize>,
     /// Failed placement count by HWND and target rectangle (bounded retries per target).
     placement_failures: HashMap<isize, (RECT, u8)>,
     geometry_retries: HashMap<isize, (RECT, u8)>,
@@ -370,6 +372,19 @@ impl State {
                 && now.saturating_duration_since(*time) < Duration::from_millis(VERIFY_MS.into())
         })
     }
+    /// Native geometry can lag an accepted asynchronous monitor move across several layout passes.
+    fn observe_monitor(&mut self, h: isize, observed: usize) {
+        let observed = observed.min(MON - 1);
+        let assigned = match self.pending_mon.get(&h).copied() {
+            Some(target) if target != observed => target,
+            _ => {
+                self.pending_mon.remove(&h);
+                observed
+            }
+        };
+        self.mon.insert(h, assigned);
+    }
+
     /// The monitor slot a window belongs to.
     fn mi(&self, h: isize) -> usize {
         self.mon.get(&h).copied().unwrap_or(0).min(MON - 1)

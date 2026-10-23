@@ -210,7 +210,7 @@ pub(super) fn send_to_workspace(h: isize, mi: usize, n: u8) {
     // where the window really is: a drag can leave it mostly on another monitor than its own
     let actual = monitor::of_window(hwnd).min(MON - 1);
     if actual != mi {
-        // `retile` derives a window's monitor from where it is: put it on the target first
+        // Post the move; retile keeps the explicit target until native geometry catches up.
         let work = monitor::work(mi);
         let moved = unsafe {
             SetWindowPos(
@@ -220,7 +220,7 @@ pub(super) fn send_to_workspace(h: isize, mi: usize, n: u8) {
                 work.top + 40,
                 0,
                 0,
-                SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOOWNERZORDER,
+                SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOOWNERZORDER | SWP_ASYNCWINDOWPOS,
             )
         };
         if moved.is_err() {
@@ -230,6 +230,11 @@ pub(super) fn send_to_workspace(h: isize, mi: usize, n: u8) {
     }
     STATE.with(|s| {
         let mut s = s.borrow_mut();
+        if actual != mi {
+            s.pending_mon.insert(h, mi);
+        } else {
+            s.pending_mon.remove(&h);
+        }
         if from != mi {
             s.order[from].retain(|window| *window != h);
             if !s.order[mi].contains(&h) {

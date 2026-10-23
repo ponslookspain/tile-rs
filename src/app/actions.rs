@@ -278,7 +278,7 @@ pub(super) fn move_to_monitor(step: i8) {
         return;
     };
     let work = monitor::work(to);
-    // `retile` re-derives a window's monitor from where it is, so move it there first
+    // Keep the target assignment until the posted move is reflected by native geometry.
     let moved = unsafe {
         SetWindowPos(
             HWND(fg as *mut _),
@@ -287,7 +287,7 @@ pub(super) fn move_to_monitor(step: i8) {
             work.top + 40,
             0,
             0,
-            SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOOWNERZORDER,
+            SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOOWNERZORDER | SWP_ASYNCWINDOWPOS,
         )
     };
     if moved.is_err() {
@@ -298,6 +298,7 @@ pub(super) fn move_to_monitor(step: i8) {
         let from = s.mi(fg);
         s.ws.insert(fg, workspace);
         s.mon.insert(fg, to);
+        s.pending_mon.insert(fg, to);
         s.last[to].clear();
         s.last[from].clear();
     });

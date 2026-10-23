@@ -982,3 +982,32 @@ fn session_latch_suppresses_parking_and_resets_after_cancellation() {
     SESSION_ENDING.with(|ending| ending.set(false));
     assert!(!s.session_ending());
 }
+
+#[test]
+fn monitor_transfer_retains_target_until_native_geometry_acknowledges_it() {
+    let mut s = State::default();
+    let h = 42;
+    s.ws.insert(h, 3);
+    s.mon.insert(h, 1);
+    s.pending_mon.insert(h, 1);
+    for _ in 0..4 {
+        s.observe_monitor(h, 0);
+        assert_eq!(s.mi(h), 1);
+        assert_eq!(s.pending_mon.get(&h), Some(&1));
+        assert_eq!(s.ws[&h], 3);
+    }
+    s.observe_monitor(h, 1);
+    assert_eq!(s.mi(h), 1);
+    assert!(!s.pending_mon.contains_key(&h));
+    // Once acknowledged, an ordinary user move may change the monitor again.
+    s.observe_monitor(h, 0);
+    assert_eq!(s.mi(h), 0);
+}
+
+#[test]
+fn closing_a_window_discards_its_pending_monitor_transfer() {
+    let mut s = State::default();
+    s.pending_mon.insert(42, 1);
+    assert!(drop_window_data(&mut s, 42));
+    assert!(s.pending_mon.is_empty());
+}

@@ -59,6 +59,7 @@ pub(super) fn drop_window_data(s: &mut State, h: isize) -> bool {
     tracked |= s.live_borders.remove(&h).is_some();
     tracked |= s.ws.remove(&h).is_some();
     tracked |= s.mon.remove(&h).is_some();
+    tracked |= s.pending_mon.remove(&h).is_some();
     tracked |= s.fs_ws.remove(&h).is_some();
     tracked |= s.fs_mon.remove(&h).is_some();
     tracked |= s.fs_hidden.remove(&h);
@@ -189,6 +190,7 @@ pub(super) fn retain_assignments(
             .collect();
     s.ws.retain(|h, _| retained.contains(h));
     s.mon.retain(|h, _| retained.contains(h));
+    s.pending_mon.retain(|h, _| retained.contains(h));
     s.suspended = retained.difference(present).copied().collect();
     if s.follow
         .is_some_and(|(_, _, h)| !s.ws.contains_key(&h) && !s.fs_ws.contains_key(&h))
@@ -219,6 +221,7 @@ pub(super) fn float_for_capacity(s: &mut State, h: isize, reason: &str) {
         .unwrap_or_else(|| monitor::of_window(HWND(h as *mut _)).min(MON - 1));
     s.ws.remove(&h);
     s.mon.remove(&h);
+    s.pending_mon.remove(&h);
     s.suspended.remove(&h);
     s.capacity_float.insert(h);
     s.float_reasons.insert(h, reason.to_owned());
@@ -428,6 +431,7 @@ pub(super) unsafe extern "system" fn on_event(
                 return;
             }
             EVENT_SYSTEM_MOVESIZESTART => {
+                s.pending_mon.remove(&h);
                 // let the user drag freely; we decide what to do while / when they let go
                 if !s.paused {
                     let mi = s.mi(h);

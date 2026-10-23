@@ -20,7 +20,7 @@ use windows::Win32::UI::HiDpi::{
     SetProcessDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    FindWindowW, MessageBoxW, SetForegroundWindow, ShowWindow, IDYES, MB_DEFBUTTON2,
+    FindWindowW, MessageBoxW, SetForegroundWindow, ShowWindowAsync, IDYES, MB_DEFBUTTON2,
     MB_ICONQUESTION, MB_YESNO, MESSAGEBOX_RESULT, SW_RESTORE,
 };
 
@@ -256,7 +256,7 @@ fn activate_existing() {
         let hwnd = unsafe { FindWindowW(PCWSTR::null(), LAUNCHER_TITLE) }.unwrap_or_default();
         if !hwnd.0.is_null() {
             unsafe {
-                let _ = ShowWindow(hwnd, SW_RESTORE);
+                let _ = ShowWindowAsync(hwnd, SW_RESTORE);
                 let _ = SetForegroundWindow(hwnd);
             }
             return;

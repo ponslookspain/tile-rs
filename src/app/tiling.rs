@@ -430,7 +430,7 @@ pub(super) fn retile() {
                 continue;
             }
             if !is_parked(w.hwnd) {
-                s.mon.insert(h, monitor::of_window(w.hwnd).min(MON - 1));
+                s.observe_monitor(h, monitor::of_window(w.hwnd));
             }
             let mi = s.mi(h);
             if !s.order[mi].contains(&h) {
