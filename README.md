@@ -172,6 +172,7 @@ Actions without a default key: `grow_height`, `shrink_height`, `retile`, `reload
 | A window is not tiled | Run `tile-rs.exe list` in a terminal: it lists every window and why it is skipped. |
 | An app misbehaves when tiled | Add a *floating* rule for it on the Apps page. |
 | An app running as administrator is ignored | Windows does not let normal programs move elevated windows. Run tile-rs as administrator too if you need that. |
+| The settings window shows a red "config.toml has an error" banner | The file has a mistake (for example a key tile-rs does not know). The window shows the built-in defaults and saves nothing; *Updates* still works. Fix the line it names, or *Reset settings* (a copy of the file is kept). |
 | Windows are missing after a crash | Start tile-rs again, or run `tile-rs.exe --restore-windows`. |
 | Something else | Tray → *More* → *Open log*, and [open an issue](https://github.com/ponslookspain/tile-rs/issues). |
 
