@@ -6,6 +6,14 @@ follows [Semantic Versioning](https://semver.org) (see [docs/RELEASING.md](docs/
 
 ## [Unreleased]
 
+## [0.8.1] - 2026-10-24
+
+### Fixed
+- The settings window opens even when `config.toml` has an error. It used to close at once without
+  a word, which also kept the user from installing an update. It now shows the built-in defaults
+  and a banner with the error and the file, saves nothing while the file is broken, and offers
+  *Open config file* and *Reset settings* (a copy of the file is kept). *Updates* keeps working.
+
 ## [0.8.0] - 2026-10-24
 
 ### Added
@@ -389,7 +397,8 @@ First working prototype.
 - Tray icon with menu, autostart, single-instance guard, first-run dialog.
 - `config.toml`: gap, animations, hotkeys, per-application rules (float / workspace).
 
-[Unreleased]: https://github.com/ponslookspain/tile-rs/compare/v0.8.0...HEAD
+[Unreleased]: https://github.com/ponslookspain/tile-rs/compare/v0.8.1...HEAD
+[0.8.1]: https://github.com/ponslookspain/tile-rs/compare/v0.8.0...v0.8.1
 [0.8.0]: https://github.com/ponslookspain/tile-rs/compare/v0.7.1...v0.8.0
 [0.7.1]: https://github.com/ponslookspain/tile-rs/compare/v0.7.0...v0.7.1
 [0.7.0]: https://github.com/ponslookspain/tile-rs/compare/v0.6.0...v0.7.0
