@@ -151,6 +151,11 @@ pub fn default_rows() -> Vec<Row> {
     rows_from_bindings(&bindings)
 }
 
+/// Keys that Windows itself uses together with Win + Alt.
+const WINDOWS_WIN_ALT_KEYS: [&str; 18] = [
+    "0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "up", "down", "k", "l", "r", "g", "b", "d",
+];
+
 /// The default hotkeys on a different base modifier: 0 keeps Alt (as shipped), 1 moves every
 /// plain Alt combination to Win + Alt, which applications almost never use. (Ctrl + Alt is not
 /// offered: it is AltGr on many European layouts and would steal characters such as @ and |.)
@@ -176,6 +181,12 @@ pub fn preset_rows(preset: i32) -> Vec<Row> {
                 let plain_alt = parts.contains(&"alt")
                     && !parts.iter().any(|p| matches!(*p, "ctrl" | "control" | "win" | "super" | "meta"));
                 if !plain_alt {
+                    return Some(key.clone());
+                }
+                // Windows owns these Win + Alt keys (taskbar jump lists, snapping, Game Bar,
+                // lock): moving there would only get the key refused, so it stays on Alt
+                let last = parts.last().copied().unwrap_or_default();
+                if WINDOWS_WIN_ALT_KEYS.contains(&last) {
                     return Some(key.clone());
                 }
                 let moved = format!("win+{lower}");
@@ -702,10 +713,17 @@ mod tests {
         assert!(conflicts(&rows).iter().all(|c| !c), "preset must not clash");
         let focus_left = rows.iter().find(|r| r.action == "focus_left").unwrap();
         assert!(focus_left.keys.contains(&"win+alt+left".to_string()));
-        assert!(rows
-            .iter()
-            .flat_map(|r| r.keys.iter())
-            .all(|k| !k.starts_with("alt+")));
+        // nothing lands on a Win + Alt key that Windows owns (Win + Alt + 1 opens a jump list)
+        for key in rows.iter().flat_map(|r| r.keys.iter()) {
+            let parts: Vec<&str> = key.split('+').collect();
+            let windows_owned = parts.len() == 3
+                && parts[0] == "win"
+                && parts[1] == "alt"
+                && WINDOWS_WIN_ALT_KEYS.contains(&parts[2]);
+            assert!(!windows_owned, "{key}");
+        }
+        let workspace_1 = rows.iter().find(|r| r.action == "workspace_1").unwrap();
+        assert_eq!(workspace_1.keys, vec!["alt+1".to_string()]);
         // no action that had keys loses all of them
         for (before, after) in default_rows().iter().zip(&rows) {
             assert!(before.keys.is_empty() || !after.keys.is_empty(), "{}", before.action);

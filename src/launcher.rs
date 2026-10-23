@@ -653,7 +653,7 @@ fn wire_editors(ui: &MainWindow) -> slint::Timer {
             let Some(ui) = weak.upgrade() else { return };
             if !ask_yes_no(
                 "Reset every setting, hotkey and app rule to the defaults?\n\n\
-                 Your current config file is kept as config.toml.before-reset.",
+                 A copy of your current config file is kept next to it.",
             ) {
                 return;
             }
@@ -862,12 +862,17 @@ fn wire_editors(ui: &MainWindow) -> slint::Timer {
             if ui.get_show_welcome() {
                 push_tour(&ui, &ed);
                 // keep the marker fresh: the manager ignores one older than an hour
-                ed.ticks += 1;
                 if ed.ticks.is_multiple_of(150) {
                     let _ = std::fs::write(crate::tour_marker(), "1");
                 }
             }
-            ui.set_paused(crate::tray::manager_paused().unwrap_or(false));
+            // every 2 s is enough for a banner; no answer keeps the last known state
+            if ed.ticks.is_multiple_of(5) {
+                if let Some(paused) = crate::tray::manager_paused() {
+                    ui.set_paused(paused);
+                }
+            }
+            ed.ticks += 1;
             if ed.recheck > 0 {
                 ed.recheck -= 1;
                 // the manager rewrote the file: its answer is in (no answer within ~3 s: keep the
@@ -998,8 +1003,15 @@ fn reset_all(ui: &MainWindow, editor: &mut Editor) {
             return;
         }
     };
-    if path.exists() {
-        if let Err(err) = std::fs::copy(&path, path.with_file_name("config.toml.before-reset")) {
+    // every reset keeps its own copy, so a second reset cannot overwrite the user's real config
+    let current = std::fs::read_to_string(&path).ok();
+    if current.as_deref().is_some_and(|c| c != text) {
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or_default();
+        let backup = path.with_file_name(format!("config.toml.before-reset-{stamp}"));
+        if let Err(err) = std::fs::copy(&path, &backup) {
             ui.set_status(format!("Could not keep a copy of the config: {err}").into());
             return;
         }

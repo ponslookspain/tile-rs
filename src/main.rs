@@ -4366,7 +4366,13 @@ fn bring_everything_back() {
     });
 }
 
-fn toggle_pause() {
+/// Pause / resume asked for by the settings window, which shows the state itself.
+pub fn toggle_pause_quietly() {
+    toggle_pause(false);
+}
+
+/// `announce`: show a notification when pausing (hotkey and tray menu).
+fn toggle_pause(announce: bool) {
     end_divider(false);
     let paused = STATE.with(|s| {
         let mut s = s.borrow_mut();
@@ -4382,7 +4388,7 @@ fn toggle_pause() {
     log(if paused { "paused" } else { "resumed" });
     register_hotkeys();
     tray::update();
-    if paused {
+    if paused && announce {
         tray::notify_paused();
     }
     if paused {
@@ -4757,7 +4763,7 @@ pub fn dispatch(a: Action) {
         Action::Minimize => minimize_focused(),
         Action::ToggleFloat => toggle_float(),
         Action::Close => close_focused(),
-        Action::Pause => toggle_pause(),
+        Action::Pause => toggle_pause(true),
         Action::Quit => unsafe { PostQuitMessage(0) },
         Action::Retile => {
             // also resets the sizes of every workspace to equal halves

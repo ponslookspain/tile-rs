@@ -1,6 +1,6 @@
 //! System-tray icon and its context menu.
 
-use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicU32, AtomicU64, Ordering};
 
 use windows::core::{w, PCWSTR};
 use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, POINT, WPARAM};
@@ -33,6 +33,8 @@ const WM_LAUNCHER_STATE: u32 = WM_APP + 7;
 const WM_LAUNCHER_RESUME: u32 = WM_APP + 8;
 /// The balloon on screen is the update notice (a click opens Updates) rather than the pause one.
 static BALLOON_IS_UPDATE: AtomicBool = AtomicBool::new(false);
+/// When the last update notice was shown (seconds since the Unix epoch).
+static UPDATE_BALLOON_AT: AtomicU64 = AtomicU64::new(0);
 const TRAY_UID: u32 = 1;
 
 static TRAY_HWND: AtomicIsize = AtomicIsize::new(0);
@@ -168,11 +170,19 @@ pub fn notify_update(version: &str) {
     );
 }
 
-/// Tells the user that tiling is paused: a grey tray icon alone is easy to miss.
+/// Tells the user that tiling is paused: a grey tray icon alone is easy to miss. Skipped for a
+/// minute after an update notice, which it would otherwise replace.
 pub fn notify_paused() {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or_default();
+    if now.saturating_sub(UPDATE_BALLOON_AT.load(Ordering::Relaxed)) < 60 {
+        return;
+    }
     balloon(
         "tile-rs is paused",
-        "Your windows are left alone. Click here or use the tray icon menu to resume.",
+        "Your windows are left alone. Click here to open the settings, or resume from the tray icon menu.",
         false,
     );
 }
@@ -183,6 +193,13 @@ fn balloon(title: &str, message: &str, update: bool) {
         return;
     }
     BALLOON_IS_UPDATE.store(update, Ordering::Relaxed);
+    if update {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or_default();
+        UPDATE_BALLOON_AT.store(now, Ordering::Relaxed);
+    }
     let mut data = NOTIFYICONDATAW {
         cbSize: std::mem::size_of::<NOTIFYICONDATAW>() as u32,
         hWnd: HWND(raw as *mut _),
@@ -240,7 +257,7 @@ pub fn manager_paused() -> Option<bool> {
             WPARAM(0),
             LPARAM(0),
             SMTO_ABORTIFHUNG,
-            100,
+            30,
             Some(&mut result),
         )
     };
@@ -513,7 +530,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
     }
     if msg == WM_LAUNCHER_PAUSE {
         if !crate::ui_state().1 {
-            crate::dispatch(Action::Pause);
+            crate::toggle_pause_quietly();
         }
         return LRESULT(0);
     }
@@ -522,7 +539,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
     }
     if msg == WM_LAUNCHER_RESUME {
         if crate::ui_state().1 {
-            crate::dispatch(Action::Pause);
+            crate::toggle_pause_quietly();
         }
         return LRESULT(0);
     }
