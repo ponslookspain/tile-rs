@@ -1,92 +1,66 @@
+<div align="center">
+
 # tile-rs
+
+**Automatic tiling for Windows 10 and 11. Free, open source, one small `.exe`.**
+
+Open a window and it takes its place on the screen. Close it and the others fill the gap.
+Move between windows with the keyboard, or drag them around with the mouse.
 
 [![Download](https://img.shields.io/github/v/release/ponslookspain/tile-rs?label=download&style=for-the-badge)](https://github.com/ponslookspain/tile-rs/releases/latest)
 [![Buy Me a Coffee](https://img.shields.io/badge/Buy%20me%20a%20coffee-donate-FFDD00?style=for-the-badge&logo=buymeacoffee&logoColor=black)](https://buymeacoffee.com/ponslooksp1)
 [![GitHub Sponsors](https://img.shields.io/badge/GitHub%20Sponsors-support-EA4AAA?style=for-the-badge&logo=githubsponsors&logoColor=white)](https://github.com/sponsors/ponslookspain)
 
-A small **spiral tiling window manager for Windows 10/11**, written in Rust. Open windows are
-arranged automatically in a spiral, you move and resize them with the keyboard or the mouse, and
-everything lives in one small `.exe` with a tray icon and a plain-text config.
+![tile-rs arranging windows on a Windows 11 desktop](docs/images/layout-spiral.png)
 
-[Configuration reference](docs/CONFIGURATION.md) ·
-[Development & testing](docs/DEVELOPMENT.md) · [Changelog](CHANGELOG.md) ·
-[Releasing & versioning](docs/RELEASING.md)
+[Download](https://github.com/ponslookspain/tile-rs/releases/latest) ·
+[Hotkeys](#hotkeys) · [Configuration](docs/CONFIGURATION.md) · [Changelog](CHANGELOG.md)
 
-![The tile-rs settings launcher](docs/images/launcher-general.png)
+</div>
 
-## Features
+## Why tile-rs
 
-- **Settings launcher**: a window in its own process (tray menu -> *Settings...*, or on first start)
-  for everything you would otherwise edit in `config.toml`: layout, gaps, animations, the focus
-  border, workspaces, **hotkeys** (record a combination by pressing it) and **application rules**
-  (pick a running program, choose "floating window" or "workspace N"), plus update checking and
-  installing.
-- **Monocle** (`Alt+M`): show the focused window alone on the whole screen and flip through the
-  other windows of the workspace with the focus keys; press again to get the layout back.
-- **Four layouts** (settings launcher, tray or the `layout` setting): **spiral** (dwindle, the
-  default - window 1 takes the left part, window 2 the top-right, and so on), **master-stack** (a
-  master column on the left, the rest stacked on the right; `Alt+.` / `Alt+,` put more or fewer
-  windows into the master column), **grid** and **columns**. Close or open a window and the rest adapt.
-- **Jump back**: `Alt+Z` returns to the previously focused window, `Alt+Shift+Z` to the previous
-  workspace.
-- **New windows appear in their tile immediately** (no flash in the middle of the screen); the other
-  windows glide aside with a short animation.
-- **Resize like a normal window**: drag any edge or corner and the neighbours follow live. Or use
-  `Alt +` / `Alt -` (hold to repeat).
-- **Live tile resize**: applications reflow their own content while affected windows resize together,
-  without screenshot overlays. Input is coalesced per frame and slow clients are paced independently;
-  [details and limitations](docs/WINDOW-MOTION.md).
-- **Draggable tile gaps** in Spiral and Master/stack: hover inside a gap and drag to resize the actual
-  windows. Press Escape to restore the original layout.
-- **Drag a window onto another tile** to swap them; drop it anywhere else and it snaps back.
-- **Fullscreen games and videos**: a window that covers a whole screen without a title bar
-  (exclusive or borderless fullscreen) is never tiled. It is minimized when you switch to another
-  workspace and restored when you switch back, so it stays fullscreen but does not block your other
-  workspaces.
-- **Multiple monitors**: every screen keeps its own layout and current workspace, and a window
-  tiles on the screen it is on (move it to another screen and it re-homes there).
-- **9 workspaces per monitor**, per-app rules (always float, open on workspace N), focus and swap by
-  keyboard.
-- **Tray icon** with pause/resume, reload config, edit config, "Start with Windows", quit.
-- **Coloured border** around the focused window, drawn by tile-rs itself so it shows for every
-  window (including consoles like Windows PowerShell).
-- **Adapts to your screen**: tiles never get narrower than `min_tile_width`/`min_tile_height` (the
-  master tile narrows to make room), and once a workspace is full a new window opens on the next
-  workspace. Minimal clickable dots at the top of each monitor show current and occupied
-  workspaces: the active dot is blue with an outline, occupied dots glow blue, and empty dots are dim.
-- Everything is also in a plain `config.toml` (hotkeys, gaps, animation, rules) for those who prefer text.
+- **Works out of the box.** Install, and your windows are arranged. No config file to write first,
+  everything can be changed in a settings window.
+- **Feels like Windows.** Resize a window by its edge and the neighbours follow. Drag a window onto
+  another to swap them. Nothing to relearn if you prefer the mouse.
+- **Keyboard when you want it.** `Alt` + arrows to move focus, `Alt+1…9` for workspaces, every
+  key can be changed.
+- **Light.** A single native Rust program in the tray. No admin rights, no services, no background
+  installer.
+- **Plays well with games and videos.** Fullscreen windows are never tiled.
 
-## Requirements
+## Layouts
 
-- Windows 10 or 11, 64-bit.
-- Nothing else to install. It does not need administrator rights.
+| Spiral (default) | Master / stack |
+|---|---|
+| ![Spiral layout](docs/images/layout-spiral.png) | ![Master and stack layout](docs/images/layout-master.png) |
+| **Grid** | **Columns** |
+| ![Grid layout](docs/images/layout-grid.png) | ![Columns layout](docs/images/layout-columns.png) |
+
+Switch with `Ctrl+Alt+L`, from the tray, or on the General page of the settings.
 
 ## Install
 
-### Option 1: installer (recommended)
+1. Download **`tile-rs-X.Y.Z-setup.exe`** from the [latest release](https://github.com/ponslookspain/tile-rs/releases/latest).
+2. Run it. No administrator rights are needed.
+3. The settings window opens with a short tour, and tile-rs starts in the system tray.
 
-1. Open the [latest release](../../releases/latest) and download `tile-rs-X.Y.Z-setup.exe`.
-2. Run it and follow the wizard (no administrator rights needed). You can tick *Start tile-rs when
-   I sign in* and *Create a desktop shortcut*.
-3. At the end, tick *Start tile-rs now* (or double-click the shortcut). The **settings launcher**
-   opens and tile-rs starts in the system tray.
-   - The installer is **not code-signed**, so Windows SmartScreen may warn you the first time:
-     click *More info* → *Run anyway*.
+> [!NOTE]
+> The installer is not code-signed yet, so Windows SmartScreen may warn you the first time.
+> Click **More info** → **Run anyway**. You can check the download against the `.sha256` file
+> from the same release.
 
-### Option 2: portable zip
+Updates are offered inside the program (Settings → About & updates). Your settings are kept.
 
-1. Open the [latest release](../../releases/latest) and download `tile-rs-vX.Y.Z-windows-x64.zip`.
-2. *(Optional, recommended)* Check the download against the `.sha256` file from the same release:
-   ```powershell
-   Get-FileHash .\tile-rs-vX.Y.Z-windows-x64.zip -Algorithm SHA256
-   ```
-3. Unzip it to any folder you keep (for example `C:\Tools\tile-rs`). Do not run it from inside the zip.
-4. Double-click `tile-rs.exe`. The settings launcher opens and tile-rs starts in the system tray.
+<details>
+<summary>Portable zip, building from source, uninstalling</summary>
 
-### Option 3: build from source
+**Portable zip.** Download `tile-rs-vX.Y.Z-windows-x64.zip`, unzip it to a folder you keep (for
+example `C:\Tools\tile-rs`) and run `tile-rs.exe`. Do not run it from inside the zip.
 
-Prerequisites: [Rust](https://rustup.rs) (stable) and the *Desktop development with C++* workload
-of the [Visual Studio Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/).
+**From source.** Needs [Rust](https://rustup.rs) (stable) and the *Desktop development with C++*
+workload of the [Visual Studio Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/).
 
 ```powershell
 git clone https://github.com/ponslookspain/tile-rs.git
@@ -95,45 +69,71 @@ cargo build --release
 # the program is target\release\tile-rs.exe
 ```
 
-### Update
+**Uninstall.** Use *Apps* in Windows Settings for the installed version. For the zip: tray icon →
+untick *Start with Windows* → *Quit tile-rs*, then delete the folder. Settings live in
+`%APPDATA%\tile-rs` and the log in `%LOCALAPPDATA%\tile-rs`.
 
-Quit tile-rs (tray icon → *Quit tile-rs*), replace `tile-rs.exe` with the new one, start it again.
-Your config is kept; settings introduced by the new version are appended to it automatically (a copy
-of the old file is saved as `config.toml.bak`).
+</details>
 
-### Uninstall
+## Features
 
-1. Tray icon → untick *Start with Windows*, then *Quit tile-rs*.
-2. Delete the folder with `tile-rs.exe`.
-3. Optional clean-up: delete `%APPDATA%\tile-rs` (config) and `%LOCALAPPDATA%\tile-rs` (log).
-   If autostart was still on, remove its entry:
-   ```powershell
-   Remove-ItemProperty HKCU:\Software\Microsoft\Windows\CurrentVersion\Run -Name tile-rs
-   ```
+### Mouse
 
-## Using it
+- Drag an **edge or corner** to resize; the neighbouring windows follow live.
+- Drag a window **onto another one** to swap them. Dropped anywhere else, it returns to its place.
+- Drag the **gap between windows** to resize both sides at once.
+- **Workspace dots** at the top of each screen show where your windows are. Click a dot to switch,
+  drag a window onto a dot to send it there, right-click a dot for more.
 
-### Settings launcher
+### Keyboard
 
-Click the tray icon (or right-click it and choose **Settings**). On first start the settings open
-with a short tour: it asks you to try three things (move between windows, swap two windows, send a
-window to another workspace) and ticks each one off as you do it. If tiling is not for you, the tour
-can pause it. Pages:
+- Move focus, swap windows and change their size without touching the mouse.
+- **9 workspaces per monitor.** Windows on other workspaces still show in the taskbar and `Alt+Tab`.
+- **Monocle** (`Alt+M`): one window on the whole screen, and back.
+- **Jump back** (`Alt+Z`): return to the window you used before.
 
-| Page | What you change there |
+### Everything else
+
+- **Several monitors**, each with its own layout and workspaces.
+- **App rules:** always float a program, or always open it on workspace N.
+- **Focus border** around the active window, in any colour.
+- **Smooth animations**, and apps redraw their content while they resize.
+- **Pause** tiling from the tray or with `Ctrl+Alt+P` when you need your normal desktop back.
+
+## Settings
+
+| General | Hotkeys |
 |---|---|
-| General | the layout (with a live preview), animation and gaps, a summary; **More options** holds the main column, tile sizes, workspace dots, fullscreen apps, the focus border and **Reset to defaults** |
-| Hotkeys | every action: record a new combination, add a second one, remove it, reset all; switch every key between Alt and Win + Alt in one click |
-| Apps | rules per program: always floating or always on workspace N; pick an open window or any `.exe` |
-| About & updates | start with Windows, open the config or the log, check for and install updates |
+| ![General settings](docs/images/launcher-general.png) | ![Hotkey settings](docs/images/launcher-hotkeys.png) |
 
-Changes apply by themselves a moment after you make them; the header says *Saving…* until they
-are saved. Combinations that Windows refuses (because another app uses them) are marked in the
-hotkey list. While tiling is paused the header says so and offers **Resume**.
+Click the tray icon to open the settings. Changes apply on their own a moment after you make them.
 
-![Hotkeys page](docs/images/launcher-hotkeys.png)
+| Page | What is there |
+|---|---|
+| General | layout with a live preview, gaps, animation; *More options* for tile sizes, workspace dots, fullscreen apps, the focus border and *Reset to defaults* |
+| Hotkeys | record any combination by pressing it, add a second one, switch all keys between `Alt` and `Win+Alt` in one click |
+| Apps | rules per program: pick an open window or any `.exe` |
+| About & updates | start with Windows, check for and install updates, open the config or the log |
 
-### Default hotkeys
+Prefer text? Everything is also in `%APPDATA%\tile-rs\config.toml`; see the
+[configuration reference](docs/CONFIGURATION.md).
+
+## Hotkeys
+
+| Keys | Action |
+|---|---|
+| `Alt` + `←↓↑→` (or `H J K L`) | focus the window in that direction |
+| `Alt+Shift` + `←↓↑→` | swap with the window in that direction |
+| `Alt+1` … `Alt+9` | go to workspace 1…9 |
+| `Alt+Shift+1` … `Alt+Shift+9` | send the window to workspace 1…9 |
+| `Alt+=` / `Alt+-` | make the window wider / narrower |
+| `Alt+M` | monocle on / off |
+| `Alt+Shift+F` | float the window / tile it again |
+| `Ctrl+Alt+L` | next layout |
+| `Ctrl+Alt+P` | pause / resume tiling |
+
+<details>
+<summary>All default hotkeys</summary>
 
 | Keys | Action |
 |---|---|
@@ -141,154 +141,77 @@ hotkey list. While tiling is paused the header says so and offers **Resume**.
 | `Alt+Shift+H/J/K/L` or `Alt+Shift+←↓↑→` | swap the focused window with that neighbour |
 | `Alt+1` … `Alt+9` | switch to workspace 1…9 |
 | `Alt+Shift+1` … `Alt+Shift+9` | move the focused window to workspace 1…9 and follow it there |
-| `Alt+Shift+.` / `Alt+Shift+,` | go to the next / previous workspace (wraps around) |
+| `Alt+Shift+.` / `Alt+Shift+,` | next / previous workspace (wraps around) |
 | `Ctrl+Alt+.` / `Ctrl+Alt+,` | move the focused window to the next / previous workspace and follow it |
-| `Alt+=` / `Alt+-` (also `Alt+Num+` / `Alt+Num-`) | make the focused window wider / narrower (hold to repeat) |
+| `Alt+=` / `Alt+-` (also `Alt+Num+` / `Alt+Num-`) | wider / narrower (hold to repeat) |
 | `Alt+Shift+M` | minimize the focused window |
 | `Alt+Shift+F` | float the focused window in place, or tile it again |
 | `Alt+M` | monocle: the focused window on the whole screen, and back |
 | `Alt+Z` | focus the previously focused window |
 | `Alt+Shift+Z` | go back to the previous workspace |
-| `Alt+.` / `Alt+,` | master-stack: one more / one fewer window in the master column |
-| `Alt+Shift+Q` | close the focused window (like Alt+F4) |
-| `Ctrl+Alt+L` | switch to the next layout (spiral, master-stack, grid, columns) |
+| `Alt+.` / `Alt+,` | master / stack: one more / one fewer window in the master column |
+| `Alt+Shift+Q` | close the focused window (like `Alt+F4`) |
+| `Ctrl+Alt+L` | next layout (spiral, master / stack, grid, columns) |
 | `Ctrl+Alt+P` or `Alt+Shift+P` | pause / resume tiling |
-| `Ctrl+Alt+Q` | quit (all windows are brought back to the current workspace) |
+| `Ctrl+Alt+Q` | quit (all windows come back to the current workspace) |
 
-Optional actions without a default key: `grow_height`, `shrink_height`, `retile`, `reload_config`,
-`edit_config`, `focus_next_monitor`, `move_to_next_monitor` and their `prev` versions. Every hotkey can
-be changed or removed on the launcher's **Hotkeys** page or in [the configuration reference](docs/CONFIGURATION.md).
+Actions without a default key: `grow_height`, `shrink_height`, `retile`, `reload_config`,
+`edit_config`, `focus_next_monitor`, `move_to_next_monitor` and their `prev` versions.
 
-### Mouse
-
-- Drag an **edge or corner** of a tiled window to resize it; the other windows adapt live.
-- Drag a window **onto another tile** to swap the two. Dropped anywhere else, it returns to its tile.
-- Drag a window **onto a workspace dot** at the top of a screen to send it to that workspace (the dot
-  lights up while you hover it). You stay where you are.
-- **Click a workspace dot** to switch to that workspace; **right-click** it to open it or move the
-  active window there.
-- Maximized windows and dialogs are left alone.
-
-### Tray menu (right-click the icon)
-
-*Settings*, *Pause / Resume tiling*, *Arrange windows again* (also resets all sizes to equal
-halves), *Show hotkeys*, *More* (*Check for updates*, *Edit config file*, *Reload config file*,
-*Open config folder*, *Open log*, *Export window diagnostics*), *Start with Windows*, *Quit tile-rs*.
-A left click on the icon opens the settings. Pausing shows a notification; while paused, every
-hotkey except pause/quit/reload/edit is handed back to your applications.
-
-### Command line
-
-```
-tile-rs.exe              start and open the settings launcher
-tile-rs.exe --autostart  start silently (what the autostart entry uses)
-tile-rs.exe list         show which windows would be tiled, and why others are not
-tile-rs.exe diagnose     export window diagnostics from the running manager
-tile-rs.exe tile         arrange the current windows once and exit
-tile-rs.exe --restore-windows  bring back windows left off-screen after a crash or a kill
-tile-rs.exe --version
-```
-
-The tray's **Export window diagnostics** saves a JSON snapshot beside the log without window
-titles. `diagnose --titles` includes titles explicitly. For a separate read-only native snapshot,
-use `diagnose --output C:\path\windows.json`; see [diagnostic details](docs/CONFIGURATION.md#window-diagnostics).
-
-## Configuration
-
-The file is `%APPDATA%\tile-rs\config.toml`. Open it from the tray (*Edit config*), save, then
-choose *Reload config*. A mistake never breaks the running program: you get a message with the
-line, and the previous settings stay active. To get the defaults back, delete the file and start
-tile-rs again.
-
-```toml
-inner_gap = 10           # pixels between windows
-outer_gap = 10           # pixels around the screen edges
-animations = true
-animation_ms = 140
-easing = "out_cubic"     # animation curve: linear, out_quad, out_cubic, out_quart, in_out_cubic
-fullscreen_windows = "minimize"  # or "ignore": never touch fullscreen games
-media_windows = "float"  # or "tile": leave a photo/video window as its app opened it
-resize_step = 40         # pixels per Alt+ / Alt- press
-border = true            # coloured border on the focused window
-border_color = "#8dbcff"
-border_width = 2
-min_tile_width = 480     # tiles never get narrower; the master tile narrows to make room
-min_tile_height = 320
-max_tiles = 0            # tiles per workspace; 0 = automatic from the screen size
-auto_overflow = true     # a new window goes to the next workspace when this one is full
-workspace_indicator = true  # minimal dots at the top; click one to switch workspaces
-workspace_indicator_size = "medium" # dot and target size: small, medium, or large
-focus_follows_mouse = false  # focus the tiled window under the pointer when it moves onto it
-smart_gaps = false       # no gaps when a workspace holds a single window
-master_count = 1         # master-stack: windows in the master column (1-8)
-
-[hotkeys]
-focus_left = ["alt+h", "alt+left"]
-workspace_1 = "alt+1"
-# ... see docs/CONFIGURATION.md for every action
-
-# Open Telegram on workspace 9, never tile the Task Manager
-[[rules]]
-process = "Telegram"
-workspace = 9
-
-[[rules]]
-process = "Taskmgr"
-action = "float"
-```
-
-Full reference: [docs/CONFIGURATION.md](docs/CONFIGURATION.md).
+</details>
 
 ## Troubleshooting
 
 | Problem | What to do |
 |---|---|
-| A hotkey does nothing / a warning says it was not registered | Another program already owns that key combination. Change it in `[hotkeys]`. |
-| A window is not tiled | Run `tile-rs.exe list` in a terminal: it prints each window and the reason it is skipped (dialog, not resizable, maximized, matched a `float` rule...). |
-| An app misbehaves when tiled | Add a rule with `action = "float"` for it (see the reference). |
-| An app running as administrator ignores tile-rs | Windows does not let a normal program move elevated windows. Start tile-rs as administrator too if you need that. |
-| Windows are gone after a crash | Start tile-rs again: it brings windows that were parked off-screen back. Or run `tile-rs.exe --restore-windows` without starting it. |
-| Windows SmartScreen warns about the installer | The installer is not code-signed yet. Click *More info* → *Run anyway*, or check the `.sha256` file from the release. |
-| Animations stutter on heavy apps | Lower `animation_ms`, or set `animations = false`. |
-| Something else | Tray → *Open log*. |
+| A hotkey does nothing | Another program already uses it; it is marked on the Hotkeys page. Pick another combination. |
+| A window is not tiled | Run `tile-rs.exe list` in a terminal: it lists every window and why it is skipped. |
+| An app misbehaves when tiled | Add a *floating* rule for it on the Apps page. |
+| An app running as administrator is ignored | Windows does not let normal programs move elevated windows. Run tile-rs as administrator too if you need that. |
+| Windows are missing after a crash | Start tile-rs again, or run `tile-rs.exe --restore-windows`. |
+| Something else | Tray → *More* → *Open log*, and [open an issue](https://github.com/ponslookspain/tile-rs/issues). |
 
-## How it works (short)
+<details>
+<summary>Command line</summary>
 
-tile-rs listens to window events from Windows (`SetWinEventHook`), keeps its own model of the
-layout and places windows with `SetWindowPos`. It does **not** replace the Windows desktop or the
-compositor. Workspaces are emulated: windows of other workspaces are moved off-screen (and come
-back when you switch), so they still show up in the taskbar and in `Alt+Tab`.
+```
+tile-rs.exe                    start and open the settings
+tile-rs.exe --autostart        start silently (used by "Start with Windows")
+tile-rs.exe list               show which windows would be tiled, and why others are not
+tile-rs.exe diagnose           export window diagnostics from the running program
+tile-rs.exe tile               arrange the current windows once and exit
+tile-rs.exe --restore-windows  bring back windows left off-screen after a crash
+tile-rs.exe --version
+```
 
-## Limitations
+</details>
 
-- Each connected monitor has its own layout and workspace. Workspace hotkeys target the monitor
-  under the pointer, or the focused window's monitor. Its workspace dots appear at
-  the top of each monitor.
-- With `grid` and `columns` the tiles are fixed (even) sizes: only the spiral and master-stack can
-  be resized by dragging an edge.
-- Do not run it together with another window manager (GlazeWM, Komorebi, ...).
-- The executable and the installer are not code-signed yet.
+## How it works
+
+tile-rs listens to window events from Windows and places windows with `SetWindowPos`. It does not
+replace the desktop or the compositor. Workspaces are emulated: windows of other workspaces are
+moved off-screen and come back when you switch. Do not run it together with another tiling manager
+(GlazeWM, Komorebi, …). More detail: [window motion](docs/WINDOW-MOTION.md),
+[development](docs/DEVELOPMENT.md).
 
 ## Support the project
 
-tile-rs is free and open source, and it stays that way. If it makes your day easier, you can
-support its development:
+tile-rs is free and open source, and it stays that way. If it saves you time, you can support it:
 
-- [GitHub Sponsors](https://github.com/sponsors/ponslookspain): one-time or monthly
-- [Buy Me a Coffee](https://buymeacoffee.com/ponslooksp1): a one-time tip, no GitHub account needed
+- [**Buy Me a Coffee**](https://buymeacoffee.com/ponslooksp1): a one-time tip, no account needed
+- [**GitHub Sponsors**](https://github.com/sponsors/ponslookspain): one-time or monthly
 
-The same links are in the tray menu (*Support tile-rs*) and in Settings -> Advanced -> About.
-Starring the repository and telling others about it helps too.
+A ⭐ on the repository and telling a friend help too. The same links are in the tray menu
+(*Support tile-rs*) and in Settings → About & updates.
 
-## Contributing & versions
+## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md). Versions follow [Semantic Versioning](https://semver.org);
-how versions are numbered and released is described in [docs/RELEASING.md](docs/RELEASING.md).
-Current multi-monitor implementation status and manual verification steps are tracked in
-[docs/MULTIMONITOR-STATUS.md](docs/MULTIMONITOR-STATUS.md).
+Bug reports and ideas are welcome in [issues](https://github.com/ponslookspain/tile-rs/issues).
+For code, see [CONTRIBUTING.md](CONTRIBUTING.md); versions and releases are described in
+[docs/RELEASING.md](docs/RELEASING.md).
 
 ## License
 
 [MIT](LICENSE). The settings window is built with [Slint](https://slint.dev) under the Slint
-Royalty-Free Desktop, Mobile and Web Applications License (a "Made with Slint" credit is shown in
-Settings -> Advanced -> About).
+Royalty-Free Desktop, Mobile and Web Applications License ("Made with Slint" is shown in
+Settings → About & updates).
