@@ -27,7 +27,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 
 use crate::config::{self, FullscreenWindows, MediaWindows, Rule};
-use crate::prof;
+use crate::diagnostics::prof;
 
 /// In `run` mode, windows the user maximized / made fullscreen are left alone.
 pub static SKIP_ZOOMED: AtomicBool = AtomicBool::new(false);
@@ -460,12 +460,6 @@ pub struct Collector {
     /// Windows that run fullscreen / borderless fullscreen (tracked per workspace).
     pub fullscreen: Vec<Win>,
     pub skipped: Vec<(Win, &'static str)>,
-    /// Whether `skipped` is filled. The hot paths (re-tile) only need `tileable` + `fullscreen`;
-    /// keeping the skip reasons is only worth it for the `list` command.
-    keep_skipped: bool,
-    rules: Vec<Rule>,
-    /// Windows the user floated with `toggle_float`: never tiled this session.
-    manual_float: HashSet<isize>,
 }
 
 struct ProcessInfo {
@@ -711,11 +705,18 @@ pub fn policy_excludes(hwnd: HWND, rules: &[Rule]) -> bool {
     .is_some()
 }
 
+struct EnumContext<'a> {
+    collector: &'a mut Collector,
+    keep_skipped: bool,
+    rules: &'a [Rule],
+    manual_float: &'a HashSet<isize>,
+}
+
 unsafe extern "system" fn enum_proc(hwnd: HWND, lparam: LPARAM) -> BOOL {
-    let c = &mut *(lparam.0 as *mut Collector);
+    let context = &mut *(lparam.0 as *mut EnumContext<'_>);
     // Runtime reconciliation needs no diagnostic strings for windows that cannot be
     // managed. Preserve detailed classification for the user's `list` command.
-    if !c.keep_skipped {
+    if !context.keep_skipped {
         let ex = GetWindowLongW(hwnd, GWL_EXSTYLE) as u32;
         if !IsWindowVisible(hwnd).as_bool()
             || IsIconic(hwnd).as_bool()
@@ -725,13 +726,13 @@ unsafe extern "system" fn enum_proc(hwnd: HWND, lparam: LPARAM) -> BOOL {
             return BOOL(1);
         }
     }
-    match classify_with_manual(hwnd, &c.rules, &c.manual_float) {
+    match classify_with_manual(hwnd, context.rules, context.manual_float) {
         Verdict::Ignore => {}
-        Verdict::Tileable(w) => c.tileable.push(w),
-        Verdict::Fullscreen(w) => c.fullscreen.push(w),
+        Verdict::Tileable(w) => context.collector.tileable.push(w),
+        Verdict::Fullscreen(w) => context.collector.fullscreen.push(w),
         Verdict::Skipped(w, r) => {
-            if c.keep_skipped {
-                c.skipped.push((w, r));
+            if context.keep_skipped {
+                context.collector.skipped.push((w, r));
             }
         }
     }
@@ -749,12 +750,16 @@ pub fn collect(keep_skipped: bool, manual_float: &HashSet<isize>) -> Collector {
         tileable: vec![],
         fullscreen: vec![],
         skipped: vec![],
+    };
+    let rules = config::rules();
+    let mut context = EnumContext {
+        collector: &mut c,
         keep_skipped,
-        rules: config::rules(),
-        manual_float: manual_float.clone(),
+        rules: &rules,
+        manual_float,
     };
     unsafe {
-        let _ = EnumWindows(Some(enum_proc), LPARAM(&mut c as *mut _ as isize));
+        let _ = EnumWindows(Some(enum_proc), LPARAM(&mut context as *mut _ as isize));
     }
     // EnumWindows walks top-to-bottom in Z order; keep that, it is a stable, sensible order.
     c
@@ -1125,12 +1130,15 @@ mod tests {
             tileable: Vec::new(),
             fullscreen: Vec::new(),
             skipped: Vec::new(),
+        };
+        let mut context = EnumContext {
+            collector: &mut collector,
             keep_skipped: true,
-            rules,
-            manual_float: manual,
+            rules: &rules,
+            manual_float: &manual,
         };
         unsafe {
-            let _ = enum_proc(window.0, LPARAM(&mut collector as *mut _ as isize));
+            let _ = enum_proc(window.0, LPARAM(&mut context as *mut _ as isize));
         }
         assert!(collector.tileable.is_empty() && collector.fullscreen.is_empty());
         assert_eq!(collector.skipped[0].1, MANUAL_REASON);

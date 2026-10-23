@@ -9,7 +9,7 @@ use std::thread;
 use std::time::Duration;
 
 use crate::config;
-use crate::launcher_model::{self, Capture};
+use crate::ui::launcher_model::{self, Capture};
 use slint::{ModelRc, SharedString, VecModel};
 use windows::core::{w, PCWSTR};
 use windows::Win32::Foundation::{CloseHandle, GetLastError, ERROR_ALREADY_EXISTS, WAIT_OBJECT_0};
@@ -46,7 +46,7 @@ fn show_page(updates: bool) {
     let exe = match std::env::current_exe() {
         Ok(path) => path,
         Err(err) => {
-            crate::notify(
+            crate::platform::dialogs::notify(
                 "tile-rs",
                 &format!("Cannot locate launcher executable: {err}"),
             );
@@ -59,7 +59,7 @@ fn show_page(updates: bool) {
         command.arg("--updates");
     }
     if let Err(err) = command.spawn() {
-        crate::notify("tile-rs", &format!("Cannot open settings: {err}"));
+        crate::platform::dialogs::notify("tile-rs", &format!("Cannot open settings: {err}"));
     }
 }
 
@@ -76,7 +76,7 @@ pub fn run() {
         match unsafe { CreateMutexW(None, true, w!("Local\\tile-rs-launcher-single-instance")) } {
             Ok(handle) => handle,
             Err(err) => {
-                crate::notify(
+                crate::platform::dialogs::notify(
                     "tile-rs settings",
                     &format!("Could not start launcher: {err}"),
                 );
@@ -97,7 +97,10 @@ pub fn run() {
     let cfg = match config::load() {
         Ok(cfg) => cfg,
         Err(err) => {
-            crate::notify("tile-rs settings", &format!("Could not load config: {err}"));
+            crate::platform::dialogs::notify(
+                "tile-rs settings",
+                &format!("Could not load config: {err}"),
+            );
             if !mutex.is_invalid() {
                 unsafe {
                     let _ = CloseHandle(mutex);
@@ -111,7 +114,7 @@ pub fn run() {
     let ui = match MainWindow::new() {
         Ok(ui) => ui,
         Err(err) => {
-            crate::notify(
+            crate::platform::dialogs::notify(
                 "tile-rs settings",
                 &format!("Could not create launcher: {err}"),
             );
@@ -161,26 +164,26 @@ pub fn run() {
         });
     }
     ui.on_open_github(|| {
-        crate::tray::open("https://github.com/ponslookspain/tile-rs", "");
+        crate::ui::tray::open("https://github.com/ponslookspain/tile-rs", "");
     });
     ui.on_open_support(|| {
-        crate::tray::open(crate::tray::SUPPORT_URL, "");
+        crate::ui::tray::open(crate::ui::tray::SUPPORT_URL, "");
     });
     ui.on_open_config(|| {
         config::ensure_default();
-        crate::tray::open(
+        crate::ui::tray::open(
             "notepad.exe",
             &format!("\"{}\"", config::config_path().display()),
         );
     });
     ui.on_open_log(|| {
-        crate::tray::open(
+        crate::ui::tray::open(
             "notepad.exe",
-            &format!("\"{}\"", crate::log_file().display()),
+            &format!("\"{}\"", crate::diagnostics::log_file().display()),
         );
     });
     ui.on_quit_manager(|| {
-        crate::tray::request_manager_quit();
+        crate::ui::tray::request_manager_quit();
         slint::quit_event_loop().ok();
     });
 
@@ -204,7 +207,7 @@ pub fn run() {
         );
     }
     if let Err(err) = ui.run() {
-        crate::log(format!("launcher event loop failed: {err}"));
+        crate::diagnostics::log(format!("launcher event loop failed: {err}"));
     }
     // the tour stops watching when the window closes; it shows again next time until dismissed
     end_tour();
@@ -281,7 +284,7 @@ fn populate(ui: &MainWindow, cfg: &config::Config) {
     ui.set_show_indicator(cfg.workspace_indicator);
     ui.set_focus_follows_mouse(cfg.focus_follows_mouse);
     ui.set_highlight_window(cfg.border);
-    ui.set_autostart(crate::autostart_enabled());
+    ui.set_autostart(crate::platform::autostart::autostart_enabled());
     ui.set_inner_gap(cfg.inner_gap.to_string().into());
     ui.set_outer_gap(cfg.outer_gap.to_string().into());
     ui.set_animation_ms(cfg.animation_ms.to_string().into());
@@ -320,7 +323,7 @@ fn populate(ui: &MainWindow, cfg: &config::Config) {
 
 /// UI state stays on Slint's thread; only network and installer work run on workers.
 fn wire_updates(ui: &MainWindow) {
-    let release = Arc::new(Mutex::new(None::<crate::update::Release>));
+    let release = Arc::new(Mutex::new(None::<crate::platform::update::Release>));
     ui.on_check_updates({
         let weak = ui.as_weak();
         let release = release.clone();
@@ -338,7 +341,7 @@ fn wire_updates(ui: &MainWindow) {
             if let Err(err) = thread::Builder::new()
                 .name("launcher-update-check".into())
                 .spawn(move || {
-                    let result = crate::update::check_latest();
+                    let result = crate::platform::update::check_latest();
                     let _ = weak.upgrade_in_event_loop(move |ui| match result {
                         Ok(Some(found)) => {
                             ui.set_update_state(2);
@@ -382,10 +385,10 @@ fn wire_updates(ui: &MainWindow) {
             ui.set_update_progress(0);
             ui.set_update_message("Downloading the installer and checking its SHA-256…".into());
             let weak = ui.as_weak();
-            let worker_ui = weak.clone();
+            let worker_ui = weak;
             if let Err(err) = thread::Builder::new().name("launcher-update-install".into()).spawn(move || {
                 let progress_ui = worker_ui.clone();
-                let result = crate::update::install(&found, move |percent| {
+                let result = crate::platform::update::install(&found, move |percent| {
                     let _ = progress_ui.upgrade_in_event_loop(move |ui| ui.set_update_progress(i32::from(percent)));
                 });
                 let _ = worker_ui.upgrade_in_event_loop(move |ui| match result {
@@ -402,7 +405,6 @@ fn wire_updates(ui: &MainWindow) {
         }
     });
     ui.on_open_release({
-        let release = release.clone();
         move || {
             let url = release
                 .lock()
@@ -412,15 +414,15 @@ fn wire_updates(ui: &MainWindow) {
                 .unwrap_or_else(|| {
                     "https://github.com/ponslookspain/tile-rs/releases/latest".into()
                 });
-            crate::tray::open(&url, "");
+            crate::ui::tray::open(&url, "");
         }
     });
     // Populate the update badge as soon as the launcher opens without blocking its event loop.
     ui.invoke_check_updates();
 }
 
-fn easing_name(easing: crate::geometry::Easing) -> &'static str {
-    use crate::geometry::Easing;
+fn easing_name(easing: crate::layout::geometry::Easing) -> &'static str {
+    use crate::layout::geometry::Easing;
     match easing {
         Easing::Linear => "linear",
         Easing::OutQuad => "out_quad",
@@ -448,18 +450,18 @@ fn welcome_marker() -> std::path::PathBuf {
 /// file; it only does so while the marker file exists.
 fn start_tour() {
     // emptied rather than deleted: the manager may hold it open for a moment while appending
-    let _ = std::fs::write(crate::tour_progress_path(), "");
-    let _ = std::fs::write(crate::tour_marker(), "1");
+    let _ = std::fs::write(crate::app::tour_progress_path(), "");
+    let _ = std::fs::write(crate::app::tour_marker(), "1");
 }
 
 fn end_tour() {
-    let _ = std::fs::remove_file(crate::tour_marker());
-    let _ = std::fs::write(crate::tour_progress_path(), "");
+    let _ = std::fs::remove_file(crate::app::tour_marker());
+    let _ = std::fs::write(crate::app::tour_progress_path(), "");
 }
 
 fn push_tour(ui: &MainWindow, editor: &Editor) {
     let done = launcher_model::tour_progress(
-        &std::fs::read_to_string(crate::tour_progress_path()).unwrap_or_default(),
+        &std::fs::read_to_string(crate::app::tour_progress_path()).unwrap_or_default(),
     );
     let steps: Vec<TourStep> = launcher_model::tour_texts(&editor.rows)
         .into_iter()
@@ -614,9 +616,9 @@ fn wire_editors(ui: &MainWindow) -> slint::Timer {
         rows: launcher_model::rows_from_bindings(&config::current().bindings),
         rules: config::current().rules,
         rules_dirty: false,
-        apps: crate::window::running_apps(),
+        apps: crate::platform::window::running_apps(),
         // the file describes the running manager's hotkeys; without a manager it is stale
-        refused: if crate::tray::manager_running() {
+        refused: if crate::ui::tray::manager_running() {
             read_refused()
         } else {
             Vec::new()
@@ -639,7 +641,7 @@ fn wire_editors(ui: &MainWindow) -> slint::Timer {
     if welcome {
         start_tour();
         push_tour(ui, &editor.borrow());
-    } else if crate::tour_marker().exists() {
+    } else if crate::app::tour_marker().exists() {
         end_tour(); // left behind by a launcher that did not exit cleanly
     }
     ui.on_dismiss_welcome({
@@ -656,7 +658,7 @@ fn wire_editors(ui: &MainWindow) -> slint::Timer {
         let weak = ui.as_weak();
         move || {
             let Some(ui) = weak.upgrade() else { return };
-            if crate::tray::request_manager_resume() {
+            if crate::ui::tray::request_manager_resume() {
                 ui.set_paused(false);
                 ui.set_status("Tiling resumed".into());
             }
@@ -680,7 +682,7 @@ fn wire_editors(ui: &MainWindow) -> slint::Timer {
         let weak = ui.as_weak();
         move || {
             let Some(ui) = weak.upgrade() else { return };
-            if crate::tray::request_manager_pause() {
+            if crate::ui::tray::request_manager_pause() {
                 ui.invoke_dismiss_welcome();
                 ui.set_status("Tiling is paused. Resume it from the tray icon menu.".into());
             } else {
@@ -768,7 +770,7 @@ fn wire_editors(ui: &MainWindow) -> slint::Timer {
         move || {
             let Some(ui) = weak.upgrade() else { return };
             let mut ed = editor.borrow_mut();
-            ed.apps = crate::window::running_apps();
+            ed.apps = crate::platform::window::running_apps();
             push_apps(&ui, &ed);
         }
     });
@@ -884,12 +886,12 @@ fn wire_editors(ui: &MainWindow) -> slint::Timer {
                 push_tour(&ui, &ed);
                 // keep the marker fresh: the manager ignores one older than an hour
                 if ed.ticks.is_multiple_of(150) {
-                    let _ = std::fs::write(crate::tour_marker(), "1");
+                    let _ = std::fs::write(crate::app::tour_marker(), "1");
                 }
             }
             // every 2 s is enough for a banner; no answer keeps the last known state
             if ed.ticks.is_multiple_of(5) {
-                if let Some(paused) = crate::tray::manager_paused() {
+                if let Some(paused) = crate::ui::tray::manager_paused() {
                     ui.set_paused(paused);
                 }
             }
@@ -965,7 +967,7 @@ fn pick_program() -> Option<String> {
     };
     let mut file = vec![0u16; 1024];
     let filter: Vec<u16> = "Programs (*.exe)\0*.exe\0\0".encode_utf16().collect();
-    let title = crate::tray::wide("Choose a program");
+    let title = crate::ui::tray::wide("Choose a program");
     let owner = unsafe { FindWindowW(PCWSTR::null(), LAUNCHER_TITLE) }.unwrap_or_default();
     let mut dialog = OPENFILENAMEW {
         lStructSize: std::mem::size_of::<OPENFILENAMEW>() as u32,
@@ -1000,7 +1002,7 @@ fn held_keys() -> Vec<char> {
 
 fn ask_yes_no(question: &str) -> bool {
     let owner = unsafe { FindWindowW(PCWSTR::null(), LAUNCHER_TITLE) }.ok();
-    let text = crate::tray::wide(question);
+    let text = crate::ui::tray::wide(question);
     let answer = unsafe {
         MessageBoxW(
             owner,
@@ -1046,7 +1048,7 @@ fn reset_all(ui: &MainWindow, editor: &mut Editor) {
     populate(ui, &cfg);
     ui.set_autostart(autostart);
     editor.rows = launcher_model::rows_from_bindings(&cfg.bindings);
-    editor.rules = cfg.rules.clone();
+    editor.rules = cfg.rules;
     editor.rules_dirty = false;
     editor.edited = false;
     ui.set_recording(-1);
@@ -1056,7 +1058,7 @@ fn reset_all(ui: &MainWindow, editor: &mut Editor) {
     editor.last_form = editor.saved_form.clone();
     ui.set_dirty(false);
     editor.refused_before = refused_stamp();
-    if crate::tray::request_manager_reload() {
+    if crate::ui::tray::request_manager_reload() {
         editor.recheck = 8;
     }
     ui.set_status("All settings are back to the defaults".into());
@@ -1064,7 +1066,7 @@ fn reset_all(ui: &MainWindow, editor: &mut Editor) {
 
 fn ask_close_anyway(reason: &str) -> MESSAGEBOX_RESULT {
     let owner = unsafe { FindWindowW(PCWSTR::null(), LAUNCHER_TITLE) }.ok();
-    let text = crate::tray::wide(&format!(
+    let text = crate::ui::tray::wide(&format!(
         "Some changes are not saved yet:\n{reason}\n\nClose anyway and lose them?"
     ));
     unsafe {
@@ -1099,7 +1101,7 @@ fn save(ui: &MainWindow, editor: &mut Editor) {
         match text.trim().parse::<i64>() {
             Ok(v) if (min..=max).contains(&v) => v.to_string(),
             _ => {
-                bad.get_or_insert(format!("{label}: enter a number from {min} to {max}"));
+                bad.get_or_insert_with(|| format!("{label}: enter a number from {min} to {max}"));
                 String::new()
             }
         }
@@ -1218,9 +1220,9 @@ fn save(ui: &MainWindow, editor: &mut Editor) {
     editor.saved_form = form_values(ui);
     ui.set_dirty(false);
     editor.refused_before = refused_stamp();
-    if !crate::set_autostart(ui.get_autostart()) {
+    if !crate::platform::autostart::set_autostart(ui.get_autostart()) {
         ui.set_status("Saved, but starting with Windows could not be changed".into());
-    } else if crate::tray::request_manager_reload() {
+    } else if crate::ui::tray::request_manager_reload() {
         editor.recheck = 8; // wait up to ~3 s for the manager's answer about refused keys
         ui.set_status("Settings applied".into());
     } else {

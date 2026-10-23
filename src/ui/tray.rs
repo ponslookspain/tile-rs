@@ -128,7 +128,7 @@ fn nid(hwnd: HWND, icon: HICON, tip: &str) -> NOTIFYICONDATAW {
 }
 
 fn tip_and_state() -> (String, bool) {
-    let (cur, paused) = crate::ui_state();
+    let (cur, paused) = crate::app::ui_state();
     let tip = if paused {
         format!("tile-rs - paused (workspace {})", cur + 1)
     } else {
@@ -344,7 +344,7 @@ pub fn create() {
             Some(hinst),
             None,
         ) else {
-            crate::log("could not create the tray window");
+            crate::diagnostics::log("could not create the tray window");
             return;
         };
         TRAY_HWND.store(hwnd.0 as isize, Ordering::Relaxed);
@@ -401,7 +401,7 @@ pub fn pick(items: &[&str]) -> Option<usize> {
 }
 
 fn show_menu(hwnd: HWND) {
-    let (_, paused) = crate::ui_state();
+    let (_, paused) = crate::app::ui_state();
     unsafe {
         let Ok(menu) = CreatePopupMenu() else { return };
         let ver = wide(&format!("tile-rs v{}", env!("CARGO_PKG_VERSION")));
@@ -436,7 +436,7 @@ fn show_menu(hwnd: HWND) {
             menu,
             M_AUTOSTART,
             "Start with Windows",
-            crate::autostart_enabled(),
+            crate::platform::autostart::autostart_enabled(),
         );
         item(menu, M_SUPPORT, "Support tile-rs", false);
         let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
@@ -459,12 +459,12 @@ fn show_menu(hwnd: HWND) {
         let _ = DestroyMenu(menu);
 
         match cmd.0 as usize {
-            M_SETTINGS => crate::show_launcher(),
-            M_PAUSE => crate::dispatch(Action::Pause),
-            M_RETILE => crate::dispatch(Action::Retile),
-            M_RELOAD => crate::dispatch(Action::ReloadConfig),
-            M_DIAGNOSTICS => crate::export_diagnostics(false),
-            M_EDIT => crate::dispatch(Action::EditConfig),
+            M_SETTINGS => crate::app::show_launcher(),
+            M_PAUSE => crate::app::dispatch(Action::Pause),
+            M_RETILE => crate::app::dispatch(Action::Retile),
+            M_RELOAD => crate::app::dispatch(Action::ReloadConfig),
+            M_DIAGNOSTICS => crate::app::export_diagnostics(false),
+            M_EDIT => crate::app::dispatch(Action::EditConfig),
             M_HOTKEYS => show_hotkeys(),
             M_FOLDER => open(
                 "explorer.exe",
@@ -472,17 +472,20 @@ fn show_menu(hwnd: HWND) {
             ),
             M_LOG => open(
                 "notepad.exe",
-                &format!("\"{}\"", crate::log_file().display()),
+                &format!("\"{}\"", crate::diagnostics::log_file().display()),
             ),
-            M_UPDATE => crate::update::check_and_notify(),
+            M_UPDATE => crate::platform::update::check_and_notify(),
             M_AUTOSTART => {
-                let want = !crate::autostart_enabled();
-                if !crate::set_autostart(want) {
-                    crate::notify("tile-rs", "Could not change the autostart setting.");
+                let want = !crate::platform::autostart::autostart_enabled();
+                if !crate::platform::autostart::set_autostart(want) {
+                    crate::platform::dialogs::notify(
+                        "tile-rs",
+                        "Could not change the autostart setting.",
+                    );
                 }
             }
             M_SUPPORT => open(SUPPORT_URL, ""),
-            M_QUIT => crate::dispatch(Action::Quit),
+            M_QUIT => crate::app::dispatch(Action::Quit),
             _ => {}
         }
     }
@@ -509,7 +512,7 @@ fn show_hotkeys() {
     let mut text = String::new();
     let mut last_name = String::new();
     for (action, spec) in &cfg.bindings {
-        let name = crate::action_name(*action);
+        let name = crate::config::action_name(*action);
         if name == last_name {
             text.push_str(&format!(", {spec}"));
         } else {
@@ -524,46 +527,46 @@ fn show_hotkeys() {
         text = "No hotkeys are configured.".into();
     }
     text.push_str("\n\nEdit them via the tray menu: Edit config.");
-    crate::notify("tile-rs hotkeys", &text);
+    crate::platform::dialogs::notify("tile-rs hotkeys", &text);
 }
 
 unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     if msg == WM_DIAGNOSTICS || msg == WM_DIAGNOSTICS_WITH_TITLES {
-        crate::export_diagnostics(msg == WM_DIAGNOSTICS_WITH_TITLES);
+        crate::app::export_diagnostics(msg == WM_DIAGNOSTICS_WITH_TITLES);
         return LRESULT(0);
     }
     if msg == WM_LAUNCHER_RELOAD {
-        crate::reload_config_quiet();
+        crate::app::reload_config_quiet();
         return LRESULT(0);
     }
     if msg == WM_LAUNCHER_PAUSE {
-        if !crate::ui_state().1 {
-            crate::toggle_pause_quietly();
+        if !crate::app::ui_state().1 {
+            crate::app::toggle_pause_quietly();
         }
         return LRESULT(0);
     }
     if msg == WM_LAUNCHER_STATE {
-        return LRESULT(isize::from(crate::ui_state().1));
+        return LRESULT(isize::from(crate::app::ui_state().1));
     }
     if msg == WM_LAUNCHER_RESUME {
-        if crate::ui_state().1 {
-            crate::toggle_pause_quietly();
+        if crate::app::ui_state().1 {
+            crate::app::toggle_pause_quietly();
         }
         return LRESULT(0);
     }
     if msg == WM_LAUNCHER_QUIT {
-        crate::dispatch_quit();
+        crate::app::dispatch_quit();
         return LRESULT(0);
     }
     if msg == WM_TRAY {
         match lparam.0 as u32 {
             NIN_BALLOONUSERCLICK if BALLOON_IS_UPDATE.load(Ordering::Relaxed) => {
-                crate::launcher::show_updates()
+                crate::ui::launcher::show_updates()
             }
-            NIN_BALLOONUSERCLICK => crate::show_launcher(),
+            NIN_BALLOONUSERCLICK => crate::app::show_launcher(),
             WM_RBUTTONUP => show_menu(hwnd),
             // a click opens the settings, like any other tray app; pausing is in the menu
-            WM_LBUTTONUP => crate::show_launcher(),
+            WM_LBUTTONUP => crate::app::show_launcher(),
             _ => {}
         }
         return LRESULT(0);
@@ -580,7 +583,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
     if msg == WM_DISPLAYCHANGE
         || (msg == WM_SETTINGCHANGE && wparam.0 == SPI_SETWORKAREA.0 as usize)
     {
-        crate::request_relayout();
+        crate::app::request_relayout();
         return LRESULT(0);
     }
     DefWindowProcW(hwnd, msg, wparam, lparam)

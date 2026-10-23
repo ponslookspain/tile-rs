@@ -1,6 +1,6 @@
 //! Input surfaces for adjustable tile gaps; real windows resize on frame ticks.
 use crate::config::Layout;
-use crate::geometry::{layout_is_valid, place_fitted, Gaps};
+use crate::layout::geometry::{layout_is_valid, place_fitted, Gaps};
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use windows::core::w;
@@ -355,15 +355,15 @@ pub fn tick() {
     }
     unsafe {
         if GetAsyncKeyState(i32::from(VK_ESCAPE.0)) < 0 {
-            crate::end_divider(false);
+            crate::app::end_divider(false);
         } else if GetAsyncKeyState(i32::from(VK_LBUTTON.0)) >= 0 {
-            crate::end_divider(true);
+            crate::app::end_divider(true);
         } else {
             let mut point = POINT::default();
             if GetCursorPos(&mut point).is_ok() {
-                crate::update_divider(point);
+                crate::app::update_divider(point);
             } else {
-                crate::settle_divider();
+                crate::app::settle_divider();
             }
         }
     }
@@ -474,14 +474,14 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                 SURFACES.with(|s| s.borrow().iter().find(|(_, h)| *h == hwnd).map(|(h, _)| *h));
             let mut point = POINT::default();
             if GetCursorPos(&mut point).is_ok()
-                && handle.is_some_and(|h| crate::begin_divider(h, point))
+                && handle.is_some_and(|h| crate::app::begin_divider(h, point))
             {
                 CAPTURE.with(|c| c.set(hwnd));
                 SetCapture(hwnd);
                 let _ = SetLayeredWindowAttributes(hwnd, COLORREF(0), 180, LWA_ALPHA);
                 if GetCapture() != hwnd || SetTimer(Some(hwnd), 1, 100, None) == 0 {
                     release();
-                    crate::end_divider(false);
+                    crate::app::end_divider(false);
                 } else {
                     let others: Vec<_> = SURFACES.with(|surfaces| {
                         surfaces
@@ -531,12 +531,12 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
         WM_TIMER if wp.0 == 1 => tick(),
         WM_LBUTTONUP => {
             release();
-            crate::end_divider(true);
+            crate::app::end_divider(true);
         }
         WM_CAPTURECHANGED | WM_CANCELMODE => {
             if CAPTURE.with(|c| c.get() == hwnd) {
                 release();
-                crate::settle_divider();
+                crate::app::settle_divider();
             }
         }
         WM_PAINT => {
@@ -556,7 +556,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::geometry::place;
+    use crate::layout::geometry::place;
 
     #[test]
     fn captured_highlight_survives_mouse_leaving_a_clamped_split() {

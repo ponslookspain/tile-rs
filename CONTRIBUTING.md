@@ -36,7 +36,7 @@ and a release build.
 
 - **Branch** from `main`: `feat/...`, `fix/...`, `docs/...`. One topic per pull request.
 - **Tests**: logic that does not call Windows (layout geometry, config parsing and migration,
-  animation math) lives in `src/geometry.rs` and `src/config.rs` and must be covered by unit
+  animation math) lives in `src/layout/geometry.rs` and `src/config/` and must be covered by unit
   tests. Code that moves windows is checked by hand: say in the pull request how you tried it.
 - **Config compatibility**: an existing `config.toml` must keep working. New settings are
   optional, get a default and are added to `migrate()`; see [docs/RELEASING.md](docs/RELEASING.md).
@@ -46,19 +46,6 @@ and a release build.
 
 ## Project layout
 
-```
-src/main.rs        event handling, layout, workspaces, animations, start-up
-src/window.rs      window discovery and classification (tiled / fullscreen / skipped)
-src/geometry.rs    pure layout maths (spiral, resize ratios, neighbours, easing) + unit tests
-src/config.rs      config file: parsing, defaults, migration, hotkey syntax + unit tests
-src/launcher.rs    the settings launcher window
-src/overlay.rs     the focus border and the workspace indicator (drawn by tile-rs itself)
-src/tray.rs        tray icon and menu
-src/prof.rs        opt-in profiling (TILE_RS_PROFILE)
-docs/              configuration reference, release process
-scripts/           check.ps1 (CI checks), package.ps1 (release zip), build-installer.ps1,
-                   release-notes.ps1, make-icon.ps1
-.github/workflows/ CI and release automation
-```
+See the [source map in the development guide](docs/DEVELOPMENT.md#структура-исходного-кода).
 
 Releases are made by the maintainers, see [docs/RELEASING.md](docs/RELEASING.md).

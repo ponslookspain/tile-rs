@@ -9,8 +9,8 @@ use windows::Win32::UI::WindowsAndMessaging::{
     GetForegroundWindow, IsIconic, IsWindow, IsWindowVisible, IsZoomed,
 };
 
-use crate::window::visible_rect;
-use crate::{config, monitor, overlay, sync_dividers, State, STATE};
+use super::{config, monitor, overlay, sync_dividers, State, STATE};
+use crate::platform::window::visible_rect;
 
 /// Draws the border around the *visible* frame `vis` of `target`. The border window is placed just
 /// below `target` in the z-order and clipped to a hollow frame, so it can never cover the window
@@ -87,7 +87,7 @@ pub(crate) fn update_border(s: &mut State, focus: isize) {
         .get(&focus)
         .copied()
         .unwrap_or_else(|| monitor::of_window(HWND(focus as *mut _)))
-        .min(crate::MON - 1);
+        .min(super::MON - 1);
     let tiled = s.last[mi].contains(&focus) || s.ws.get(&focus) == Some(&s.cur[mi]);
     s.border_on = (config::border().is_some()
         && border_window_shown(HWND(focus as *mut _))

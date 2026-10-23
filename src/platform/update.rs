@@ -321,7 +321,11 @@ pub fn install(release: &Release, progress: impl Fn(u8)) -> Result<(), String> {
                 .env("TILE_UPDATE_READY", &ready)
                 .env(
                     "TILE_UPDATE_AUTOSTART",
-                    if crate::autostart_enabled() { "1" } else { "0" },
+                    if crate::platform::autostart::autostart_enabled() {
+                        "1"
+                    } else {
+                        "0"
+                    },
                 )
                 .creation_flags(0x08000000)
                 .spawn()
@@ -350,7 +354,7 @@ pub fn install(release: &Release, progress: impl Fn(u8)) -> Result<(), String> {
             let _ = std::fs::remove_dir(&directory);
         }
         stage?;
-        crate::tray::request_manager_quit();
+        crate::ui::tray::request_manager_quit();
         progress(100);
         Ok(())
     })();
@@ -402,10 +406,12 @@ pub fn start_background_checks() {
             loop {
                 match check_latest() {
                     Ok(Some(release)) if release.version != notified => {
-                        crate::tray::notify_update(&release.version);
+                        crate::ui::tray::notify_update(&release.version);
                         notified = release.version;
                     }
-                    Err(error) => crate::log(format!("background update check: {error}")),
+                    Err(error) => {
+                        crate::diagnostics::log(format!("background update check: {error}"))
+                    }
                     _ => {}
                 }
                 std::thread::sleep(Duration::from_secs(6 * 60 * 60));
@@ -415,7 +421,7 @@ pub fn start_background_checks() {
 
 /// Compatibility entry point for tray menus; the launcher presents check/install controls.
 pub fn check_and_notify() {
-    crate::launcher::show_updates();
+    crate::ui::launcher::show_updates();
 }
 
 fn identifiers_valid(value: &str, numeric_leading_zero: bool) -> bool {

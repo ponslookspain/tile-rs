@@ -33,7 +33,7 @@ Komorebi and GlazeWM are configured through JSON/YAML; tile-rs is configured her
 - Launcher pages: General, Layout, Workspaces, Window behaviour, Hotkeys, Applications,
   Advanced, Updates. Changes apply with an explicit Save; an unsaved-changes indicator exists.
 - Hotkey editor records combinations by pressing them; application rules are made from a picker
-  of running windows; logic lives in `src/launcher_model.rs`, the UI only binds to it.
+  of running windows; logic lives in `src/ui/launcher_model.rs`, the UI only binds to it.
 - Slint constraints: no web fonts or CSS; icons must be bundled images (SVG supported);
   `drop-shadow-*` properties are available on rectangles; minimum window 1000 × 640.
 - The Slint Royalty-Free license requires the `AboutSlint` widget on a reachable About screen.

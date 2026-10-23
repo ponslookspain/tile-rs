@@ -1,5 +1,4 @@
 //! Logging and opt-in profiling, separate from window state and native event handling.
-use crate::prof;
 use std::cell::RefCell;
 use std::io::Write;
 use std::path::PathBuf;
@@ -214,3 +213,5 @@ mod tests {
             .all(|sample| *sample >= (MAX_FRAME_SAMPLES * 2) as f32));
     }
 }
+
+pub(crate) mod prof;

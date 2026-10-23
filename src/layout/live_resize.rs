@@ -41,7 +41,7 @@ impl Scheduler {
                 return false;
             }
             if self.sent.get(h).is_some_and(|(previous, _, requested)| {
-                !crate::geometry::same_rect(previous, &actual, 2)
+                !crate::layout::geometry::same_rect(previous, &actual, 2)
                     && now.saturating_duration_since(*requested) < RETRY_AFTER
             }) {
                 return true;
@@ -67,7 +67,7 @@ impl Scheduler {
                 let actual = observed(*h)?;
                 // An entirely unchanged frame can belong to a stalled application.
                 // Learn only after observing progress, never from the initial large size.
-                (!crate::geometry::same_rect(&actual, before, 2)
+                (!crate::layout::geometry::same_rect(&actual, before, 2)
                     && (actual.right - actual.left > target.right - target.left + 2
                         || actual.bottom - actual.top > target.bottom - target.top + 2))
                     .then_some((*h, *target))
@@ -75,7 +75,7 @@ impl Scheduler {
             .collect()
     }
 
-    pub fn forget(&mut self, windows: &[isize]) {
+    pub fn forget<'a>(&mut self, windows: impl IntoIterator<Item = &'a isize>) {
         for h in windows {
             self.pending.remove(h);
             self.sent.remove(h);

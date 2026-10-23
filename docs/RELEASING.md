@@ -33,7 +33,7 @@ Users keep one `config.toml` for years, so:
    if a rename is unavoidable, accept both names for at least one minor release and say so in the changelog.
 2. New settings are **optional** and have a default.
 3. A new setting or default hotkey that users should get automatically is added to
-   `migrate()` in `src/config.rs` (it appends missing keys to existing files, never changes
+   `migrate()` in `src/config/mod.rs` (it appends missing keys to existing files, never changes
    existing lines) **and** to `default_config()`, with a test in `config::tests`.
 4. A change of meaning of an existing setting counts as breaking: bump `MINOR` (while `0.x`) or
    `MAJOR` (from 1.0) and describe the migration in the changelog under **Changed**.

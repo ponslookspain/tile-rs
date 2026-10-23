@@ -8,67 +8,17 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{OnceLock, RwLock};
 
 use serde::Deserialize;
-use windows::Win32::UI::Input::KeyboardAndMouse::{
-    HOT_KEY_MODIFIERS, MOD_ALT, MOD_CONTROL, MOD_SHIFT, MOD_WIN,
-};
 
-use crate::geometry::Easing;
+use crate::layout::geometry::Easing;
+
+mod actions;
+mod hotkeys;
+
+use actions::parse_action;
+pub(crate) use actions::{action_name, Action, Dir};
+pub(crate) use hotkeys::parse_hotkey;
 
 pub const WS_COUNT: u8 = 9;
-
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum Dir {
-    Left,
-    Down,
-    Up,
-    Right,
-}
-
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum Action {
-    Focus(Dir),
-    Swap(Dir),
-    /// 0-based workspace index
-    Workspace(u8),
-    MoveTo(u8),
-    /// Switch to the next / previous workspace, wrapping around at the ends.
-    WorkspaceNext,
-    WorkspacePrev,
-    /// Move the focused window to the next / previous workspace (wrapping) and follow it.
-    MoveToNext,
-    MoveToPrev,
-    /// Grow / shrink the focused window's width (or height) by `resize_step` pixels.
-    Resize {
-        width: bool,
-        grow: bool,
-    },
-    /// Minimize the focused window.
-    Minimize,
-    /// Toggle the focused window between tiled and floating.
-    ToggleFloat,
-    /// Close the focused window (like Alt+F4).
-    Close,
-    Pause,
-    Quit,
-    Retile,
-    /// Switch to the next tiling layout (spiral -> master-stack -> grid -> columns -> spiral).
-    CycleLayout,
-    /// Move keyboard focus to the next / previous monitor.
-    FocusMonitor(i8),
-    /// Send the focused window to the next / previous monitor.
-    MoveToMonitor(i8),
-    ReloadConfig,
-    EditConfig,
-    /// Show the focused window alone on the whole screen (the rest stay stacked underneath);
-    /// press again to go back to the normal layout of the workspace.
-    ToggleMonocle,
-    /// Focus the window that was focused before the current one (switching workspace if needed).
-    FocusLast,
-    /// Switch the active monitor back to the workspace it showed before the current one.
-    WorkspaceBack,
-    /// Add (+1) / remove (-1) a window in the master column of master-stack.
-    MasterCount(i8),
-}
 
 /// What to do with a window that runs fullscreen / borderless fullscreen (a game, a video
 /// player): minimize it while its workspace is not shown, or leave it completely alone.
@@ -672,157 +622,6 @@ pub fn save_atomic(path: &Path, text: &str) -> std::io::Result<()> {
     ))
 }
 
-fn parse_action(name: &str) -> Option<Action> {
-    let n = name.trim().to_ascii_lowercase();
-    let dir = |s: &str| match s {
-        "left" => Some(Dir::Left),
-        "down" => Some(Dir::Down),
-        "up" => Some(Dir::Up),
-        "right" => Some(Dir::Right),
-        _ => None,
-    };
-    let ws = |s: &str| {
-        s.parse::<u8>()
-            .ok()
-            .filter(|n| (1..=WS_COUNT).contains(n))
-            .map(|n| n - 1)
-    };
-    match n.as_str() {
-        "workspace_next" => return Some(Action::WorkspaceNext),
-        "focus_next_monitor" => return Some(Action::FocusMonitor(1)),
-        "focus_prev_monitor" => return Some(Action::FocusMonitor(-1)),
-        "move_to_next_monitor" => return Some(Action::MoveToMonitor(1)),
-        "move_to_prev_monitor" => return Some(Action::MoveToMonitor(-1)),
-        "workspace_prev" => return Some(Action::WorkspacePrev),
-        // exact names must come before the `focus_` / `workspace_` prefix handlers below
-        "focus_last" => return Some(Action::FocusLast),
-        "workspace_back_and_forth" => return Some(Action::WorkspaceBack),
-        "move_to_next_workspace" => return Some(Action::MoveToNext),
-        "move_to_prev_workspace" => return Some(Action::MoveToPrev),
-        _ => {}
-    }
-    if let Some(d) = n.strip_prefix("focus_") {
-        return dir(d).map(Action::Focus);
-    }
-    if let Some(d) = n.strip_prefix("swap_") {
-        return dir(d).map(Action::Swap);
-    }
-    // "next"/"prev" are not numbers, so they must be matched before the numbered prefixes
-    if let Some(i) = n.strip_prefix("move_to_workspace_") {
-        return ws(i).map(Action::MoveTo);
-    }
-    if let Some(i) = n.strip_prefix("workspace_") {
-        return ws(i).map(Action::Workspace);
-    }
-    match n.as_str() {
-        "grow_width" => Some(Action::Resize {
-            width: true,
-            grow: true,
-        }),
-        "shrink_width" => Some(Action::Resize {
-            width: true,
-            grow: false,
-        }),
-        "grow_height" => Some(Action::Resize {
-            width: false,
-            grow: true,
-        }),
-        "shrink_height" => Some(Action::Resize {
-            width: false,
-            grow: false,
-        }),
-        "minimize" => Some(Action::Minimize),
-        "toggle_float" => Some(Action::ToggleFloat),
-        "close" => Some(Action::Close),
-        "pause" => Some(Action::Pause),
-        "quit" => Some(Action::Quit),
-        "retile" => Some(Action::Retile),
-        "cycle_layout" => Some(Action::CycleLayout),
-        "toggle_monocle" => Some(Action::ToggleMonocle),
-        "master_count_inc" => Some(Action::MasterCount(1)),
-        "master_count_dec" => Some(Action::MasterCount(-1)),
-        "reload_config" => Some(Action::ReloadConfig),
-        "edit_config" => Some(Action::EditConfig),
-        _ => None,
-    }
-}
-
-/// "alt+shift+h" -> (modifiers, virtual-key code)
-pub fn parse_hotkey(spec: &str) -> Result<(HOT_KEY_MODIFIERS, u32), String> {
-    let mut mods = HOT_KEY_MODIFIERS(0);
-    let mut key: Option<u32> = None;
-    for part in spec.split('+') {
-        let p = part.trim().to_ascii_lowercase();
-        match p.as_str() {
-            "alt" => mods |= MOD_ALT,
-            "ctrl" | "control" => mods |= MOD_CONTROL,
-            "shift" => mods |= MOD_SHIFT,
-            "win" | "super" | "meta" => mods |= MOD_WIN,
-            "" => return Err(format!("empty part in \"{spec}\"")),
-            other => {
-                if key.is_some() {
-                    return Err(format!("\"{spec}\": more than one key"));
-                }
-                key = Some(
-                    parse_key(other)
-                        .ok_or_else(|| format!("unknown key \"{other}\" in \"{spec}\""))?,
-                );
-            }
-        }
-    }
-    match key {
-        Some(k) => Ok((mods, k)),
-        None => Err(format!("\"{spec}\": no key")),
-    }
-}
-
-fn parse_key(k: &str) -> Option<u32> {
-    let b = k.as_bytes();
-    if b.len() == 1 {
-        let c = b[0];
-        if c.is_ascii_lowercase() {
-            return Some(c.to_ascii_uppercase() as u32);
-        }
-        if c.is_ascii_digit() {
-            return Some(c as u32);
-        }
-    }
-    if let Some(n) = k.strip_prefix('f').and_then(|n| n.parse::<u32>().ok()) {
-        if (1..=12).contains(&n) {
-            return Some(0x70 + n - 1);
-        }
-    }
-    Some(match k {
-        "left" => 0x25,
-        "up" => 0x26,
-        "right" => 0x27,
-        "down" => 0x28,
-        "space" => 0x20,
-        "enter" | "return" => 0x0D,
-        "tab" => 0x09,
-        "esc" | "escape" => 0x1B,
-        "backspace" => 0x08,
-        "home" => 0x24,
-        "end" => 0x23,
-        "pageup" => 0x21,
-        "pagedown" => 0x22,
-        "numpad_add" => 0x6B,
-        "numpad_subtract" => 0x6D,
-        "minus" => 0xBD,
-        "plus" | "equal" => 0xBB,
-        "comma" => 0xBC,
-        "period" => 0xBE,
-        "semicolon" => 0xBA,
-        "slash" => 0xBF,
-        "grave" => 0xC0,
-        "bracketleft" => 0xDB,
-        "backslash" => 0xDC,
-        "bracketright" => 0xDD,
-        "quote" => 0xDE,
-        _ => return None,
-    })
-}
-
 /// "linear", "out_quad", "out_cubic", "out_quart", "in_out_cubic" -> `Easing`.
 pub fn parse_easing(s: &str) -> Result<Easing, String> {
     match s.trim().to_ascii_lowercase().as_str() {
@@ -1181,6 +980,7 @@ pub fn rules() -> Vec<Rule> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use windows::Win32::UI::Input::KeyboardAndMouse::{MOD_ALT, MOD_SHIFT};
 
     #[test]
     fn atomic_save_replaces_complete_config_and_preserves_it_on_rename_failure() {

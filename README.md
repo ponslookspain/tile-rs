@@ -65,6 +65,7 @@ workload of the [Visual Studio Build Tools](https://visualstudio.microsoft.com/v
 ```powershell
 git clone https://github.com/ponslookspain/tile-rs.git
 cd tile-rs
+. .\scripts\vcenv.ps1
 cargo build --release
 # the program is target\release\tile-rs.exe
 ```

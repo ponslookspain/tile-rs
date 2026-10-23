@@ -131,7 +131,7 @@ pub fn rows_from_bindings(bindings: &[(Action, String)]) -> Vec<Row> {
     let mut by_action: HashMap<String, Vec<String>> = HashMap::new();
     let mut order: Vec<String> = Vec::new();
     for (action, spec) in bindings {
-        let name = crate::action_name(*action);
+        let name = crate::config::action_name(*action);
         if !by_action.contains_key(&name) {
             order.push(name.clone());
         }
@@ -861,7 +861,7 @@ mod tests {
     fn rule_text_is_escaped_and_described() {
         let mut r = rule("a\"b", "float");
         r.title = Some("C:\\x".into());
-        let toml = rules_to_toml(&[r.clone()]);
+        let toml = rules_to_toml(&[r]);
         let parsed = config::parse(&toml).expect("escaped rule parses");
         assert_eq!(parsed.rules[0].process.as_deref(), Some("a\"b"));
         assert_eq!(parsed.rules[0].title.as_deref(), Some("C:\\x"));
