@@ -72,6 +72,69 @@ fn place_border_frame(vis: &RECT, target: isize, w: i32) {
     overlay::show_border(rect, HWND(target as *mut _), 8 + w, w);
 }
 
+/// After a workspace switch Windows moves the focus around by itself (the window that was hidden
+/// loses it): these focus changes say nothing about what the user was working in.
+const SWITCH_SETTLE: std::time::Duration = std::time::Duration::from_millis(700);
+
+/// Remembers the window the user last focused on its workspace, so coming back to that workspace
+/// focuses (and raises) the same window again - a maximized one included - instead of the first
+/// tile, which would end up on top of it.
+fn remember_workspace_focus(s: &mut State, focus: isize) {
+    if s.last_switch.is_some_and(|t| t.elapsed() < SWITCH_SETTLE) {
+        return;
+    }
+    let placed = s
+        .ws
+        .get(&focus)
+        .map(|ws| (s.mi(focus), *ws))
+        .or_else(|| s.fs_ws.get(&focus).map(|ws| (s.mi(focus), *ws)))
+        .or_else(|| s.pinned.get(&focus).copied());
+    if let Some(key) = placed {
+        s.ws_focus.insert(key, focus);
+    }
+}
+
+/// The window to focus when workspace `n` of monitor `mi` is shown again: the one the user last
+/// worked in, if it is still there. A window the user minimized is not brought back, and neither
+/// is one that moved to another workspace or went away.
+pub(super) fn remembered_focus(s: &State, mi: usize, n: u8) -> Option<isize> {
+    let belongs = |h: &isize| {
+        (s.ws.get(h) == Some(&n) && s.mi(*h) == mi)
+            || (s.fs_ws.get(h) == Some(&n) && s.mi(*h) == mi)
+            || s.pinned.get(h) == Some(&(mi, n))
+    };
+    // minimized by us and being restored right now: its restore may not have happened yet
+    let restoring = |h: &isize| {
+        s.max_hidden.contains_key(h)
+            || s.restored
+                .get(h)
+                .is_some_and(|at| at.elapsed() < super::placement::MINIMIZE_GRACE)
+    };
+    let usable = |h: &isize| {
+        let hw = HWND(*h as *mut _);
+        unsafe { IsWindow(Some(hw)) }.as_bool()
+            && (restoring(h)
+                || (unsafe { IsWindowVisible(hw) }.as_bool() && !unsafe { IsIconic(hw) }.as_bool()))
+    };
+    let last = s
+        .ws_focus
+        .get(&(mi, n))
+        .copied()
+        .filter(|h| belongs(h) && usable(h));
+    // nothing remembered: a maximized / fullscreen window being brought back covers the tiles
+    // below it, so it - not the first tile - has to get the focus
+    last.or_else(|| {
+        let mut back: Vec<isize> = s
+            .restored
+            .keys()
+            .copied()
+            .filter(|h| belongs(h) && restoring(h) && usable(h))
+            .collect();
+        back.sort_unstable();
+        back.first().copied()
+    })
+}
+
 /// Picks the window that should carry the border (the focused tiled window of the current
 /// workspace) and positions the overlay around it.
 pub(crate) fn update_border(s: &mut State, focus: isize) {
@@ -79,6 +142,7 @@ pub(crate) fn update_border(s: &mut State, focus: isize) {
         s.focus_prev = s.focus_cur;
         s.focus_cur = Some(focus);
     }
+    remember_workspace_focus(s, focus);
     // a tiled window of the current workspace: in the applied layout, or (should the layout list
     // be momentarily stale) a known window that belongs to the current workspace
     // a window we have no record of yet is placed by where it really is, not on monitor 0

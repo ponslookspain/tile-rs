@@ -383,6 +383,9 @@ pub(super) fn apply_maximized(s: &mut State) {
                 }
                 s.max_hidden.remove(&h);
                 HIDDEN_FULLSCREEN.with(|hidden| hidden.borrow_mut().remove(&h));
+                // the workspace switch focuses it next, before its restore has happened
+                s.restored.retain(|_, at| at.elapsed() < MINIMIZE_GRACE);
+                s.restored.insert(h, Instant::now());
                 changed = true;
             }
             // visible and not cloaked: a window on another Windows virtual desktop is left alone

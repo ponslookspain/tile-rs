@@ -77,6 +77,8 @@ pub(super) fn drop_window_data(s: &mut State, h: isize) -> bool {
     tracked |= s.slid.remove(&h);
     tracked |= s.max_hidden.remove(&h).is_some();
     tracked |= s.pinned.remove(&h).is_some();
+    s.ws_focus.retain(|_, window| *window != h);
+    tracked |= s.restored.remove(&h).is_some();
     tracked |= s.ws.remove(&h).is_some();
     tracked |= s.mon.remove(&h).is_some();
     tracked |= s.tracked.remove(&h).is_some();

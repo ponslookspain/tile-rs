@@ -170,7 +170,8 @@ maximized, so it never covers another workspace. Un-maximizing makes it a normal
 workspace. A floating window that fills its whole monitor (a media viewer or player in fullscreen,
 a window floated with `toggle_float` and then maximized) is treated the same way while it does;
 small floating windows stay visible on every workspace, and a window with a `float` rule is never
-touched. A window you minimized yourself stays minimized, and one you bring back from the taskbar
+touched. When you come back to a workspace, the window you last worked in there gets the focus
+again (a maximized one stays on top of the tiles below it). A window you minimized yourself stays minimized, and one you bring back from the taskbar
 while its workspace is not shown joins the workspace you are on.
 
 Known console hosts are eligible even when their native style omits the usual resizable flag.

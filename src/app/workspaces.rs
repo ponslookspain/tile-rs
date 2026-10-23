@@ -169,7 +169,7 @@ pub(super) fn switch_ws(mi: usize, n: u8, focus: Option<isize>) {
 }
 
 /// Focuses the fullscreen window of workspace `n` on monitor `mi` if it has one, otherwise the
-/// first tiled one.
+/// window the user last worked in there (a maximized one included), otherwise the first tiled one.
 pub(super) fn focus_workspace(mi: usize, n: u8) {
     let fs = STATE.with(|s| {
         let s = s.borrow();
@@ -187,7 +187,8 @@ pub(super) fn focus_workspace(mi: usize, n: u8) {
             })
             .map(|(h, _)| *h)
     });
-    match fs {
+    let remembered = fs.or_else(|| STATE.with(|s| remembered_focus(&s.borrow(), mi, n)));
+    match remembered {
         Some(h) => focus_hwnd(h),
         None => focus_first_or_desktop(),
     }

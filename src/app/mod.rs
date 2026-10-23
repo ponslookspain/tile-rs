@@ -102,8 +102,8 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 
 use border::{
-    border_window_shown, clear_border, place_border, refresh_border, sync_border, sync_border_to,
-    update_border,
+    border_window_shown, clear_border, place_border, refresh_border, remembered_focus,
+    sync_border, sync_border_to, update_border,
 };
 use config::{action_name, Action, Dir, FullscreenWindows, Layout, WS_COUNT};
 use geometry::{
@@ -216,6 +216,10 @@ struct State {
     /// Floating windows (media viewers, `toggle_float`) that fill their monitor, with the monitor
     /// and workspace they belong to, so they can be hidden when that workspace is left.
     pinned: HashMap<isize, (usize, u8)>,
+    /// The window last focused on each (monitor, workspace), focused again when it is shown.
+    ws_focus: HashMap<(usize, u8), isize>,
+    /// Windows `apply_maximized` just restored; their restore is asynchronous.
+    restored: HashMap<isize, Instant>,
     /// Windows the user floated with `toggle_float` (never tiled this session).
     manual_float: HashSet<isize>,
     /// Windows currently parked off-screen with their original rectangles (mirrored to disk).
