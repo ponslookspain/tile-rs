@@ -1,5 +1,6 @@
 //! Layout reconciliation, capacity checks and interactive resizing.
 
+use super::placement::MINIMIZE_GRACE;
 use super::*;
 
 /// Does the visible frame of `hwnd` differ from `target` by more than a few pixels?
@@ -381,10 +382,24 @@ pub(super) fn workspace_visibility(
 pub(super) fn track_covering_windows(s: &mut State, c: &window::Collector) {
     for w in &c.maximized {
         let h = w.hwnd.0 as isize;
-        if s.ws.contains_key(&h) || s.fs_ws.contains_key(&h) {
+        let mi = monitor::of_window(w.hwnd).min(MON - 1);
+        if s.ws.contains_key(&h) {
+            // moved to another monitor while maximized (Win+Shift+Arrow): it belongs to the
+            // workspace that monitor shows now, as a window dragged there does
+            let from = s.mi(h);
+            if from != mi {
+                s.order[from].retain(|window| *window != h);
+                if !s.order[mi].contains(&h) {
+                    s.order[mi].push(h);
+                }
+                s.mon.insert(h, mi);
+                s.ws.insert(h, s.cur[mi]);
+            }
             continue;
         }
-        let mi = monitor::of_window(w.hwnd).min(MON - 1);
+        if s.fs_ws.contains_key(&h) {
+            continue;
+        }
         s.ws.insert(h, w.rule_ws.unwrap_or(s.cur[mi]));
         s.mon.insert(h, mi);
         if !s.order[mi].contains(&h) {
@@ -400,11 +415,22 @@ pub(super) fn track_covering_windows(s: &mut State, c: &window::Collector) {
             s.pinned.insert(h, (mi, s.cur[mi]));
         }
     }
-    // one we minimized stays pinned until it is back; one that is no longer covering is free
-    let hidden: HashSet<isize> = s.max_hidden.keys().copied().collect();
+    // one we minimized (or are restoring) stays pinned until it is back; one that is no longer
+    // covering is free
+    let keep: HashSet<isize> = s
+        .max_hidden
+        .keys()
+        .chain(
+            s.restored
+                .iter()
+                .filter(|(_, at)| at.elapsed() < MINIMIZE_GRACE)
+                .map(|(h, _)| h),
+        )
+        .copied()
+        .collect();
     s.pinned.retain(|h, _| {
         unsafe { IsWindow(Some(HWND(*h as *mut _))) }.as_bool()
-            && (covering.contains(h) || hidden.contains(h))
+            && (covering.contains(h) || keep.contains(h))
     });
 }
 
@@ -595,8 +621,12 @@ pub(super) fn retile() {
             // the windows of the workspace just switched to come in with a short slide from the
             // side of the dot they belong to; a slide only moves them, so it costs the apps little
             let slide_offset = slide
-                .filter(|(smi, _)| *smi == mi && layout.len() <= SLIDE_MAX_WINDOWS)
-                .map(|(_, dir)| {
+                .filter(|(smi, _, at)| {
+                    *smi == mi
+                        && layout.len() <= SLIDE_MAX_WINDOWS
+                        && at.elapsed() < Duration::from_millis(1000)
+                })
+                .map(|(_, dir, _)| {
                     let work = monitor_work(mi);
                     dir * ((work.right - work.left) as f32 * SLIDE_SHARE).min(SLIDE_MAX_PX) as i32
                 });

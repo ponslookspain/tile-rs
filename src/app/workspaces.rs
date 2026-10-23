@@ -131,7 +131,7 @@ pub(super) fn switch_workspace_state(s: &mut State, mi: usize, n: u8, now: Insta
         return false;
     }
     s.prev_ws[mi] = Some(s.cur[mi]);
-    s.slide = Some((mi, if n > s.cur[mi] { 1 } else { -1 }));
+    s.slide = Some((mi, if n > s.cur[mi] { 1 } else { -1 }, now));
     s.cur[mi] = n;
     s.no_anim = true;
     let affected: HashSet<isize> = s.order[mi].iter().copied().collect();
@@ -141,8 +141,28 @@ pub(super) fn switch_workspace_state(s: &mut State, mi: usize, n: u8, now: Insta
     true
 }
 
+/// A media window that went fullscreen, or a window that opened maximized, may not have been
+/// noticed yet: nothing re-tiles when a floating window changes size. Pin them to the workspace
+/// they are on *before* it changes, or the next layout pass would pin them to the new one - and
+/// they would cover it.
+fn pin_covering_before_switch(mi: usize, n: u8) {
+    let (will_switch, manual) = STATE.with(|s| {
+        let s = s.borrow();
+        let will_switch = mi < MON && !s.paused && s.dragging.is_none() && n != s.cur[mi];
+        (
+            will_switch,
+            s.manual_float.union(&s.capacity_float).copied().collect(),
+        )
+    });
+    if will_switch && n < WS_COUNT {
+        let c = collect(false, &manual);
+        STATE.with(|s| track_covering_windows(&mut s.borrow_mut(), &c));
+    }
+}
+
 pub(super) fn switch_ws(mi: usize, n: u8, focus: Option<isize>) {
     end_divider(false);
+    pin_covering_before_switch(mi, n);
     let changed = STATE.with(|s| {
         let mut s = s.borrow_mut();
         switch_workspace_state(&mut s, mi, n, Instant::now())

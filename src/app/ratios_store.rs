@@ -163,7 +163,11 @@ mod tests {
 
     #[test]
     fn ratios_round_trip_per_display_and_workspace() {
-        let text = encode(&ids(r"\\.\DISPLAY1"), &ratios(2, &[0.3, 0.65]), &Stored::new());
+        let text = encode(
+            &ids(r"\\.\DISPLAY1"),
+            &ratios(2, &[0.3, 0.65]),
+            &Stored::new(),
+        );
         let back = decode(&text);
         let rs = &back[&(r"\\.\DISPLAY1".to_string(), 2)];
         assert_eq!(rs.len(), 2);
@@ -192,7 +196,8 @@ mod tests {
 
     #[test]
     fn damaged_lines_are_skipped_and_values_clamped() {
-        let text = "A\t0\t0.3 nan\nA\t99\t0.3\nA\t1\t0.01 0.99\nA\t2\t\n\nA\t3\t0.4\textra\nA\t4\t0.4";
+        let text =
+            "A\t0\t0.3 nan\nA\t99\t0.3\nA\t1\t0.01 0.99\nA\t2\t\n\nA\t3\t0.4\textra\nA\t4\t0.4";
         let back = decode(text);
         assert_eq!(back.len(), 2);
         assert_eq!(back[&("A".to_string(), 1)], vec![MIN_RATIO, MAX_RATIO]);

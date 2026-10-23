@@ -1169,7 +1169,12 @@ mod tests {
             outer: 10,
         };
         let mins = HashMap::new();
-        for layout in [Layout::Spiral, Layout::MasterStack, Layout::Grid, Layout::Columns] {
+        for layout in [
+            Layout::Spiral,
+            Layout::MasterStack,
+            Layout::Grid,
+            Layout::Columns,
+        ] {
             for n in 1..=3usize {
                 let windows: Vec<isize> = (1..=n as isize).collect();
                 let exact = vec![0.4899; n - 1];
@@ -1181,8 +1186,18 @@ mod tests {
                     place_fitted(layout, area, &windows, &exact, &mins, (460, 320), gaps).0,
                     "{layout:?} with {n} window(s)"
                 );
-                assert!(layout_is_valid(area, &windows, &tiles, &mins, (460, 320), gaps));
-                assert_eq!(place(layout, area, n, &surplus, gaps).0, place(layout, area, n, &exact, gaps).0);
+                assert!(layout_is_valid(
+                    area,
+                    &windows,
+                    &tiles,
+                    &mins,
+                    (460, 320),
+                    gaps
+                ));
+                assert_eq!(
+                    place(layout, area, n, &surplus, gaps).0,
+                    place(layout, area, n, &exact, gaps).0
+                );
             }
         }
     }
@@ -1191,11 +1206,17 @@ mod tests {
     fn hermite_with_the_ease_out_slope_is_ease_out_cubic() {
         for i in 0..=20 {
             let t = i as f32 / 20.0;
-            assert_eq!(hermite_i(100, 500, 3.0 * 400.0, t), lerp_i(100, 500, ease_out_cubic(t)));
+            assert_eq!(
+                hermite_i(100, 500, 3.0 * 400.0, t),
+                lerp_i(100, 500, ease_out_cubic(t))
+            );
         }
         assert_eq!(hermite_i(100, 500, 0.0, 1.0), 500);
         assert!((hermite_slope(100, 500, 1200.0, 0.0) - 1200.0).abs() < 0.01);
-        assert!(hermite_slope(100, 500, 1200.0, 1.0).abs() < 0.01, "arrives at rest");
+        assert!(
+            hermite_slope(100, 500, 1200.0, 1.0).abs() < 0.01,
+            "arrives at rest"
+        );
     }
 
     #[test]

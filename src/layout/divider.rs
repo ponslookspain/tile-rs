@@ -186,7 +186,9 @@ fn set_alpha(hwnd: HWND, alpha: u8) {
 /// Fades the surface to `alpha` (hover in / out).
 fn fade_to(hwnd: HWND, alpha: u8) {
     let key = hwnd.0 as isize;
-    let current = ALPHA.with(|a| a.borrow().get(&key).copied()).unwrap_or(alpha);
+    let current = ALPHA
+        .with(|a| a.borrow().get(&key).copied())
+        .unwrap_or(alpha);
     let running = FADES.with(|f| f.borrow().get(&key).map(|fade| fade.to));
     if running == Some(alpha) || (running.is_none() && current == alpha) {
         return;
@@ -287,7 +289,8 @@ impl Resize {
         tiles
             .iter()
             .map(|r| {
-                let inside = r.left < q.right && r.right > q.left && r.top < q.bottom && r.bottom > q.top;
+                let inside =
+                    r.left < q.right && r.right > q.left && r.top < q.bottom && r.bottom > q.top;
                 let (near_edge, far_edge) = if self.handle.vertical {
                     (r.right, r.left)
                 } else {
@@ -739,12 +742,21 @@ mod tests {
     fn only_tiles_beside_the_dragged_separator_count_as_touching() {
         // spiral of 4: 0 | (1 / (2 | 3)); split 1 is the horizontal line between 1 and 2/3
         let resize = gesture(Layout::Spiral, 4, 1);
-        assert_eq!(resize.touching_split(&resize.tiles), vec![false, true, true, true]);
+        assert_eq!(
+            resize.touching_split(&resize.tiles),
+            vec![false, true, true, true]
+        );
         // split 0: everything right of the first column borders it
         let resize = gesture(Layout::Spiral, 4, 0);
-        assert_eq!(resize.touching_split(&resize.tiles), vec![true, true, true, false]);
+        assert_eq!(
+            resize.touching_split(&resize.tiles),
+            vec![true, true, true, false]
+        );
         let resize = gesture(Layout::MasterStack, 4, 0);
-        assert_eq!(resize.touching_split(&resize.tiles), vec![true, true, true, true]);
+        assert_eq!(
+            resize.touching_split(&resize.tiles),
+            vec![true, true, true, true]
+        );
     }
 
     #[test]

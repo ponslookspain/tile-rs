@@ -267,7 +267,9 @@ unsafe extern "system" fn repaint_subclass(
     const WM_DWMCOMPOSITIONCHANGED: u32 = 0x031E;
     let shown = msg == WM_WINDOWPOSCHANGED
         && lparam.0 != 0
-        && (*(lparam.0 as *const WINDOWPOS)).flags.contains(SWP_SHOWWINDOW);
+        && (*(lparam.0 as *const WINDOWPOS))
+            .flags
+            .contains(SWP_SHOWWINDOW);
     if shown
         || matches!(
             msg,

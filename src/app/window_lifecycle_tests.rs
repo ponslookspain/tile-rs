@@ -941,7 +941,10 @@ fn maximized_window_is_minimized_off_its_workspace_and_restored_on_return() {
 
     apply_maximized(&mut state);
     assert!(state.max_hidden.contains_key(&ours.h()));
-    assert!(!state.max_hidden.contains_key(&users.h()), "a user-minimized app is not ours to restore");
+    assert!(
+        !state.max_hidden.contains_key(&users.h()),
+        "a user-minimized app is not ours to restore"
+    );
     pump_until(ours.0, || unsafe { IsIconic(ours.0) }.as_bool());
     assert!(unsafe { IsIconic(ours.0) }.as_bool());
 
@@ -951,7 +954,10 @@ fn maximized_window_is_minimized_off_its_workspace_and_restored_on_return() {
     assert!(state.max_hidden.is_empty());
     pump_until(ours.0, || !unsafe { IsIconic(ours.0) }.as_bool());
     assert!(!unsafe { IsIconic(ours.0) }.as_bool());
-    assert!(unsafe { IsZoomed(ours.0) }.as_bool(), "it comes back maximized");
+    assert!(
+        unsafe { IsZoomed(ours.0) }.as_bool(),
+        "it comes back maximized"
+    );
     assert!(unsafe { IsIconic(users.0) }.as_bool());
 }
 
@@ -1003,7 +1009,11 @@ fn a_window_the_user_brings_back_joins_the_workspace_they_are_on() {
     // minimized by us a moment ago: the minimize may simply not have happened yet
     state.max_hidden.insert(window.h(), Instant::now());
     apply_maximized(&mut state);
-    assert_eq!(state.ws[&window.h()], 1, "not mistaken for the user's own restore");
+    assert_eq!(
+        state.ws[&window.h()],
+        1,
+        "not mistaken for the user's own restore"
+    );
     // long ago: it is visible again, so the user took it out of the taskbar
     let long_ago = Instant::now()
         .checked_sub(Duration::from_secs(5))
@@ -1040,7 +1050,11 @@ fn a_pinned_fullscreen_floating_window_is_minimized_off_its_workspace_and_restor
     pump_until(video.0, || !unsafe { IsIconic(video.0) }.as_bool());
     assert!(!unsafe { IsIconic(video.0) }.as_bool());
     assert!(unsafe { IsZoomed(video.0) }.as_bool());
-    assert_eq!(state.pinned[&video.h()], (0, 1), "it stays pinned to its workspace");
+    assert_eq!(
+        state.pinned[&video.h()],
+        (0, 1),
+        "it stays pinned to its workspace"
+    );
 }
 
 #[test]
@@ -1104,7 +1118,7 @@ fn coming_back_focuses_the_window_the_user_worked_in_not_the_first_tile() {
         state.mon.insert(window.h(), 0);
     }
     state.last[0] = vec![tile.h()]; // the maximized window is not in the layout
-    // the user focused the maximized one
+                                    // the user focused the maximized one
     update_border(&mut state, maximized.h());
     assert_eq!(remembered_focus(&state, 0, 0), Some(maximized.h()));
     // elsewhere / nothing remembered: no answer, the caller falls back to the first tile
@@ -1121,7 +1135,10 @@ fn focus_changes_right_after_a_workspace_switch_are_not_remembered() {
     state.mon.insert(hidden_one.h(), 0);
     state.last_switch = Some(Instant::now());
     update_border(&mut state, hidden_one.h());
-    assert!(state.ws_focus.is_empty(), "Windows moved the focus, not the user");
+    assert!(
+        state.ws_focus.is_empty(),
+        "Windows moved the focus, not the user"
+    );
 }
 
 #[test]
@@ -1143,7 +1160,11 @@ fn a_remembered_window_the_user_minimized_or_moved_away_is_not_brought_back() {
     unsafe {
         let _ = ShowWindow(window.0, SW_SHOWMINNOACTIVE);
     }
-    assert_eq!(remembered_focus(&state, 0, 0), None, "the user minimized it");
+    assert_eq!(
+        remembered_focus(&state, 0, 0),
+        None,
+        "the user minimized it"
+    );
 }
 
 #[test]
@@ -1163,5 +1184,37 @@ fn a_window_being_restored_gets_the_focus_even_when_nothing_was_remembered() {
         .checked_sub(Duration::from_secs(5))
         .unwrap_or_else(Instant::now);
     state.restored.insert(window.h(), old);
-    assert_eq!(remembered_focus(&state, 0, 2), None, "a stale restore is no longer pending");
+    assert_eq!(
+        remembered_focus(&state, 0, 2),
+        None,
+        "a stale restore is no longer pending"
+    );
+}
+
+#[test]
+fn a_pinned_window_is_kept_while_it_is_being_restored_and_dropped_once_it_is_free() {
+    let _config = ConfigGuard::new(|_| {});
+    let window = Fixture::new();
+    let none = window::Collector {
+        tileable: Vec::new(),
+        fullscreen: Vec::new(),
+        maximized: Vec::new(),
+        covering: Vec::new(),
+        skipped: Vec::new(),
+    };
+    let mut state = State::default();
+    state.pinned.insert(window.h(), (0, 1));
+    // not covering and not ours to bring back: it is a free floating window again
+    track_covering_windows(&mut state, &none);
+    assert!(state.pinned.is_empty());
+    // its restore is still under way: it stays pinned, or the next pass would forget it
+    state.pinned.insert(window.h(), (0, 1));
+    state.restored.insert(window.h(), Instant::now());
+    track_covering_windows(&mut state, &none);
+    assert_eq!(state.pinned.len(), 1);
+    // minimized by us: pinned until it is back
+    state.restored.clear();
+    state.max_hidden.insert(window.h(), Instant::now());
+    track_covering_windows(&mut state, &none);
+    assert_eq!(state.pinned.len(), 1);
 }

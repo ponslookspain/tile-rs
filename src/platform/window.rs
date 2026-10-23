@@ -875,7 +875,11 @@ pub fn diagnostic_snapshot(
     let (verdict, reason, workspace) = match classify_with_manual(hwnd, rules, manual_float) {
         Verdict::Tileable(w) => ("tileable", None, w.rule_ws),
         Verdict::Fullscreen(w) => ("fullscreen", Some(FULLSCREEN_REASON), w.rule_ws),
-        Verdict::Maximized(w) => ("maximized", Some("maximized: kept with its workspace"), w.rule_ws),
+        Verdict::Maximized(w) => (
+            "maximized",
+            Some("maximized: kept with its workspace"),
+            w.rule_ws,
+        ),
         Verdict::Skipped(w, reason) => ("skipped", Some(reason), w.rule_ws),
         Verdict::Ignore => ("ignored", skip_reason(hwnd, &w.title, &w.class), None),
     };

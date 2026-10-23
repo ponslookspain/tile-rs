@@ -102,8 +102,8 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 
 use border::{
-    border_window_shown, clear_border, place_border, refresh_border, remembered_focus,
-    sync_border, sync_border_to, update_border,
+    border_window_shown, clear_border, place_border, refresh_border, remembered_focus, sync_border,
+    sync_border_to, update_border,
 };
 use config::{action_name, Action, Dir, FullscreenWindows, Layout, WS_COUNT};
 use geometry::{
@@ -329,8 +329,9 @@ struct State {
     /// The next layout pass must place windows instantly (workspace switch, startup, ...).
     no_anim: bool,
     /// The next layout pass slides the windows of a workspace just switched to in, as (monitor,
-    /// direction: 1 = from the right, -1 = from the left).
-    slide: Option<(usize, i32)>,
+    /// direction: 1 = from the right, -1 = from the left), and when it was asked for: a layout
+    /// pass that never came (paused, dragging) must not slide windows in much later.
+    slide: Option<(usize, i32, Instant)>,
     /// Windows sliding in that must repaint completely when they arrive (see `repaint_moved`).
     slid: HashSet<isize>,
     /// An animated client refused its target size; reflow once after all current animations settle.

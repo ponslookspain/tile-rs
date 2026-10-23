@@ -83,12 +83,11 @@ fn remember_workspace_focus(s: &mut State, focus: isize) {
     if s.last_switch.is_some_and(|t| t.elapsed() < SWITCH_SETTLE) {
         return;
     }
-    let placed = s
-        .ws
-        .get(&focus)
-        .map(|ws| (s.mi(focus), *ws))
-        .or_else(|| s.fs_ws.get(&focus).map(|ws| (s.mi(focus), *ws)))
-        .or_else(|| s.pinned.get(&focus).copied());
+    let placed =
+        s.ws.get(&focus)
+            .map(|ws| (s.mi(focus), *ws))
+            .or_else(|| s.fs_ws.get(&focus).map(|ws| (s.mi(focus), *ws)))
+            .or_else(|| s.pinned.get(&focus).copied());
     if let Some(key) = placed {
         s.ws_focus.insert(key, focus);
     }

@@ -33,8 +33,7 @@ impl Anim {
         match self.tangent {
             Some(m) => {
                 let (a, b) = (edges(&self.from), edges(&self.to));
-                let e: [i32; 4] =
-                    std::array::from_fn(|i| geometry::hermite_i(a[i], b[i], m[i], t));
+                let e: [i32; 4] = std::array::from_fn(|i| geometry::hermite_i(a[i], b[i], m[i], t));
                 RECT {
                     left: e[0],
                     top: e[1],
@@ -120,8 +119,8 @@ pub(super) fn apply_frames(ops: &[(isize, RECT, FrameBorder)]) -> Vec<bool> {
         return results;
     }
     items.sort_by_key(|item| item.shrink); // most negative (shrinking) first
-    // DeferWindowPos cannot batch these: it rejects SWP_ASYNCWINDOWPOS, and without it a hung
-    // application would block this thread. The requests go out back to back in this order.
+                                           // DeferWindowPos cannot batch these: it rejects SWP_ASYNCWINDOWPOS, and without it a hung
+                                           // application would block this thread. The requests go out back to back in this order.
     for item in &items {
         let (h, vis, b) = &ops[item.index];
         results[item.index] = set_frame(*h, vis, *b);
@@ -192,11 +191,13 @@ pub(super) fn move_window(s: &mut State, hwnd: HWND, target: RECT, animate: bool
         .max((from.right - target.right).abs())
         .max((from.bottom - target.bottom).abs());
     let dur_ms = anim_duration(ms, dist);
-    let tangent = carried.filter(|v| v.iter().any(|x| x.abs() > 1.0)).map(|v| {
-        let (a, b) = (edges(&from), edges(&target));
-        let dur = dur_ms.max(1) as f32 / 1000.0;
-        std::array::from_fn(|i| geometry::carried_tangent(v[i], b[i] - a[i], dur))
-    });
+    let tangent = carried
+        .filter(|v| v.iter().any(|x| x.abs() > 1.0))
+        .map(|v| {
+            let (a, b) = (edges(&from), edges(&target));
+            let dur = dur_ms.max(1) as f32 / 1000.0;
+            std::array::from_fn(|i| geometry::carried_tangent(v[i], b[i] - a[i], dur))
+        });
     let was_empty = s.anims.is_empty();
     s.anims.push(Anim {
         hwnd: h,
@@ -235,7 +236,10 @@ pub(super) fn slide_in(s: &mut State, hwnd: HWND, from: RECT, target: RECT) {
         return;
     }
     let mut win = RECT::default();
-    let border = match (unsafe { GetWindowRect(hwnd, &mut win) }.is_ok(), visible_rect(hwnd)) {
+    let border = match (
+        unsafe { GetWindowRect(hwnd, &mut win) }.is_ok(),
+        visible_rect(hwnd),
+    ) {
         (true, Some(vis)) => frame_insets(&win, &vis).unwrap_or_default(),
         _ => Default::default(),
     };

@@ -1258,6 +1258,9 @@ fn a_lone_window_is_admitted_with_smart_gaps() {
     s.ws.insert(1, 0);
     s.mon.insert(1, 0);
     s.order[0].push(1);
-    assert!(workspace_accepts(&s, 0, 0, 2), "a second window joins with normal gaps");
+    assert!(
+        workspace_accepts(&s, 0, 0, 2),
+        "a second window joins with normal gaps"
+    );
     config::set(config::parse("").unwrap());
 }
