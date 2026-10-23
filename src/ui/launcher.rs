@@ -68,6 +68,27 @@ fn show_page(args: &[&str]) {
 /// The UI process owns and destroys its own Slint window when it exits.
 pub fn destroy() {}
 
+/// What the banner of a window opened on a broken config says: the parser's message, where the
+/// file is, and what the window does meanwhile.
+fn config_error_text(error: &str, path: &std::path::Path) -> String {
+    format!(
+        "{error}\n{}\nThis window shows the built-in defaults and saves nothing. Fix the file and \
+         reopen the window, or reset the settings; keys you set yourself are kept in a copy.",
+        path.display()
+    )
+}
+
+/// The settings process cannot start. It is about to exit, so the message has to be shown here and
+/// now: a notification box on a helper thread would die with the process before it appeared.
+fn fail_to_start(message: &str, mutex: windows::Win32::Foundation::HANDLE) {
+    crate::platform::dialogs::msgbox("tile-rs settings", message, false);
+    if !mutex.is_invalid() {
+        unsafe {
+            let _ = CloseHandle(mutex);
+        }
+    }
+}
+
 /// Entry point for the isolated settings UI process.
 pub fn run() {
     unsafe {
@@ -78,9 +99,10 @@ pub fn run() {
         match unsafe { CreateMutexW(None, true, w!("Local\\tile-rs-launcher-single-instance")) } {
             Ok(handle) => handle,
             Err(err) => {
-                crate::platform::dialogs::notify(
+                crate::platform::dialogs::msgbox(
                     "tile-rs settings",
-                    &format!("Could not start launcher: {err}"),
+                    &format!("Could not start the settings window: {err}"),
+                    false,
                 );
                 return;
             }
@@ -96,39 +118,32 @@ pub fn run() {
     }
 
     config::ensure_default();
-    let cfg = match config::load() {
-        Ok(cfg) => cfg,
-        Err(err) => {
-            crate::platform::dialogs::notify(
-                "tile-rs settings",
-                &format!("Could not load config: {err}"),
-            );
-            if !mutex.is_invalid() {
-                unsafe {
-                    let _ = CloseHandle(mutex);
-                }
+    // A config with an error must not keep the window from opening: Updates, About and the repair
+    // buttons have to stay reachable, or a user could never install the fix. The window then shows
+    // the built-in defaults, says what is wrong and saves nothing (see `Editor::read_only`).
+    let (cfg, config_error) = match config::load() {
+        Ok(cfg) => (cfg, None),
+        Err(err) => match config::parse(&config::default_config()) {
+            Ok(defaults) => (defaults, Some(err)),
+            Err(_) => {
+                fail_to_start(&format!("Could not load the config: {err}"), mutex);
+                return;
             }
-            return;
-        }
+        },
     };
     config::set(cfg.clone());
 
     let ui = match MainWindow::new() {
         Ok(ui) => ui,
         Err(err) => {
-            crate::platform::dialogs::notify(
-                "tile-rs settings",
-                &format!("Could not create launcher: {err}"),
-            );
-            if !mutex.is_invalid() {
-                unsafe {
-                    let _ = CloseHandle(mutex);
-                }
-            }
+            fail_to_start(&format!("Could not create the window: {err}"), mutex);
             return;
         }
     };
     populate(&ui, &cfg);
+    if let Some(err) = &config_error {
+        ui.set_config_error(config_error_text(err, &config::config_path()).into());
+    }
     ui.global::<ColorParser>()
         .on_parse(|text| parse_hex_color(text.as_str()));
 
@@ -510,6 +525,9 @@ fn push_tour(ui: &MainWindow, editor: &Editor) {
 /// State of the hotkey and rule editors, which live outside the Slint properties.
 struct Editor {
     rows: Vec<launcher_model::Row>,
+    /// The config file has an error: the window shows defaults and must never write them over the
+    /// user's file (their own hotkeys would be replaced). Cleared by a reset to the defaults.
+    read_only: bool,
     rules: Vec<config::Rule>,
     rules_dirty: bool,
     /// (process, class, title) of the running windows offered in the rule picker.
@@ -574,7 +592,7 @@ fn form_values(ui: &MainWindow) -> String {
 }
 
 fn has_changes(ui: &MainWindow, editor: &Editor) -> bool {
-    editor.edited || form_values(ui) != editor.saved_form
+    !editor.read_only && (editor.edited || form_values(ui) != editor.saved_form)
 }
 
 type Shared = Rc<RefCell<Editor>>;
@@ -637,6 +655,7 @@ fn push_apps(ui: &MainWindow, editor: &Editor) {
 /// Hotkey editor, application rules and the welcome card.
 fn wire_editors(ui: &MainWindow) -> slint::Timer {
     let editor: Shared = Rc::new(RefCell::new(Editor {
+        read_only: !ui.get_config_error().is_empty(),
         rows: launcher_model::rows_from_bindings(&config::current().bindings),
         rules: config::current().rules,
         rules_dirty: false,
@@ -940,7 +959,7 @@ fn wire_editors(ui: &MainWindow) -> slint::Timer {
                 }
             }
             let form = form_values(&ui);
-            let changed = ed.edited || form != ed.saved_form;
+            let changed = !ed.read_only && (ed.edited || form != ed.saved_form);
             ui.set_dirty(changed);
             let settled = form == ed.last_form;
             ed.last_form = form;
@@ -1049,6 +1068,8 @@ fn reset_all(ui: &MainWindow, editor: &mut Editor) {
         ui.set_status(format!("Could not reset the settings: {err}").into());
         return;
     }
+    editor.read_only = false;
+    ui.set_config_error("".into());
     config::set(cfg.clone());
     let autostart = ui.get_autostart(); // not part of the config file; left as it is
     populate(ui, &cfg);
@@ -1086,6 +1107,9 @@ fn ask_close_anyway(reason: &str) -> MESSAGEBOX_RESULT {
 }
 
 fn save(ui: &MainWindow, editor: &mut Editor) {
+    if editor.read_only {
+        return; // the banner says why
+    }
     let form = launcher_model::SettingsForm {
         layout_index: ui.get_layout_index(),
         indicator_size: ui.get_indicator_size(),
@@ -1156,5 +1180,35 @@ fn save(ui: &MainWindow, editor: &mut Editor) {
         ui.set_status("Settings applied".into());
     } else {
         ui.set_status("Saved; tile-rs is not running, so they apply at its next start".into());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_banner_names_the_error_the_file_and_what_the_window_does() {
+        let text = config_error_text(
+            "[hotkeys]: unknown action \"show_hotkeys\"",
+            std::path::Path::new(r"C:\Users\x\AppData\Roaming\tile-rs\config.toml"),
+        );
+        assert!(text.contains("unknown action \"show_hotkeys\""));
+        assert!(text.contains(r"tile-rs\config.toml"));
+        assert!(text.contains("saves nothing"));
+    }
+
+    #[test]
+    fn a_config_with_an_unknown_hotkey_fails_to_parse_but_the_defaults_do_not() {
+        // what an older tile-rs says about a config written by a newer one, and the window's
+        // fallback when that happens
+        let broken = "[hotkeys]\nsome_future_action = \"alt+x\"";
+        assert!(config::parse(broken).is_err_and(|e| e.contains("unknown action")));
+        let defaults =
+            config::parse(&config::default_config()).expect("the built-in defaults always parse");
+        assert!(
+            !defaults.bindings.is_empty(),
+            "the hotkeys page is not empty"
+        );
     }
 }

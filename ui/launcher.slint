@@ -70,6 +70,9 @@ export component MainWindow inherits Window {
     in-out property <bool> dirty: false;
     in-out property <bool> show_welcome: false;
     in-out property <string> status: "Settings loaded";
+    // Non-empty when config.toml has an error: the window then shows the defaults, saves nothing
+    // and explains why in a banner (Updates and About still work).
+    in-out property <string> config_error: "";
 
     in property <string> app_version;
     // 0 idle, 1 checking, 2 available, 3 current, 4 downloading, 5 error
@@ -219,12 +222,29 @@ export component MainWindow inherits Window {
                     width: 170px;
                     height: 32px;
                     border-radius: 16px;
-                    background: dirty ? AppTheme.warn-soft : AppTheme.accent-soft;
+                    background: config_error != "" ? AppTheme.danger-soft : (dirty ? AppTheme.warn-soft : AppTheme.accent-soft);
                     HorizontalLayout {
                         alignment: center;
                         spacing: 8px;
-                        Rectangle { y: (parent.height - 8px) / 2; width: 8px; height: 8px; border-radius: 4px; background: dirty ? #e39a1b : AppTheme.accent; }
-                        Text { text: dirty ? "Saving…" : "Saved automatically"; color: dirty ? AppTheme.warn-ink : AppTheme.accent-ink; font-size: 12px; vertical-alignment: center; }
+                        Rectangle { y: (parent.height - 8px) / 2; width: 8px; height: 8px; border-radius: 4px; background: config_error != "" ? AppTheme.danger : (dirty ? #e39a1b : AppTheme.accent); }
+                        Text { text: config_error != "" ? "Nothing is saved" : (dirty ? "Saving…" : "Saved automatically"); color: config_error != "" ? AppTheme.danger : (dirty ? AppTheme.warn-ink : AppTheme.accent-ink); font-size: 12px; vertical-alignment: center; }
+                    }
+                }
+            }
+
+            if config_error != "": Rectangle {
+                border-radius: 12px;
+                background: AppTheme.danger-soft;
+                VerticalLayout {
+                    padding: 14px;
+                    spacing: 8px;
+                    Text { text: "config.toml has an error"; color: AppTheme.danger; font-size: 14px; font-weight: 700; }
+                    Text { text: config_error; color: AppTheme.ink; font-size: 12px; wrap: word-wrap; }
+                    HorizontalLayout {
+                        alignment: start;
+                        spacing: 10px;
+                        ActionButton { label: "Open config file"; icon: @image-url("icons/file.svg"); has-icon: true; compact: true; button-width: 168px; activated => { root.open_config(); } }
+                        ActionButton { label: "Reset settings"; compact: true; button-width: 150px; activated => { root.reset_all(); } }
                     }
                 }
             }
