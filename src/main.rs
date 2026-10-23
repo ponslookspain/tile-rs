@@ -1008,6 +1008,10 @@ struct State {
     /// Live drag & drop preview: the tile index whose window is currently slid into the dragged
     /// window's slot, with that window's handle (see `update_drag_preview`).
     drag_preview: Option<(usize, isize)>,
+    /// The workspace dot the dragged window was last over (the drop target), as (monitor,
+    /// workspace). Kept from the move events so a late, synthesized drag end cannot pick a dot the
+    /// cursor only reached afterwards.
+    drop_dot: Option<(usize, u8)>,
     /// Split ratios per workspace (see `spiral`), per monitor.
     ratios: [HashMap<u8, Vec<f32>>; MON],
     /// Free region each window of the last layout was cut out of (same indices as `last`), per
@@ -2688,6 +2692,8 @@ fn forget_window(s: &mut State, h: isize) -> bool {
     if s.dragging == Some(h) {
         s.live_resize.clear();
         s.live_borders.clear();
+        s.drop_dot = None;
+        overlay::set_drop_target(None);
         s.dragging = None;
         s.drag_started = None;
         s.resizing = false;
@@ -3044,12 +3050,7 @@ unsafe extern "system" fn on_event(
                     let affected = s.last[old_mi].clone();
                     s.live_resize.forget(&affected);
                     overlay::set_drop_target(None);
-                    let mut p = POINT::default();
-                    let on_dot = if !s.resizing && GetCursorPos(&mut p).is_ok() {
-                        overlay::dot_at_screen(p.x, p.y)
-                    } else {
-                        None
-                    };
+                    let on_dot = s.drop_dot.take().filter(|_| !s.resizing);
                     if let Some((dot_mi, n)) = on_dot {
                         // dropped onto a workspace dot: the window goes to that workspace (see
                         // `send_to_workspace`); undo the swap preview and let it snap back first
@@ -3140,6 +3141,7 @@ unsafe extern "system" fn on_event(
                             );
                             if let (Some(ia), Some(ib)) = (ia, ib) {
                                 s.order[mi].swap(ia, ib);
+                                tour_event("swap");
                             }
                         }
                     }
@@ -3199,6 +3201,8 @@ unsafe extern "system" fn on_event(
                         }
                         if s.resizing {
                             // a resize is not a drop: undo any live swap preview
+                            s.drop_dot = None;
+                            overlay::set_drop_target(None);
                             let mi = s.mi(h);
                             if let Some((pi, ph)) = s.drag_preview.take() {
                                 if pi < s.rects[mi].len() {
@@ -3218,6 +3222,7 @@ unsafe extern "system" fn on_event(
                                 None
                             };
                             overlay::set_drop_target(dot);
+                            s.drop_dot = dot;
                             if dot.is_some() {
                                 let mi = s.mi(h);
                                 if let Some((pi, ph)) = s.drag_preview.take() {
@@ -4142,9 +4147,12 @@ fn send_to_workspace(h: isize, mi: usize, n: u8) {
         Some(s.mi(h))
     });
     let Some(from) = plan else {
+        retile(); // whatever happened, the dropped window goes back to its tile
         return;
     };
-    if from != mi {
+    // where the window really is: a drag can leave it mostly on another monitor than its own
+    let actual = monitor::of_window(hwnd).min(MON - 1);
+    if actual != mi {
         // `retile` derives a window's monitor from where it is: put it on the target first
         let work = monitor::work(mi);
         let moved = unsafe {
@@ -4159,6 +4167,7 @@ fn send_to_workspace(h: isize, mi: usize, n: u8) {
             )
         };
         if moved.is_err() {
+            retile();
             return;
         }
     }
@@ -4173,9 +4182,11 @@ fn send_to_workspace(h: isize, mi: usize, n: u8) {
         }
         s.ws.insert(h, n);
         s.last[from].clear();
+        s.last[actual].clear();
         s.last[mi].clear();
     });
     retile();
+    tour_event("send");
     log(format!(
         "sent a window to workspace {} on monitor {}",
         n + 1,
@@ -4192,9 +4203,8 @@ fn dot_menu(mi: usize, n: u8) {
         s.ws.contains_key(&fg) && !s.fs_ws.contains_key(&fg)
     });
     let open = format!("Open workspace {}", n + 1);
-    let send = format!("Move the active window here");
     let items: Vec<&str> = if tracked {
-        vec![&open, &send]
+        vec![&open, "Move the active window here"]
     } else {
         vec![&open]
     };
@@ -4202,20 +4212,29 @@ fn dot_menu(mi: usize, n: u8) {
         Some(0) => switch_ws_on_monitor(mi, n),
         Some(1) => {
             send_to_workspace(fg, mi, n);
-            focus_hwnd_if_visible(fg);
+            refocus_after_menu(fg);
         }
-        _ => {}
+        _ => refocus_after_menu(fg),
     }
 }
 
-/// Gives focus back to `h` after a menu took it, unless the window just left the screen.
-fn focus_hwnd_if_visible(h: isize) {
-    let visible = STATE.with(|s| {
+/// The menu took the foreground: give it back to `h`, or, when `h` just left the screen, to the
+/// first window of its former monitor's visible workspace.
+fn refocus_after_menu(h: isize) {
+    let target = STATE.with(|s| {
         let s = s.borrow();
-        s.ws.get(&h).is_some_and(|ws| *ws == s.cur[s.mi(h)])
+        if !unsafe { IsWindow(Some(HWND(h as *mut _))) }.as_bool() {
+            return None;
+        }
+        let mi = s.mi(h);
+        if s.ws.get(&h).is_none_or(|ws| *ws == s.cur[mi]) {
+            Some(h)
+        } else {
+            s.last[mi].first().copied()
+        }
     });
-    if visible {
-        focus_hwnd(h);
+    if let Some(target) = target {
+        focus_hwnd(target);
     }
 }
 
@@ -4261,6 +4280,7 @@ fn move_to_ws(n: u8) {
         retile();
         focus_hwnd(fg);
     }
+    tour_event("send");
     log(format!("moved a window to workspace {}", n + 1));
 }
 
@@ -4676,11 +4696,42 @@ fn change_master_count(step: i8) {
     notify("tile-rs", &format!("Master windows: {next}"));
 }
 
+/// Marker file: the settings window's first-run tour is open and watching.
+pub fn tour_marker() -> std::path::PathBuf {
+    config::config_path().with_file_name("tour-active")
+}
+
+/// The tour's progress file: one line per step the user has done ("focus", "swap", "send").
+pub fn tour_progress_path() -> std::path::PathBuf {
+    config::config_path().with_file_name("tour-progress.txt")
+}
+
+/// Notes a tour step for the settings window, but only while its tour is open.
+fn tour_event(step: &str) {
+    if !tour_marker().exists() {
+        return;
+    }
+    use std::io::Write as _;
+    if let Ok(mut file) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(tour_progress_path())
+    {
+        let _ = writeln!(file, "{step}");
+    }
+}
+
 pub fn dispatch(a: Action) {
     end_divider(false);
     match a {
-        Action::Focus(d) => focus_or_swap(d, false),
-        Action::Swap(d) => focus_or_swap(d, true),
+        Action::Focus(d) => {
+            focus_or_swap(d, false);
+            tour_event("focus");
+        }
+        Action::Swap(d) => {
+            focus_or_swap(d, true);
+            tour_event("swap");
+        }
         Action::Workspace(n) => switch_ws_active(n),
         Action::MoveTo(n) => move_to_ws(n),
         Action::WorkspaceNext => switch_ws_relative(1),

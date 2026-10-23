@@ -296,6 +296,26 @@ pub fn welcome_items(rows: &[Row]) -> Vec<(String, String)> {
         .collect()
 }
 
+/// The first-run tour's three steps, with the keys from the hotkey table.
+pub fn tour_texts(rows: &[Row]) -> [String; 3] {
+    let items = welcome_items(rows);
+    let keys = |i: usize| items.get(i).map(|(k, _)| k.clone()).unwrap_or_default();
+    [
+        format!("Move between windows: press {}", keys(0)),
+        format!(
+            "Swap two windows: drag a window onto another one (or press {})",
+            keys(1)
+        ),
+        "Send a window to another workspace: drag it onto a dot at the top of the screen".into(),
+    ]
+}
+
+/// Tour steps the manager reported as done, from its progress file (one step name per line).
+pub fn tour_progress(text: &str) -> [bool; 3] {
+    let seen = |name: &str| text.lines().any(|l| l.trim() == name);
+    [seen("focus"), seen("swap"), seen("send")]
+}
+
 /// "Also Alt + . and Alt + ," for the master-column setting; empty when either key is unbound.
 pub fn master_hint(rows: &[Row]) -> String {
     match (

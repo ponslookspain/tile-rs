@@ -26,6 +26,7 @@ const WM_LAUNCHER_RELOAD: u32 = WM_APP + 2;
 const WM_LAUNCHER_QUIT: u32 = WM_APP + 3;
 const WM_DIAGNOSTICS: u32 = WM_APP + 4;
 const WM_DIAGNOSTICS_WITH_TITLES: u32 = WM_APP + 5;
+const WM_LAUNCHER_PAUSE: u32 = WM_APP + 6;
 const TRAY_UID: u32 = 1;
 
 static TRAY_HWND: AtomicIsize = AtomicIsize::new(0);
@@ -201,6 +202,11 @@ pub fn request_manager_diagnostics(include_titles: bool) -> bool {
     } else {
         WM_DIAGNOSTICS
     })
+}
+
+/// Ask the running manager to pause tiling (it stays paused if it already is).
+pub fn request_manager_pause() -> bool {
+    post_manager_message(WM_LAUNCHER_PAUSE)
 }
 
 /// Whether the tile-rs manager (the tray process) is running.
@@ -455,6 +461,12 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
     }
     if msg == WM_LAUNCHER_RELOAD {
         crate::reload_config_quiet();
+        return LRESULT(0);
+    }
+    if msg == WM_LAUNCHER_PAUSE {
+        if !crate::ui_state().1 {
+            crate::dispatch(Action::Pause);
+        }
         return LRESULT(0);
     }
     if msg == WM_LAUNCHER_QUIT {

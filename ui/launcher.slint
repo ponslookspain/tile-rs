@@ -40,6 +40,11 @@ export struct WelcomeItem {
     what: string,
 }
 
+export struct TourStep {
+    text: string,
+    done: bool,
+}
+
 component Icon inherits Image {
     in property <color> tint: AppTheme.ink-2;
     width: 18px;
@@ -564,6 +569,9 @@ export component MainWindow inherits Window {
     property <[string]> rule_kinds: ["Always floating", "Always on workspace 1", "Always on workspace 2", "Always on workspace 3", "Always on workspace 4", "Always on workspace 5", "Always on workspace 6", "Always on workspace 7", "Always on workspace 8", "Always on workspace 9"];
     // hints that follow the hotkey table
     in-out property <[WelcomeItem]> welcome_items;
+    // first-run tour: three things to try, ticked off as the user does them
+    in-out property <[TourStep]> tour_steps;
+    property <int> tour_done: (tour_steps.length > 0 && tour_steps[0].done ? 1 : 0) + (tour_steps.length > 1 && tour_steps[1].done ? 1 : 0) + (tour_steps.length > 2 && tour_steps[2].done ? 1 : 0);
     in-out property <string> master_hint: "";
     in-out property <bool> show_advanced: false;
     in-out property <bool> dirty: false;
@@ -622,6 +630,7 @@ export component MainWindow inherits Window {
     callback delete_rule(int);
     callback refresh_apps();
     callback dismiss_welcome();
+    callback pause_tiling();
     callback open_config();
     callback open_log();
     callback quit_manager();
@@ -1339,8 +1348,8 @@ export component MainWindow inherits Window {
         background: #1d243373;
         TouchArea { }
         Rectangle {
-            width: 600px;
-            height: 496px;
+            width: 640px;
+            height: min(624px, root.height - 16px);
             border-radius: 24px;
             background: AppTheme.surface;
             drop-shadow-offset-y: 18px;
@@ -1362,12 +1371,36 @@ export component MainWindow inherits Window {
                         alignment: center;
                         spacing: 2px;
                         Text { text: "Welcome to tile-rs"; color: AppTheme.ink; font-size: 22px; font-weight: 700; }
-                        Text { text: "Windows arrange themselves. Here are the main keys"; color: AppTheme.ink-2; font-size: 13px; }
+                        Text { text: "Windows arrange themselves. Try these three things:"; color: AppTheme.ink-2; font-size: 13px; }
                     }
                 }
-                Rectangle { height: 8px; }
+                Rectangle { height: 4px; }
+                for step[index] in tour_steps: Rectangle {
+                    height: 52px;
+                    border-radius: 14px;
+                    background: step.done ? AppTheme.accent-soft : AppTheme.sunken;
+                    animate background { duration: AppTheme.motion ? AppTheme.quick : 0ms; }
+                    HorizontalLayout {
+                        padding-left: 14px;
+                        padding-right: 14px;
+                        spacing: 12px;
+                        Rectangle {
+                            y: (parent.height - self.height) / 2;
+                            width: 26px;
+                            height: 26px;
+                            border-radius: 13px;
+                            background: step.done ? AppTheme.accent : AppTheme.surface;
+                            border-width: step.done ? 0px : 1px;
+                            border-color: AppTheme.line;
+                            if step.done: Icon { width: 16px; height: 16px; source: @image-url("icons/check.svg"); tint: #ffffff; }
+                            if !step.done: Text { text: index + 1; color: AppTheme.ink-2; font-size: 12px; font-weight: 600; horizontal-alignment: center; vertical-alignment: center; }
+                        }
+                        Text { text: step.text; color: step.done ? AppTheme.accent-ink : AppTheme.ink; font-size: 13px; vertical-alignment: center; horizontal-stretch: 1; wrap: word-wrap; }
+                    }
+                }
+                Text { text: tour_done == 3 ? "All done. You are ready to go!" : "Main keys"; color: tour_done == 3 ? AppTheme.accent-ink : AppTheme.ink; font-size: 13px; font-weight: 600; }
                 for item in welcome_items: HorizontalLayout {
-                    height: 32px;
+                    height: 26px;
                     spacing: 14px;
                     Rectangle {
                         width: 190px;
@@ -1380,8 +1413,9 @@ export component MainWindow inherits Window {
                 Rectangle { vertical-stretch: 1; }
                 HorizontalLayout {
                     spacing: 12px;
-                    Text { text: "Change any of them on the Hotkeys page"; color: AppTheme.muted; font-size: 12px; vertical-alignment: center; horizontal-stretch: 1; }
-                    ActionButton { label: "Got it"; primary: true; button-width: 132px; activated => { root.dismiss_welcome(); } }
+                    ActionButton { label: "Not for me: pause tiling"; kind: 2; compact: true; button-width: 220px; activated => { root.pause_tiling(); root.dismiss_welcome(); } }
+                    Rectangle { horizontal-stretch: 1; }
+                    ActionButton { label: tour_done == 3 ? "Done" : "Skip"; primary: true; button-width: 132px; activated => { root.dismiss_welcome(); } }
                 }
             }
         }

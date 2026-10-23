@@ -195,6 +195,8 @@ pub fn run() {
     if let Err(err) = ui.run() {
         crate::log(format!("launcher event loop failed: {err}"));
     }
+    // the tour stops watching when the window closes; it shows again next time until dismissed
+    end_tour();
     routing_timer.stop();
     if let Some(event) = updates_event {
         unsafe {
@@ -418,6 +420,33 @@ fn welcome_marker() -> std::path::PathBuf {
     config::config_path().with_file_name("welcome-shown")
 }
 
+/// While the first-run tour is open, the manager notes the user's first moves in the progress
+/// file; it only does so while the marker file exists.
+fn start_tour() {
+    let _ = std::fs::write(crate::tour_marker(), "1");
+    let _ = std::fs::remove_file(crate::tour_progress_path());
+}
+
+fn end_tour() {
+    let _ = std::fs::remove_file(crate::tour_marker());
+    let _ = std::fs::remove_file(crate::tour_progress_path());
+}
+
+fn push_tour(ui: &MainWindow, editor: &Editor) {
+    let done = launcher_model::tour_progress(
+        &std::fs::read_to_string(crate::tour_progress_path()).unwrap_or_default(),
+    );
+    let steps: Vec<TourStep> = launcher_model::tour_texts(&editor.rows)
+        .into_iter()
+        .zip(done)
+        .map(|(text, done)| TourStep {
+            text: text.into(),
+            done,
+        })
+        .collect();
+    ui.set_tour_steps(ModelRc::new(VecModel::from(steps)));
+}
+
 /// State of the hotkey and rule editors, which live outside the Slint properties.
 struct Editor {
     rows: Vec<launcher_model::Row>,
@@ -577,15 +606,24 @@ fn wire_editors(ui: &MainWindow) -> slint::Timer {
         push_rules(ui, &ed);
         push_apps(ui, &ed);
     }
-    ui.set_show_welcome(!welcome_marker().exists());
+    let welcome = !welcome_marker().exists();
+    ui.set_show_welcome(welcome);
+    if welcome {
+        start_tour();
+        push_tour(ui, &editor.borrow());
+    }
     ui.on_dismiss_welcome({
         let weak = ui.as_weak();
         move || {
             let _ = std::fs::write(welcome_marker(), "1");
+            end_tour();
             if let Some(ui) = weak.upgrade() {
                 ui.set_show_welcome(false);
             }
         }
+    });
+    ui.on_pause_tiling(|| {
+        crate::tray::request_manager_pause();
     });
 
     ui.on_key_captured({
@@ -767,6 +805,9 @@ fn wire_editors(ui: &MainWindow) -> slint::Timer {
         move || {
             let Some(ui) = weak.upgrade() else { return };
             let mut ed = editor.borrow_mut();
+            if ui.get_show_welcome() {
+                push_tour(&ui, &ed);
+            }
             if ed.recheck > 0 {
                 ed.recheck -= 1;
                 // the manager rewrote the file: its answer is in (no answer within ~3 s: keep the
