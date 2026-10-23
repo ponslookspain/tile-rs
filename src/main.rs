@@ -4027,7 +4027,7 @@ fn focus_or_swap(dir: Dir, swap: bool) -> bool {
             to_focus = Some(s.last[mi][to]);
         }
     });
-    let acted = to_focus.is_some() || do_retile;
+    let acted = to_focus.is_some_and(|h| h != fg) || do_retile;
     if let Some(h) = to_focus {
         focus_hwnd(h);
     }
@@ -4382,6 +4382,9 @@ fn toggle_pause() {
     log(if paused { "paused" } else { "resumed" });
     register_hotkeys();
     tray::update();
+    if paused {
+        tray::notify_paused();
+    }
     if paused {
         clear_border();
         sync_dividers();

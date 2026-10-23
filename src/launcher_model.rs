@@ -152,9 +152,10 @@ pub fn default_rows() -> Vec<Row> {
 }
 
 /// The default hotkeys on a different base modifier: 0 keeps Alt (as shipped), 1 moves every
-/// Alt combination to Ctrl + Alt, which few applications use. A moved key that would land on a
-/// combination the defaults already use (e.g. Alt+L -> Ctrl+Alt+L, the layout key) is dropped;
-/// those actions keep their other keys, such as the arrows.
+/// plain Alt combination to Win + Alt, which applications almost never use. (Ctrl + Alt is not
+/// offered: it is AltGr on many European layouts and would steal characters such as @ and |.)
+/// A moved key that would land on a combination the defaults already use is dropped, unless it
+/// is the action's only key, which then stays on Alt.
 pub fn preset_rows(preset: i32) -> Vec<Row> {
     let mut rows = default_rows();
     if preset != 1 {
@@ -163,24 +164,26 @@ pub fn preset_rows(preset: i32) -> Vec<Row> {
     let taken: Vec<_> = rows
         .iter()
         .flat_map(|r| r.keys.iter())
-        .filter(|k| k.to_ascii_lowercase().split('+').any(|p| p == "ctrl" || p == "control"))
         .filter_map(|k| config::parse_hotkey(k).ok())
         .collect();
     for row in &mut rows {
-        row.keys = row
-            .keys
+        let original = row.keys.clone();
+        let moved: Vec<String> = original
             .iter()
             .filter_map(|key| {
                 let lower = key.to_ascii_lowercase();
                 let parts: Vec<&str> = lower.split('+').collect();
-                if !parts.contains(&"alt") || parts.contains(&"ctrl") || parts.contains(&"control") {
+                let plain_alt = parts.contains(&"alt")
+                    && !parts.iter().any(|p| matches!(*p, "ctrl" | "control" | "win" | "super" | "meta"));
+                if !plain_alt {
                     return Some(key.clone());
                 }
-                let moved = format!("ctrl+{lower}");
+                let moved = format!("win+{lower}");
                 let clashes = config::parse_hotkey(&moved).is_ok_and(|v| taken.contains(&v));
                 (!clashes).then_some(moved)
             })
             .collect();
+        row.keys = if moved.is_empty() { original } else { moved };
     }
     rows
 }
@@ -694,15 +697,23 @@ mod tests {
     }
 
     #[test]
-    fn ctrl_alt_preset_moves_keys_without_clashes() {
+    fn win_alt_preset_moves_keys_without_clashes() {
         let rows = preset_rows(1);
         assert!(conflicts(&rows).iter().all(|c| !c), "preset must not clash");
         let focus_left = rows.iter().find(|r| r.action == "focus_left").unwrap();
-        assert!(focus_left.keys.contains(&"ctrl+alt+left".to_string()));
+        assert!(focus_left.keys.contains(&"win+alt+left".to_string()));
         assert!(rows
             .iter()
             .flat_map(|r| r.keys.iter())
             .all(|k| !k.starts_with("alt+")));
+        // no action that had keys loses all of them
+        for (before, after) in default_rows().iter().zip(&rows) {
+            assert!(before.keys.is_empty() || !after.keys.is_empty(), "{}", before.action);
+        }
+        assert!(rows
+            .iter()
+            .flat_map(|r| r.keys.iter())
+            .all(|k| !k.starts_with("ctrl+alt+") || default_rows().iter().any(|r| r.keys.contains(k))));
         // the round trip through the config text keeps every key
         let text = format!("[hotkeys]\n{}", rows_to_lines(&rows));
         assert!(config::parse(&text).is_ok());

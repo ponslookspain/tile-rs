@@ -1,6 +1,6 @@
 //! System-tray icon and its context menu.
 
-use std::sync::atomic::{AtomicIsize, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicU32, Ordering};
 
 use windows::core::{w, PCWSTR};
 use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, POINT, WPARAM};
@@ -13,7 +13,8 @@ use windows::Win32::UI::Shell::{
 use windows::Win32::UI::WindowsAndMessaging::{
     AppendMenuW, CreateIconIndirect, CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyIcon,
     DestroyMenu, GetCursorPos, PostMessageW, PostQuitMessage, RegisterClassW,
-    RegisterWindowMessageW, SetForegroundWindow, TrackPopupMenu, HICON, ICONINFO, MF_CHECKED,
+    RegisterWindowMessageW, SendMessageTimeoutW, SetForegroundWindow, TrackPopupMenu, HICON,
+    ICONINFO, MF_CHECKED, SMTO_ABORTIFHUNG,
     MF_GRAYED, MF_POPUP, MF_SEPARATOR, MF_STRING, SPI_SETWORKAREA, SW_SHOWNORMAL, TPM_RETURNCMD,
     TPM_RIGHTBUTTON, WINDOW_EX_STYLE, WM_APP, WM_DESTROY, WM_DISPLAYCHANGE, WM_LBUTTONUP,
     WM_NULL, WM_RBUTTONUP, WM_SETTINGCHANGE, WNDCLASSW, WS_EX_TOOLWINDOW, WS_OVERLAPPED,
@@ -27,6 +28,11 @@ const WM_LAUNCHER_QUIT: u32 = WM_APP + 3;
 const WM_DIAGNOSTICS: u32 = WM_APP + 4;
 const WM_DIAGNOSTICS_WITH_TITLES: u32 = WM_APP + 5;
 const WM_LAUNCHER_PAUSE: u32 = WM_APP + 6;
+/// Answered with 1 while tiling is paused, 0 otherwise.
+const WM_LAUNCHER_STATE: u32 = WM_APP + 7;
+const WM_LAUNCHER_RESUME: u32 = WM_APP + 8;
+/// The balloon on screen is the update notice (a click opens Updates) rather than the pause one.
+static BALLOON_IS_UPDATE: AtomicBool = AtomicBool::new(false);
 const TRAY_UID: u32 = 1;
 
 static TRAY_HWND: AtomicIsize = AtomicIsize::new(0);
@@ -155,10 +161,28 @@ pub fn update() {
 
 /// Show a non-modal release notification using the manager's existing tray icon.
 pub fn notify_update(version: &str) {
+    balloon(
+        "tile-rs: update available",
+        &format!("Version {version} is ready. Click to open Updates and install it."),
+        true,
+    );
+}
+
+/// Tells the user that tiling is paused: a grey tray icon alone is easy to miss.
+pub fn notify_paused() {
+    balloon(
+        "tile-rs is paused",
+        "Your windows are left alone. Click here or use the tray icon menu to resume.",
+        false,
+    );
+}
+
+fn balloon(title: &str, message: &str, update: bool) {
     let raw = TRAY_HWND.load(Ordering::Relaxed);
     if raw == 0 {
         return;
     }
+    BALLOON_IS_UPDATE.store(update, Ordering::Relaxed);
     let mut data = NOTIFYICONDATAW {
         cbSize: std::mem::size_of::<NOTIFYICONDATAW>() as u32,
         hWnd: HWND(raw as *mut _),
@@ -171,13 +195,10 @@ pub fn notify_update(version: &str) {
         .szInfoTitle
         .iter_mut()
         .take(63)
-        .zip("tile-rs: update available".encode_utf16())
+        .zip(title.encode_utf16())
     {
         *dest = ch;
     }
-    let message = format!(
-        "Version {version} is ready. Click to open Updates and install it."
-    );
     for (dest, ch) in data.szInfo.iter_mut().take(255).zip(message.encode_utf16()) {
         *dest = ch;
     }
@@ -202,6 +223,33 @@ pub fn request_manager_diagnostics(include_titles: bool) -> bool {
     } else {
         WM_DIAGNOSTICS
     })
+}
+
+/// Whether the running manager is paused; `None` when it is not running or does not answer.
+pub fn manager_paused() -> Option<bool> {
+    let hwnd = unsafe {
+        windows::Win32::UI::WindowsAndMessaging::FindWindowW(w!("tile-rs-tray"), PCWSTR::null())
+    }
+    .ok()
+    .filter(|h| !h.0.is_null())?;
+    let mut result = 0usize;
+    let answered = unsafe {
+        SendMessageTimeoutW(
+            hwnd,
+            WM_LAUNCHER_STATE,
+            WPARAM(0),
+            LPARAM(0),
+            SMTO_ABORTIFHUNG,
+            100,
+            Some(&mut result),
+        )
+    };
+    (answered.0 != 0).then_some(result == 1)
+}
+
+/// Ask the running manager to resume tiling (nothing happens if it is not paused).
+pub fn request_manager_resume() -> bool {
+    post_manager_message(WM_LAUNCHER_RESUME)
 }
 
 /// Ask the running manager to pause tiling (it stays paused if it already is).
@@ -469,13 +517,25 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
         }
         return LRESULT(0);
     }
+    if msg == WM_LAUNCHER_STATE {
+        return LRESULT(isize::from(crate::ui_state().1));
+    }
+    if msg == WM_LAUNCHER_RESUME {
+        if crate::ui_state().1 {
+            crate::dispatch(Action::Pause);
+        }
+        return LRESULT(0);
+    }
     if msg == WM_LAUNCHER_QUIT {
         crate::dispatch_quit();
         return LRESULT(0);
     }
     if msg == WM_TRAY {
         match lparam.0 as u32 {
-            NIN_BALLOONUSERCLICK => crate::launcher::show_updates(),
+            NIN_BALLOONUSERCLICK if BALLOON_IS_UPDATE.load(Ordering::Relaxed) => {
+                crate::launcher::show_updates()
+            }
+            NIN_BALLOONUSERCLICK => crate::show_launcher(),
             WM_RBUTTONUP => show_menu(hwnd),
             // a click opens the settings, like any other tray app; pausing is in the menu
             WM_LBUTTONUP => crate::show_launcher(),

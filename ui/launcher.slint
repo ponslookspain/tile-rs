@@ -634,6 +634,10 @@ export component MainWindow inherits Window {
     callback refresh_apps();
     callback dismiss_welcome();
     callback pause_tiling();
+    callback resume_tiling();
+    callback reset_all();
+    // tiling is paused in the running manager (polled by the launcher)
+    in-out property <bool> paused: false;
     callback open_config();
     callback open_log();
     callback quit_manager();
@@ -702,6 +706,20 @@ export component MainWindow inherits Window {
                     spacing: 2px;
                     Text { text: page_titles[page]; color: AppTheme.ink; font-size: 24px; font-weight: 700; }
                     Text { text: status == "" ? page_subtitles[page] : status; color: AppTheme.ink-2; font-size: 13px; overflow: elide; }
+                }
+                if paused: Rectangle {
+                    y: (parent.height - self.height) / 2;
+                    width: 250px;
+                    height: 36px;
+                    border-radius: 18px;
+                    background: AppTheme.danger-soft;
+                    HorizontalLayout {
+                        padding-left: 14px;
+                        padding-right: 3px;
+                        spacing: 8px;
+                        Text { text: "Tiling is paused"; color: AppTheme.danger; font-size: 12px; font-weight: 600; vertical-alignment: center; horizontal-stretch: 1; }
+                        ActionButton { y: (parent.height - self.height) / 2; label: "Resume"; primary: true; compact: true; button-width: 100px; activated => { root.resume_tiling(); } }
+                    }
                 }
                 Rectangle {
                     y: (parent.height - self.height) / 2;
@@ -872,6 +890,7 @@ export component MainWindow inherits Window {
                             padding: 20px;
                             spacing: 12px;
                             CardTitle { horizontal-stretch: 1; title: "More options"; subtitle: "Main column, tile sizes, workspace dots, fullscreen apps, focus border"; icon: @image-url("icons/adjustments.svg"); }
+                            ActionButton { y: (parent.height - self.height) / 2; label: "Reset to defaults"; kind: 3; compact: true; button-width: 170px; activated => { root.reset_all(); } }
                             ActionButton { y: (parent.height - self.height) / 2; label: show_more ? "Hide" : "Show"; kind: 2; compact: true; button-width: 120px; activated => { show_more = !show_more; } }
                         }
                     }
@@ -1080,7 +1099,7 @@ export component MainWindow inherits Window {
                                 spacing: 12px;
                                 Icon { y: (parent.height - self.height) / 2; source: recording >= 0 ? @image-url("icons/record.svg") : @image-url("icons/info.svg"); tint: recording >= 0 ? AppTheme.accent : AppTheme.muted; }
                                 Text {
-                                    text: recording >= 0 ? "Press a key combination. Esc cancels, Backspace removes the keys" : "Record keys with the circle. Ctrl + Alt keys clash less with other apps";
+                                    text: recording >= 0 ? "Press a key combination. Esc cancels, Backspace removes the keys" : "Record keys with the circle";
                                     color: recording >= 0 ? AppTheme.accent-ink : AppTheme.ink-2;
                                     font-size: 13px;
                                     vertical-alignment: center;
@@ -1088,7 +1107,7 @@ export component MainWindow inherits Window {
                                     overflow: elide;
                                 }
                                 ActionButton { y: (parent.height - self.height) / 2; label: "Alt keys"; kind: 2; compact: true; button-width: 110px; activated => { root.apply_preset(0); } }
-                                ActionButton { y: (parent.height - self.height) / 2; label: "Ctrl + Alt keys"; kind: 2; compact: true; button-width: 140px; activated => { root.apply_preset(1); } }
+                                ActionButton { y: (parent.height - self.height) / 2; label: "Win + Alt keys"; kind: 2; compact: true; button-width: 140px; activated => { root.apply_preset(1); } }
                                 ActionButton { y: (parent.height - self.height) / 2; label: "Reset all"; icon: @image-url("icons/refresh.svg"); has-icon: true; kind: 2; compact: true; button-width: 148px; activated => { root.reset_hotkeys(); } }
                             }
                         }

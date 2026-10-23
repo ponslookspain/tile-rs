@@ -138,7 +138,15 @@ pub fn run() {
         .find(|pair| pair[0] == "--page")
         .and_then(|pair| pair[1].parse::<i32>().ok())
     {
-        ui.set_page(page.clamp(0, 7));
+        // pages 1-3 now live under "More options" on General, page 6 above the updates
+        match page.clamp(0, 7) {
+            1..=3 => {
+                ui.set_page(0);
+                ui.set_show_more(true);
+            }
+            6 => ui.set_page(7),
+            page => ui.set_page(page),
+        }
     }
     wire_updates(&ui);
     let _autosave = wire_editors(&ui);
@@ -467,6 +475,8 @@ struct Editor {
     last_form: String,
     /// Hotkeys or rules were edited since the last save (they are not part of `form_values`).
     edited: bool,
+    /// Autosave ticks so far (for slow periodic work).
+    ticks: u32,
 }
 
 fn read_refused() -> Vec<(String, String)> {
@@ -600,6 +610,7 @@ fn wire_editors(ui: &MainWindow) -> slint::Timer {
         saved_form: form_values(ui),
         last_form: form_values(ui),
         edited: false,
+        ticks: 0,
     }));
     {
         let ed = editor.borrow();
@@ -623,6 +634,30 @@ fn wire_editors(ui: &MainWindow) -> slint::Timer {
             if let Some(ui) = weak.upgrade() {
                 ui.set_show_welcome(false);
             }
+        }
+    });
+    ui.on_resume_tiling({
+        let weak = ui.as_weak();
+        move || {
+            let Some(ui) = weak.upgrade() else { return };
+            if crate::tray::request_manager_resume() {
+                ui.set_paused(false);
+                ui.set_status("Tiling resumed".into());
+            }
+        }
+    });
+    ui.on_reset_all({
+        let weak = ui.as_weak();
+        let editor = editor.clone();
+        move || {
+            let Some(ui) = weak.upgrade() else { return };
+            if !ask_yes_no(
+                "Reset every setting, hotkey and app rule to the defaults?\n\n\
+                 Your current config file is kept as config.toml.before-reset.",
+            ) {
+                return;
+            }
+            reset_all(&ui, &mut editor.borrow_mut());
         }
     });
     ui.on_pause_tiling({
@@ -733,9 +768,9 @@ fn wire_editors(ui: &MainWindow) -> slint::Timer {
             ui.set_dirty(true);
             ui.set_status(
                 if preset == 1 {
-                    "Hotkeys now use Ctrl + Alt"
+                    "Hotkeys now use Win + Alt (custom keys were replaced)"
                 } else {
-                    "Hotkeys now use Alt"
+                    "Hotkeys now use Alt (custom keys were replaced)"
                 }
                 .into(),
             );
@@ -826,7 +861,13 @@ fn wire_editors(ui: &MainWindow) -> slint::Timer {
             let mut ed = editor.borrow_mut();
             if ui.get_show_welcome() {
                 push_tour(&ui, &ed);
+                // keep the marker fresh: the manager ignores one older than an hour
+                ed.ticks += 1;
+                if ed.ticks.is_multiple_of(150) {
+                    let _ = std::fs::write(crate::tour_marker(), "1");
+                }
             }
+            ui.set_paused(crate::tray::manager_paused().unwrap_or(false));
             if ed.recheck > 0 {
                 ed.recheck -= 1;
                 // the manager rewrote the file: its answer is in (no answer within ~3 s: keep the
@@ -929,6 +970,63 @@ fn held_keys() -> Vec<char> {
         .filter(|vk| unsafe { GetAsyncKeyState(i32::from(*vk)) } < 0)
         .filter_map(launcher_model::vk_char)
         .collect()
+}
+
+fn ask_yes_no(question: &str) -> bool {
+    let owner = unsafe { FindWindowW(PCWSTR::null(), LAUNCHER_TITLE) }.ok();
+    let text = crate::tray::wide(question);
+    let answer = unsafe {
+        MessageBoxW(
+            owner,
+            PCWSTR(text.as_ptr()),
+            LAUNCHER_TITLE,
+            MB_YESNO | MB_ICONQUESTION | MB_DEFBUTTON2,
+        )
+    };
+    answer == IDYES
+}
+
+/// Writes the built-in default config (after keeping a copy of the current one), shows it in the
+/// window and applies it.
+fn reset_all(ui: &MainWindow, editor: &mut Editor) {
+    let path = config::config_path();
+    let text = config::default_config();
+    let cfg = match config::parse(&text) {
+        Ok(cfg) => cfg,
+        Err(err) => {
+            ui.set_status(format!("Could not read the defaults: {err}").into());
+            return;
+        }
+    };
+    if path.exists() {
+        if let Err(err) = std::fs::copy(&path, path.with_file_name("config.toml.before-reset")) {
+            ui.set_status(format!("Could not keep a copy of the config: {err}").into());
+            return;
+        }
+    }
+    if let Err(err) = config::save_atomic(&path, &text) {
+        ui.set_status(format!("Could not reset the settings: {err}").into());
+        return;
+    }
+    config::set(cfg.clone());
+    let autostart = ui.get_autostart(); // not part of the config file; left as it is
+    populate(ui, &cfg);
+    ui.set_autostart(autostart);
+    editor.rows = launcher_model::rows_from_bindings(&cfg.bindings);
+    editor.rules = cfg.rules.clone();
+    editor.rules_dirty = false;
+    editor.edited = false;
+    ui.set_recording(-1);
+    push_rows(ui, editor);
+    push_rules(ui, editor);
+    editor.saved_form = form_values(ui);
+    editor.last_form = editor.saved_form.clone();
+    ui.set_dirty(false);
+    editor.refused_before = refused_stamp();
+    if crate::tray::request_manager_reload() {
+        editor.recheck = 8;
+    }
+    ui.set_status("All settings are back to the defaults".into());
 }
 
 fn ask_close_anyway(reason: &str) -> MESSAGEBOX_RESULT {
