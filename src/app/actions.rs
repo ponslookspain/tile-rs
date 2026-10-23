@@ -327,23 +327,27 @@ pub(super) fn cycle_layout() {
     notify("tile-rs", &format!("Layout: {}", next.name()));
 }
 
+pub(super) fn toggle_monocle_state(s: &mut State, h: isize) -> Option<bool> {
+    let mi = s.mi(h);
+    let ws = s.cur[mi];
+    if s.paused || !s.last[mi].contains(&h) {
+        return None;
+    }
+    let on = s.monocle[mi].insert(ws);
+    if !on {
+        s.monocle[mi].remove(&ws);
+    }
+    s.last[mi].clear(); // force a re-layout
+    Some(on)
+}
+
 /// Hotkey: show the focused window alone on the whole screen (the other windows of the workspace
 /// stay stacked underneath and `focus_*` cycles through them); press again to restore the layout.
 pub(super) fn toggle_monocle() {
     let fg = unsafe { GetForegroundWindow() }.0 as isize;
     let on = STATE.with(|s| {
         let mut s = s.borrow_mut();
-        let mi = s.mi(fg);
-        let ws = s.cur[mi];
-        if s.paused || !s.last[mi].contains(&fg) {
-            return None;
-        }
-        let on = s.monocle[mi].insert(ws);
-        if !on {
-            s.monocle[mi].remove(&ws);
-        }
-        s.last[mi].clear(); // force a re-layout
-        Some(on)
+        toggle_monocle_state(&mut s, fg)
     });
     let Some(on) = on else { return };
     retile();
@@ -351,19 +355,26 @@ pub(super) fn toggle_monocle() {
     notify("tile-rs", if on { "Monocle on" } else { "Monocle off" });
 }
 
+pub(super) fn last_focus_target(
+    s: &State,
+    observed_monitor: impl FnOnce(isize) -> usize,
+) -> Option<(isize, u8, usize, bool)> {
+    let h = s.focus_prev?;
+    let ws = s.ws.get(&h).copied().or_else(|| s.fs_ws.get(&h).copied())?;
+    let mi = s
+        .mon
+        .get(&h)
+        .copied()
+        .unwrap_or_else(|| observed_monitor(h))
+        .min(MON - 1);
+    Some((h, ws, mi, ws != s.cur[mi]))
+}
+
 /// Hotkey: focus the previously focused window, switching to its workspace if it is on another.
 pub(super) fn focus_last() {
     let target = STATE.with(|s| {
         let s = s.borrow();
-        let h = s.focus_prev?;
-        let ws = s.ws.get(&h).copied().or_else(|| s.fs_ws.get(&h).copied())?;
-        let mi = s
-            .mon
-            .get(&h)
-            .copied()
-            .unwrap_or_else(|| monitor::of_window(HWND(h as *mut _)))
-            .min(MON - 1);
-        Some((h, ws, mi, ws != s.cur[mi]))
+        last_focus_target(&s, |h| monitor::of_window(HWND(h as *mut _)))
     });
     let Some((h, ws, mi, other)) = target else {
         return;
@@ -496,5 +507,100 @@ pub(crate) fn dispatch(a: Action) {
                 &format!("\"{}\"", config::config_path().display()),
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn monocle_toggle_changes_current_workspace_and_restores_column_tiles() {
+        let _config_lock = config::test_lock();
+        struct Restore(config::Config);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                config::set(self.0.clone());
+            }
+        }
+        let saved = Restore(config::current());
+        let mut cfg = saved.0.clone();
+        cfg.layout = Layout::Columns;
+        cfg.inner_gap = 10;
+        cfg.outer_gap = 10;
+        cfg.min_tile_width = 1;
+        cfg.min_tile_height = 1;
+        config::set(cfg);
+        let mut s = State::default();
+        s.mon.extend([(11, 0), (22, 0)]);
+        s.ws.extend([(11, 0), (22, 0)]);
+        s.last[0] = vec![11, 22];
+        s.monocle[0].insert(3);
+        s.monocle[1].insert(2);
+        let area = RECT {
+            left: 0,
+            top: 0,
+            right: 1000,
+            bottom: 600,
+        };
+        assert_eq!(toggle_monocle_state(&mut s, 11), Some(true));
+        assert!(s.last[0].is_empty());
+        let tiles = fitted(area, &[11, 22], &[0.5], &s.min_size, is_monocle(&s, 0, 0)).0;
+        assert_eq!(
+            tiles,
+            vec![
+                RECT {
+                    left: 10,
+                    top: 10,
+                    right: 990,
+                    bottom: 590
+                };
+                2
+            ]
+        );
+        s.last[0] = vec![11, 22]; // the native wrapper's next layout supplies the shown windows
+        assert_eq!(toggle_monocle_state(&mut s, 11), Some(false));
+        let tiles = fitted(area, &[11, 22], &[0.5], &s.min_size, is_monocle(&s, 0, 0)).0;
+        assert_eq!(
+            tiles,
+            vec![
+                RECT {
+                    left: 10,
+                    top: 10,
+                    right: 495,
+                    bottom: 590
+                },
+                RECT {
+                    left: 505,
+                    top: 10,
+                    right: 990,
+                    bottom: 590
+                },
+            ]
+        );
+        assert!(s.monocle[0].contains(&3) && s.monocle[1].contains(&2));
+        assert_eq!(toggle_monocle_state(&mut s, 99), None);
+    }
+
+    #[test]
+    fn focus_last_selects_previous_window_and_plans_its_workspace_switch() {
+        let mut s = State {
+            focus_cur: Some(22),
+            focus_prev: Some(11),
+            ..Default::default()
+        };
+        s.ws.extend([(11, 2), (22, 0)]);
+        s.mon.extend([(11, 1), (22, 0)]);
+        let no_fallback = |_| panic!("known monitor must not be re-derived from native geometry");
+        assert_eq!(last_focus_target(&s, no_fallback), Some((11, 2, 1, true)));
+        assert!(switch_workspace_state(&mut s, 1, 2, Instant::now()));
+        assert_eq!(last_focus_target(&s, no_fallback), Some((11, 2, 1, false)));
+        s.focus_prev = Some(33);
+        s.fs_ws.insert(33, 3);
+        assert_eq!(last_focus_target(&s, |_| 2), Some((33, 3, 2, true)));
+        s.focus_prev = Some(99);
+        assert_eq!(last_focus_target(&s, |_| 0), None);
+        s.focus_prev = None;
+        assert_eq!(last_focus_target(&s, |_| 0), None);
     }
 }

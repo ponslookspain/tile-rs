@@ -68,6 +68,7 @@ impl Drop for StateGuard {
             state.drag_timer,
             state.ffm_timer,
             state.frame_fallback,
+            state.trim_timer,
         ] {
             if timer != 0 {
                 unsafe {
@@ -862,4 +863,43 @@ fn divider_ignores_unrelated_tool_window_show_and_create() {
     for (window, target) in windows.iter().zip(preview) {
         assert_eq!(visible_rect(window.0), Some(target));
     }
+}
+
+#[test]
+fn closed_window_is_discarded_during_animation_before_another_placement_is_submitted() {
+    let _config = ConfigGuard::new(|_| {});
+    let _state = StateGuard::new();
+    let window = Fixture::new();
+    let h = window.h();
+    let from = window.native();
+    let target = RECT {
+        left: from.left + 20,
+        right: from.right + 20,
+        ..from
+    };
+    STATE.with(|cell| {
+        let mut s = cell.borrow_mut();
+        s.ws.insert(h, 0);
+        s.mon.insert(h, 0);
+        s.anims.push(Anim {
+            hwnd: h,
+            from,
+            to: target,
+            border: (0, 0, 0, 0),
+            t0: Instant::now(),
+            dur_ms: 1000,
+            last: None,
+        });
+        arm_anim_timer(&mut s);
+        assert!(s.frame_armed);
+    });
+    drop(window); // no destroy notification is delivered to the manager before the frame
+    anim_tick();
+    STATE.with(|cell| {
+        let s = cell.borrow();
+        assert!(s.anims.is_empty());
+        assert!(s.expected.is_empty() && s.placements.is_empty());
+        assert!(!s.frame_armed);
+        assert_eq!(s.frame_fallback, 0);
+    });
 }

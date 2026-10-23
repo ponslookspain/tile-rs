@@ -341,6 +341,19 @@ pub(super) fn fast_add(s: &mut State, hwnd: HWND) -> bool {
     true
 }
 
+/// Partition in stable order; unavailable windows are neither parked nor placed.
+pub(super) fn workspace_visibility(
+    s: &State,
+    mi: usize,
+    present: &HashSet<isize>,
+) -> (Vec<isize>, Vec<isize>) {
+    s.order[mi]
+        .iter()
+        .copied()
+        .filter(|h| present.contains(h) && !s.suspended.contains(h))
+        .partition(|h| s.ws[h] != s.cur[mi])
+}
+
 pub(super) fn retile() {
     if SESSION_ENDING.with(Cell::get) {
         return;
@@ -493,17 +506,11 @@ pub(super) fn retile() {
         // make sure windows of other workspaces stay out of sight, and group the shown ones
         let mut layouts: Vec<Vec<isize>> = vec![Vec::new(); MON];
         for (mi, layout) in layouts.iter_mut().enumerate() {
-            let order = s.order[mi].clone();
-            for h in order {
-                if !present_set.contains(&h) || s.suspended.contains(&h) {
-                    continue;
-                }
-                if s.ws[&h] != s.cur[mi] {
-                    park(&mut s, HWND(h as *mut _));
-                } else {
-                    layout.push(h);
-                }
+            let (hidden, shown) = workspace_visibility(&s, mi, &present_set);
+            for h in hidden {
+                park(&mut s, HWND(h as *mut _));
             }
+            *layout = shown;
         }
         sync_parked(&mut s);
         let mut changed = false;

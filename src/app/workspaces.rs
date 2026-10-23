@@ -125,21 +125,26 @@ pub(super) fn move_ws_relative(step: i8) {
     move_to_ws(n);
 }
 
+/// Commit a workspace change before native placement and focus effects run.
+pub(super) fn switch_workspace_state(s: &mut State, mi: usize, n: u8, now: Instant) -> bool {
+    if mi >= MON || s.paused || s.dragging.is_some() || n == s.cur[mi] || n >= WS_COUNT {
+        return false;
+    }
+    s.prev_ws[mi] = Some(s.cur[mi]);
+    s.cur[mi] = n;
+    s.no_anim = true;
+    let affected: HashSet<isize> = s.order[mi].iter().copied().collect();
+    s.anims.retain(|a| !affected.contains(&a.hwnd));
+    s.last[mi].clear();
+    s.last_switch = Some(now);
+    true
+}
+
 pub(super) fn switch_ws(mi: usize, n: u8, focus: Option<isize>) {
     end_divider(false);
     let changed = STATE.with(|s| {
         let mut s = s.borrow_mut();
-        if mi >= MON || s.paused || s.dragging.is_some() || n == s.cur[mi] || n >= WS_COUNT {
-            return false;
-        }
-        s.prev_ws[mi] = Some(s.cur[mi]);
-        s.cur[mi] = n;
-        s.no_anim = true;
-        let affected: HashSet<isize> = s.order[mi].iter().copied().collect();
-        s.anims.retain(|a| !affected.contains(&a.hwnd));
-        s.last[mi].clear();
-        s.last_switch = Some(Instant::now());
-        true
+        switch_workspace_state(&mut s, mi, n, Instant::now())
     });
     if !changed {
         return;
@@ -303,6 +308,24 @@ pub(super) fn refocus_after_menu(h: isize, from_mi: usize) {
     }
 }
 
+pub(super) fn move_window_workspace(s: &mut State, h: isize, n: u8) -> bool {
+    if s.paused || s.dragging.is_some() || n >= WS_COUNT {
+        return false;
+    }
+    if let Some(w) = s.fs_ws.get(&h).copied() {
+        if w == n {
+            return false;
+        }
+        s.fs_ws.insert(h, n);
+        return true;
+    }
+    if !s.ws.contains_key(&h) || s.ws[&h] == n {
+        return false;
+    }
+    s.ws.insert(h, n);
+    true
+}
+
 pub(super) fn move_to_ws(n: u8) {
     let fg = unsafe { GetForegroundWindow() }.0 as isize;
     let (mi, cur) = STATE.with(|s| {
@@ -319,21 +342,7 @@ pub(super) fn move_to_ws(n: u8) {
     // its `fs_ws` entry. Either way `retile` below makes the new workspace show the right set.
     let moved = STATE.with(|s| {
         let mut s = s.borrow_mut();
-        if s.paused || s.dragging.is_some() || n >= WS_COUNT {
-            return false;
-        }
-        if let Some(w) = s.fs_ws.get(&fg).copied() {
-            if w == n {
-                return false;
-            }
-            s.fs_ws.insert(fg, n);
-            return true;
-        }
-        if !s.ws.contains_key(&fg) || s.ws[&fg] == n {
-            return false;
-        }
-        s.ws.insert(fg, n);
-        true
+        move_window_workspace(&mut s, fg, n)
     });
     if !moved {
         return;
@@ -425,4 +434,93 @@ pub(super) fn bring_everything_back() {
         s.parked.clear();
         parked::save(&s.parked);
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn workspace_switch_parks_inactive_windows_and_returns_them_in_stable_order() {
+        let mut s = State::default();
+        s.order[0] = vec![11, 22, 33, 44, 55];
+        s.order[1] = vec![66];
+        for (h, ws) in [(11, 0), (22, 1), (33, 0), (44, 0), (55, 1), (66, 0)] {
+            s.ws.insert(h, ws);
+        }
+        s.suspended.insert(55);
+        let present = HashSet::from([11, 22, 33, 55, 66]);
+        assert_eq!(
+            workspace_visibility(&s, 0, &present),
+            (vec![22], vec![11, 33])
+        );
+        let now = Instant::now();
+        assert!(switch_workspace_state(&mut s, 0, 1, now));
+        assert_eq!(
+            workspace_visibility(&s, 0, &present),
+            (vec![11, 33], vec![22])
+        );
+        assert_eq!(workspace_visibility(&s, 1, &present), (vec![], vec![66]));
+        assert!(s.no_anim);
+        assert_eq!(s.last_switch, Some(now));
+        assert!(switch_workspace_state(&mut s, 0, 0, now));
+        assert_eq!(
+            workspace_visibility(&s, 0, &present),
+            (vec![22], vec![11, 33])
+        );
+    }
+
+    #[test]
+    fn workspace_back_and_forth_preserves_each_monitors_independent_history() {
+        let mut s = State::default();
+        let now = Instant::now();
+        assert!(s.prev_ws[0].is_none());
+        assert!(switch_workspace_state(&mut s, 0, 2, now));
+        assert!(switch_workspace_state(&mut s, 1, 3, now));
+        for (expected, previous) in [(0, 2), (2, 0), (0, 2), (2, 0)] {
+            let back = s.prev_ws[0].unwrap();
+            assert!(switch_workspace_state(&mut s, 0, back, now));
+            assert_eq!(s.cur[0], expected);
+            assert_eq!(s.prev_ws[0], Some(previous));
+            assert_eq!((s.cur[1], s.prev_ws[1]), (3, Some(0)));
+        }
+        assert!(!switch_workspace_state(&mut s, 0, 2, now));
+        assert_eq!(s.prev_ws[0], Some(0));
+        assert!(!switch_workspace_state(&mut s, MON, 1, now));
+        assert!(!switch_workspace_state(&mut s, 0, WS_COUNT, now));
+        s.paused = true;
+        assert!(!switch_workspace_state(&mut s, 0, 1, now));
+        s.paused = false;
+        s.dragging = Some(11);
+        assert!(!switch_workspace_state(&mut s, 0, 1, now));
+    }
+
+    #[test]
+    fn workspace_move_reassigns_only_the_requested_tiled_or_fullscreen_window() {
+        let mut s = State::default();
+        s.ws.extend([(11, 0), (22, 0)]);
+        s.mon.extend([(11, 0), (22, 0)]);
+        s.fs_ws.insert(33, 1);
+        s.fs_mon.insert(33, 1);
+        s.order[0] = vec![11, 22];
+        assert!(move_window_workspace(&mut s, 11, 2));
+        assert_eq!(s.ws[&11], 2);
+        assert_eq!(s.ws[&22], 0);
+        assert_eq!(s.cur[0], 0); // native wrapper decides whether to follow the moved window
+        assert_eq!(s.order[0], vec![11, 22]);
+        assert_eq!(
+            workspace_visibility(&s, 0, &HashSet::from([11, 22])),
+            (vec![11], vec![22])
+        );
+        assert!(move_window_workspace(&mut s, 33, 2));
+        assert_eq!(s.fs_ws[&33], 2);
+        assert_eq!(s.fs_mon[&33], 1);
+        assert!(!s.ws.contains_key(&33));
+        assert!(!move_window_workspace(&mut s, 11, 2));
+        assert!(!move_window_workspace(&mut s, 99, 1));
+        assert!(!move_window_workspace(&mut s, 11, WS_COUNT));
+        s.paused = true;
+        assert!(!move_window_workspace(&mut s, 11, 1));
+        assert_eq!(s.ws[&11], 2);
+    }
 }
