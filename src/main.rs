@@ -2603,8 +2603,7 @@ fn register_hotkeys() -> Vec<String> {
                 if unsafe { RegisterHotKey(None, id, flags, vk) }.is_ok() {
                     new.push((id, *action));
                 } else {
-                    refused.push_str(&format!("{}	{}
-", action_name(*action), spec));
+                    refused.push_str(&format!("{}\t{}\n", action_name(*action), spec));
                     failed.push(format!(
                         "{} = {} (already used by another program?)",
                         action_name(*action),

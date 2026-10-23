@@ -209,6 +209,13 @@ pub fn display_spec(spec: &str) -> String {
             "minus" => "−".to_string(),
             "comma" => ",".to_string(),
             "period" => ".".to_string(),
+            "semicolon" => ";".to_string(),
+            "slash" => "/".to_string(),
+            "grave" => "`".to_string(),
+            "bracketleft" => "[".to_string(),
+            "backslash" => "\\".to_string(),
+            "bracketright" => "]".to_string(),
+            "quote" => "'".to_string(),
             "numpad_add" => "Num +".to_string(),
             "numpad_subtract" => "Num −".to_string(),
             "esc" | "escape" => "Esc".to_string(),
@@ -326,8 +333,35 @@ pub fn vk_char(vk: u16) -> Option<char> {
         0xbc => Some(','),
         0xbd => Some('-'),
         0xbe => Some('.'),
+        0xba => Some(';'),
+        0xbf => Some('/'),
+        0xc0 => Some('`'),
+        0xdb => Some('['),
+        0xdc => Some('\\'),
+        0xdd => Some(']'),
+        0xde => Some('\''),
         _ => None,
     }
+}
+
+/// The text to record for a key event: the physically held key (`held`, from `vk_char`) when the
+/// event is an ordinary character, so the result does not depend on the layout or on Shift.
+/// Arrows, F-keys and Escape keep Slint's text, as does a bare Backspace/Delete (it clears the
+/// keys); Ctrl+letter arrives as a control code and is resolved through the held key too.
+pub fn resolve_text(text: &str, held: &[char], any_modifier: bool) -> String {
+    let mut chars = text.chars();
+    let (Some(c), None) = (chars.next(), chars.next()) else {
+        return text.to_string();
+    };
+    let special = matches!(c, '\u{1b}' | '\u{10}'..='\u{18}' | '\u{f700}'..='\u{f8ff}')
+        || (matches!(c, '\u{8}' | '\u{7f}') && !any_modifier);
+    if special || held.is_empty() {
+        return text.to_string();
+    }
+    // several keys down (a rolled key press): the one matching the typed character wins
+    let lower = c.to_lowercase().next().unwrap_or(c);
+    let pick = held.iter().find(|h| **h == lower).unwrap_or(&held[0]);
+    pick.to_string()
 }
 
 /// Translates a Slint key event (its `text` and the modifier flags) into a hotkey.
@@ -355,6 +389,13 @@ pub fn capture_key(text: &str, alt: bool, ctrl: bool, shift: bool, meta: bool) -
         '-' => "minus".into(),
         ',' => "comma".into(),
         '.' => "period".into(),
+        ';' => "semicolon".into(),
+        '/' => "slash".into(),
+        '`' => "grave".into(),
+        '[' => "bracketleft".into(),
+        '\\' => "backslash".into(),
+        ']' => "bracketright".into(),
+        '\'' => "quote".into(),
         // Ctrl+letter arrives as a control code
         '\u{1}'..='\u{1a}' => ((b'a' + (c as u8 - 1)) as char).to_string(),
         c if c.is_ascii_alphanumeric() => c.to_ascii_lowercase().to_string(),
@@ -596,6 +637,25 @@ mod tests {
             capture_key("!", true, false, true, false),
             Capture::Reject(_)
         ));
+    }
+
+    #[test]
+    fn held_keys_only_replace_ordinary_characters() {
+        // Shift+1 on any layout, Alt+H on a Russian layout, Ctrl+H as a control code
+        assert_eq!(resolve_text("!", &['1'], true), "1");
+        assert_eq!(resolve_text("р", &['h'], true), "h");
+        assert_eq!(resolve_text("\u{8}", &['h'], true), "h");
+        // a letter still held does not hijack arrows, F-keys, Escape or a bare Backspace
+        assert_eq!(resolve_text("\u{f702}", &['a'], true), "\u{f702}");
+        assert_eq!(resolve_text("\u{f704}", &['a'], false), "\u{f704}");
+        assert_eq!(resolve_text("\u{1b}", &['a'], false), "\u{1b}");
+        assert_eq!(resolve_text("\u{8}", &['a'], false), "\u{8}");
+        // rolled keys: the one matching the typed character
+        assert_eq!(resolve_text("K", &['j', 'k'], true), "k");
+        // OEM keys are named the way the config parser expects
+        let semi = resolve_text("ж", &[vk_char(0xba).unwrap()], true);
+        assert_eq!(capture_key(&semi, true, false, false, false), Capture::Spec("alt+semicolon".into()));
+        assert!(config::parse_hotkey("alt+bracketleft").is_ok());
     }
 
     #[test]

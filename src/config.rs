@@ -812,6 +812,13 @@ fn parse_key(k: &str) -> Option<u32> {
         "plus" | "equal" => 0xBB,
         "comma" => 0xBC,
         "period" => 0xBE,
+        "semicolon" => 0xBA,
+        "slash" => 0xBF,
+        "grave" => 0xC0,
+        "bracketleft" => 0xDB,
+        "backslash" => 0xDC,
+        "bracketright" => 0xDD,
+        "quote" => 0xDE,
         _ => return None,
     })
 }

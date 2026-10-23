@@ -203,6 +203,12 @@ pub fn request_manager_diagnostics(include_titles: bool) -> bool {
     })
 }
 
+/// Whether the tile-rs manager (the tray process) is running.
+pub fn manager_running() -> bool {
+    unsafe { windows::Win32::UI::WindowsAndMessaging::FindWindowW(w!("tile-rs-tray"), PCWSTR::null()) }
+        .is_ok_and(|hwnd| !hwnd.0.is_null())
+}
+
 fn post_manager_message(message: u32) -> bool {
     unsafe {
         let Ok(hwnd) = windows::Win32::UI::WindowsAndMessaging::FindWindowW(

@@ -20,8 +20,8 @@ use windows::Win32::UI::HiDpi::{
     SetProcessDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    FindWindowW, MessageBoxW, SetForegroundWindow, ShowWindow, IDNO, IDYES, MB_ICONQUESTION,
-    MB_YESNOCANCEL, MESSAGEBOX_RESULT, SW_RESTORE,
+    FindWindowW, MessageBoxW, SetForegroundWindow, ShowWindow, IDYES, MB_DEFBUTTON2, MB_ICONQUESTION,
+    MB_YESNO, MESSAGEBOX_RESULT, SW_RESTORE,
 };
 
 slint::include_modules!();
@@ -167,15 +167,6 @@ pub fn run() {
             "notepad.exe",
             &format!("\"{}\"", crate::log_file().display()),
         );
-    });
-    // Property changes made while the window is being filled are not user edits.
-    slint::Timer::single_shot(Duration::from_millis(400), {
-        let weak = ui.as_weak();
-        move || {
-            if let Some(ui) = weak.upgrade() {
-                ui.set_dirty(false);
-            }
-        }
     });
     ui.on_quit_manager(|| {
         crate::tray::request_manager_quit();
@@ -436,10 +427,16 @@ struct Editor {
     apps: Vec<(String, String, String)>,
     /// (action, keys) pairs Windows refused to register at the manager's last (re)load.
     refused: Vec<(String, String)>,
-    /// Autosave ticks left before the manager's answer about refused keys is read.
+    /// Autosave ticks left to wait for the manager's answer about refused keys, and the file's
+    /// time stamp before the reload was requested (a new stamp means the answer is there).
     recheck: u8,
-    /// A change was seen on the previous autosave tick (saves wait for a short pause).
-    pending: bool,
+    refused_before: Option<std::time::SystemTime>,
+    /// The form as last saved, and as seen on the previous autosave tick: a save happens once the
+    /// form differs from the first and has stopped changing (the user paused typing).
+    saved_form: String,
+    last_form: String,
+    /// Hotkeys or rules were edited since the last save (they are not part of `form_values`).
+    edited: bool,
 }
 
 fn read_refused() -> Vec<(String, String)> {
@@ -447,8 +444,49 @@ fn read_refused() -> Vec<(String, String)> {
         .unwrap_or_default()
         .lines()
         .filter_map(|line| line.split_once('\t'))
-        .map(|(action, keys)| (action.to_string(), keys.to_string()))
+        .map(|(action, keys)| (action.trim().to_string(), keys.trim().to_string()))
         .collect()
+}
+
+/// When the manager last wrote the refused-hotkeys file (it rewrites it on every reload).
+fn refused_stamp() -> Option<std::time::SystemTime> {
+    std::fs::metadata(config::hotkey_failures_path())
+        .and_then(|m| m.modified())
+        .ok()
+}
+
+/// Every form value in one string: autosave compares it with the saved and the previous one.
+fn form_values(ui: &MainWindow) -> String {
+    [
+        ui.get_layout_index().to_string(),
+        ui.get_indicator_size().to_string(),
+        ui.get_animations().to_string(),
+        ui.get_auto_overflow().to_string(),
+        ui.get_show_indicator().to_string(),
+        ui.get_focus_follows_mouse().to_string(),
+        ui.get_highlight_window().to_string(),
+        ui.get_autostart().to_string(),
+        ui.get_inner_gap().to_string(),
+        ui.get_outer_gap().to_string(),
+        ui.get_animation_ms().to_string(),
+        ui.get_easing().to_string(),
+        ui.get_resize_step().to_string(),
+        ui.get_min_tile_width().to_string(),
+        ui.get_min_tile_height().to_string(),
+        ui.get_max_tiles().to_string(),
+        ui.get_border_color().to_string(),
+        ui.get_accent_color().to_string(),
+        ui.get_border_width().to_string(),
+        ui.get_fullscreen_windows().to_string(),
+        ui.get_media_windows().to_string(),
+        ui.get_smart_gaps().to_string(),
+        ui.get_master_count().to_string(),
+    ]
+    .join("\u{1f}")
+}
+
+fn has_changes(ui: &MainWindow, editor: &Editor) -> bool {
+    editor.edited || form_values(ui) != editor.saved_form
 }
 
 type Shared = Rc<RefCell<Editor>>;
@@ -470,10 +508,13 @@ fn push_rows(ui: &MainWindow, editor: &Editor) {
                     .collect::<Vec<_>>(),
             )),
             conflict,
-            refused: editor
-                .refused
-                .iter()
-                .any(|(a, k)| *a == row.action && row.keys.contains(k)),
+            refused: editor.refused.iter().any(|(a, k)| {
+                *a == row.action
+                    && row
+                        .keys
+                        .iter()
+                        .any(|key| config::parse_hotkey(key).ok() == config::parse_hotkey(k).ok())
+            }),
         })
         .collect();
     ui.set_hotkeys_bound(editor.rows.iter().filter(|r| !r.keys.is_empty()).count() as i32);
@@ -518,9 +559,17 @@ fn wire_editors(ui: &MainWindow) -> slint::Timer {
         rules: config::current().rules,
         rules_dirty: false,
         apps: crate::window::running_apps(),
-        refused: read_refused(),
+        // the file describes the running manager's hotkeys; without a manager it is stale
+        refused: if crate::tray::manager_running() {
+            read_refused()
+        } else {
+            Vec::new()
+        },
         recheck: 0,
-        pending: false,
+        refused_before: None,
+        saved_form: form_values(ui),
+        last_form: form_values(ui),
+        edited: false,
     }));
     {
         let ed = editor.borrow();
@@ -549,7 +598,7 @@ fn wire_editors(ui: &MainWindow) -> slint::Timer {
                 ui.set_recording(-1);
                 return;
             };
-            let text = held_key().map_or_else(|| text.to_string(), String::from);
+            let text = launcher_model::resolve_text(&text, &held_keys(), alt || ctrl || shift || meta);
             match launcher_model::capture_key(&text, alt, ctrl, shift, meta) {
                 Capture::Wait => {}
                 Capture::Cancel => ui.set_recording(-1),
@@ -557,6 +606,7 @@ fn wire_editors(ui: &MainWindow) -> slint::Timer {
                     row.keys.clear();
                     ui.set_recording(-1);
                     push_rows(&ui, &ed);
+                    ed.edited = true;
                     ui.set_dirty(true);
                 }
                 Capture::Reject(reason) => ui.set_status(reason.into()),
@@ -569,6 +619,7 @@ fn wire_editors(ui: &MainWindow) -> slint::Timer {
                     }
                     ui.set_recording(-1);
                     push_rows(&ui, &ed);
+                    ed.edited = true;
                     ui.set_dirty(true);
                     if launcher_model::conflicts(&ed.rows).iter().any(|c| *c) {
                         ui.set_status(
@@ -590,6 +641,7 @@ fn wire_editors(ui: &MainWindow) -> slint::Timer {
             }
             ui.set_recording(-1);
             push_rows(&ui, &ed);
+            ed.edited = true;
             ui.set_dirty(true);
         }
     });
@@ -602,6 +654,7 @@ fn wire_editors(ui: &MainWindow) -> slint::Timer {
             ed.rows = launcher_model::default_rows();
             ui.set_recording(-1);
             push_rows(&ui, &ed);
+            ed.edited = true;
             ui.set_dirty(true);
             ui.set_status("Hotkeys reset to the defaults".into());
         }
@@ -650,6 +703,7 @@ fn wire_editors(ui: &MainWindow) -> slint::Timer {
             ed.rules.push(rule);
             ed.rules_dirty = true;
             push_rules(&ui, &ed);
+            ed.edited = true;
             ui.set_dirty(true);
             ui.set_status("Rule added".into());
         }
@@ -664,6 +718,7 @@ fn wire_editors(ui: &MainWindow) -> slint::Timer {
                 if i < ed.rules.len() {
                     ed.rules.remove(i);
                     ed.rules_dirty = true;
+                    ed.edited = true;
                     ui.set_dirty(true);
                 }
             }
@@ -687,20 +742,18 @@ fn wire_editors(ui: &MainWindow) -> slint::Timer {
         move || {
             use slint::CloseRequestResponse::{HideWindow, KeepWindowShown};
             let Some(ui) = weak.upgrade() else { return HideWindow };
-            if ui.get_dirty() {
-                save(&ui, &mut editor.borrow_mut());
+            let mut ed = editor.borrow_mut();
+            if has_changes(&ui, &ed) && ui.get_recording() < 0 {
+                save(&ui, &mut ed);
             }
-            if !ui.get_dirty() {
+            if !has_changes(&ui, &ed) {
                 return HideWindow;
             }
-            match ask_save_on_close() {
-                IDYES => {
-                    save(&ui, &mut editor.borrow_mut());
-                    // a failed save keeps the window open with its status message
-                    if ui.get_dirty() { KeepWindowShown } else { HideWindow }
-                }
-                IDNO => HideWindow,
-                _ => KeepWindowShown,
+            // the save failed (or a key is being recorded): say why and let the user choose
+            if ask_close_anyway(&ui.get_status()) == IDYES {
+                HideWindow
+            } else {
+                KeepWindowShown
             }
         }
     });
@@ -716,7 +769,10 @@ fn wire_editors(ui: &MainWindow) -> slint::Timer {
             let mut ed = editor.borrow_mut();
             if ed.recheck > 0 {
                 ed.recheck -= 1;
-                if ed.recheck == 0 {
+                // the manager rewrote the file: its answer is in (no answer within ~3 s: keep the
+                // previous marks rather than show stale ones as fresh)
+                if refused_stamp() != ed.refused_before {
+                    ed.recheck = 0;
                     ed.refused = read_refused();
                     push_rows(&ui, &ed);
                     if !ed.refused.is_empty() {
@@ -730,36 +786,40 @@ fn wire_editors(ui: &MainWindow) -> slint::Timer {
                     }
                 }
             }
-            if !ui.get_dirty() || ui.get_recording() >= 0 {
-                ed.pending = false;
-            } else if ed.pending {
-                ed.pending = false;
+            let form = form_values(&ui);
+            let changed = ed.edited || form != ed.saved_form;
+            ui.set_dirty(changed);
+            let settled = form == ed.last_form;
+            ed.last_form = form;
+            if changed && settled && ui.get_recording() < 0 {
                 save(&ui, &mut ed);
-            } else {
-                ed.pending = true;
             }
         },
     );
     timer
 }
 
-/// The letter, digit or punctuation key physically held right now, independent of the keyboard
-/// layout and of Shift; `None` for arrows, F-keys and the like, which Slint reports reliably.
-fn held_key() -> Option<char> {
+/// The letter, digit and punctuation keys physically held right now, independent of the keyboard
+/// layout and of Shift; arrows, F-keys and the like are reported reliably by Slint itself.
+fn held_keys() -> Vec<char> {
     use windows::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState;
-    (0x30u16..=0xbe)
+    (0x30u16..=0xde)
         .filter(|vk| unsafe { GetAsyncKeyState(i32::from(*vk)) } < 0)
-        .find_map(launcher_model::vk_char)
+        .filter_map(launcher_model::vk_char)
+        .collect()
 }
 
-fn ask_save_on_close() -> MESSAGEBOX_RESULT {
+fn ask_close_anyway(reason: &str) -> MESSAGEBOX_RESULT {
     let owner = unsafe { FindWindowW(PCWSTR::null(), LAUNCHER_TITLE) }.ok();
+    let text = crate::tray::wide(&format!(
+        "Some changes are not saved yet:\n{reason}\n\nClose anyway and lose them?"
+    ));
     unsafe {
         MessageBoxW(
             owner,
-            w!("Some changes could not be saved. Try saving them again before closing?"),
+            PCWSTR(text.as_ptr()),
             LAUNCHER_TITLE,
-            MB_YESNOCANCEL | MB_ICONQUESTION,
+            MB_YESNO | MB_ICONQUESTION | MB_DEFBUTTON2,
         )
     }
 }
@@ -876,11 +936,14 @@ fn save(ui: &MainWindow, editor: &mut Editor) {
         return;
     }
     editor.rules_dirty = false;
+    editor.edited = false;
+    editor.saved_form = form_values(ui);
     ui.set_dirty(false);
+    editor.refused_before = refused_stamp();
     if !crate::set_autostart(ui.get_autostart()) {
         ui.set_status("Saved, but starting with Windows could not be changed".into());
     } else if crate::tray::request_manager_reload() {
-        editor.recheck = 2; // then the manager's answer about refused keys is read
+        editor.recheck = 8; // wait up to ~3 s for the manager's answer about refused keys
         ui.set_status("Settings applied".into());
     } else {
         ui.set_status("Saved; tile-rs is not running, so they apply at its next start".into());
