@@ -8,7 +8,7 @@ Open a window and it takes its place on the screen. Close it and the others fill
 Move between windows with the keyboard, or drag them around with the mouse.
 
 [![Download](https://img.shields.io/github/v/release/ponslookspain/tile-rs?label=download&style=for-the-badge)](https://github.com/ponslookspain/tile-rs/releases/latest)
-[![Buy Me a Coffee](https://img.shields.io/badge/Buy%20me%20a%20coffee-donate-FFDD00?style=for-the-badge&logo=buymeacoffee&logoColor=black)](https://buymeacoffee.com/ponslooksp1)
+[![Buy Me a Coffee](https://img.shields.io/badge/Buy%20me%20a%20coffee-donate-FFDD00?style=for-the-badge&logo=buymeacoffee&logoColor=black)](https://buymeacoffee.com/ponslook)
 [![GitHub Sponsors](https://img.shields.io/badge/GitHub%20Sponsors-support-EA4AAA?style=for-the-badge&logo=githubsponsors&logoColor=white)](https://github.com/sponsors/ponslookspain)
 
 ![tile-rs arranging windows on a Windows 11 desktop](docs/images/layout-spiral.png)
@@ -198,7 +198,7 @@ moved off-screen and come back when you switch. Do not run it together with anot
 
 tile-rs is free and open source, and it stays that way. If it saves you time, you can support it:
 
-- [**Buy Me a Coffee**](https://buymeacoffee.com/ponslooksp1): a one-time tip, no account needed
+- [**Buy Me a Coffee**](https://buymeacoffee.com/ponslook): a one-time tip, no account needed
 - [**GitHub Sponsors**](https://github.com/sponsors/ponslookspain): one-time or monthly
 
 A ⭐ on the repository and telling a friend help too. The same links are in the tray menu

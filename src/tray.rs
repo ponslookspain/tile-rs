@@ -56,7 +56,7 @@ const M_QUIT: usize = 10;
 const M_SUPPORT: usize = 13;
 
 /// Where "Support tile-rs" leads: Buy Me a Coffee needs no GitHub account, so anyone can use it.
-pub const SUPPORT_URL: &str = "https://buymeacoffee.com/ponslooksp1";
+pub const SUPPORT_URL: &str = "https://buymeacoffee.com/ponslook";
 
 pub fn wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(std::iter::once(0)).collect()
