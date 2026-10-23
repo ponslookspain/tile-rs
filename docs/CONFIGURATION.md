@@ -31,6 +31,7 @@ These keys go at the top of the file, before any `[section]`.
 | `resize_step` | `40` | Pixels per key press of the grow/shrink hotkeys, `1`–`500`. A held key uses smaller, instant steps. |
 | `fullscreen_windows` | `"minimize"` | What to do with a window that runs fullscreen or borderless fullscreen (a game, a video player): `"minimize"` hides it while its workspace is not shown and restores it when you switch back; `"ignore"` leaves it completely alone. |
 | `media_windows` | `"float"` | `"float"` leaves recognized photo/video viewers completely unmanaged, including fullscreen viewers. This includes Telegram's Qt media viewer with its English or Russian title; its main window and chats remain eligible for tiling. `"tile"` allows ordinary media windows into the layout; genuine fullscreen windows still follow `fullscreen_windows`. Explicit application rules take precedence over this media heuristic. |
+| `live_resize` | `"auto"` | What dragging a separator or a window edge does to the other windows. `"live"` resizes them while you drag. `"preview"` shows translucent outlines of the new tiles and glides the windows into them once you let go. `"auto"` is live with up to five windows on the monitor and outlines with more, or while animations are suspended on a slow machine. |
 | `border` | `true` | Draw a border around the focused tiled window (drawn by tile-rs itself, so it works for every window). |
 | `border_color` | `"#8dbcff"` | Border colour, `"#rrggbb"`. |
 | `border_width` | `2` | Border thickness in pixels, `0`–`20`. |
@@ -91,10 +92,11 @@ you which one and carries on with the rest.
 | `focus_last` | Focus the window that was focused before the current one, switching workspace if needed. |
 | `workspace_back_and_forth` | Return to the workspace the active monitor showed before the current one. |
 | `master_count_inc` / `master_count_dec` | Master-stack: put one more / one fewer window in the master column. |
-| `focus_next_monitor`, `focus_prev_monitor` | Move keyboard focus to the next / previous monitor (no default key; bind it in `[hotkeys]`). |
-| `move_to_next_monitor`, `move_to_prev_monitor` | Send the focused tiled window to the next / previous monitor, into the workspace that monitor is showing (no default key). |
+| `focus_next_monitor`, `focus_prev_monitor` | Move keyboard focus to the next / previous monitor (default `Alt+[` / `Alt+]`). |
+| `move_to_next_monitor`, `move_to_prev_monitor` | Send the focused tiled window to the next / previous monitor, into the workspace that monitor is showing (default `Alt+Shift+[` / `Alt+Shift+]`). |
 | `reload_config` | Re-read `config.toml`. |
 | `edit_config` | Open `config.toml` in Notepad. |
+| `show_hotkeys` | Open the settings on the Hotkeys page, the list of every key (default `Alt+/`). |
 
 An unknown action name is an error (it is reported on reload, with the name).
 
@@ -117,6 +119,9 @@ An unknown action name is an error (it is reported on reload, with the name).
 | `focus_last` | `alt+z` |
 | `workspace_back_and_forth` | `alt+shift+z` |
 | `master_count_inc` / `master_count_dec` | `alt+period` / `alt+comma` |
+| `focus_prev_monitor` / `focus_next_monitor` | `alt+bracketleft` / `alt+bracketright` |
+| `move_to_prev_monitor` / `move_to_next_monitor` | `alt+shift+bracketleft` / `alt+shift+bracketright` |
+| `show_hotkeys` | `alt+slash` |
 | `pause` | `ctrl+alt+p`, `alt+shift+p` |
 | `quit` | `ctrl+alt+q` |
 
@@ -126,7 +131,8 @@ No default keys: `grow_height`, `shrink_height`, `retile`, `reload_config`, `edi
 An older `config.toml` is updated in place on start-up: missing `toggle_float`, `close`,
 `cycle_layout`, `toggle_monocle`, `focus_last`, `workspace_back_and_forth`, `master_count_inc`,
 `master_count_dec`, `quit`, `workspace_next`, `workspace_prev`, `move_to_next_workspace` and
-`move_to_prev_workspace` bindings are added (a commented-out or removed one is left alone).
+`move_to_prev_workspace`, `focus_prev_monitor`, `focus_next_monitor`, `move_to_prev_monitor` and
+`move_to_next_monitor` and `show_hotkeys` bindings are added (a commented-out or removed one is left alone).
 
 ## Window rules
 
@@ -154,9 +160,19 @@ A rule needs at least one of `process`, `class`, `title`, and all given fields m
 Use `tile-rs.exe list` to see what the windows on your screen are called.
 
 Windows that are never tiled regardless of rules: invisible or minimized windows, dialogs
-(owned windows), child/no-activate/tool windows, the taskbar and desktop, windows
-you have maximized yourself, and the windows of elevated (administrator) processes while tile-rs
+(owned windows), child/no-activate/tool windows, the taskbar and desktop,
+and the windows of elevated (administrator) processes while tile-rs
 itself is not running as administrator.
+
+A window you maximized (or that opens maximized) is not tiled while it is maximized, but it
+belongs to the workspace it is on: switching away minimizes it and coming back restores it
+maximized, so it never covers another workspace. Un-maximizing makes it a normal tile of that
+workspace. A floating window that fills its whole monitor (a media viewer or player in fullscreen,
+a window floated with `toggle_float` and then maximized) is treated the same way while it does;
+small floating windows stay visible on every workspace, and a window with a `float` rule is never
+touched. When you come back to a workspace, the window you last worked in there gets the focus
+again (a maximized one stays on top of the tiles below it). A window you minimized yourself stays minimized, and one you bring back from the taskbar
+while its workspace is not shown joins the workspace you are on.
 
 Known console hosts are eligible even when their native style omits the usual resizable flag.
 Match the window host (`conhost`, `OpenConsole`, `WindowsTerminal`) rather than assuming that

@@ -131,6 +131,7 @@ pub(super) fn switch_workspace_state(s: &mut State, mi: usize, n: u8, now: Insta
         return false;
     }
     s.prev_ws[mi] = Some(s.cur[mi]);
+    s.slide = Some((mi, if n > s.cur[mi] { 1 } else { -1 }, now));
     s.cur[mi] = n;
     s.no_anim = true;
     let affected: HashSet<isize> = s.order[mi].iter().copied().collect();
@@ -140,8 +141,28 @@ pub(super) fn switch_workspace_state(s: &mut State, mi: usize, n: u8, now: Insta
     true
 }
 
+/// A media window that went fullscreen, or a window that opened maximized, may not have been
+/// noticed yet: nothing re-tiles when a floating window changes size. Pin them to the workspace
+/// they are on *before* it changes, or the next layout pass would pin them to the new one - and
+/// they would cover it.
+fn pin_covering_before_switch(mi: usize, n: u8) {
+    let (will_switch, manual) = STATE.with(|s| {
+        let s = s.borrow();
+        let will_switch = mi < MON && !s.paused && s.dragging.is_none() && n != s.cur[mi];
+        (
+            will_switch,
+            s.manual_float.union(&s.capacity_float).copied().collect(),
+        )
+    });
+    if will_switch && n < WS_COUNT {
+        let c = collect(false, &manual);
+        STATE.with(|s| track_covering_windows(&mut s.borrow_mut(), &c));
+    }
+}
+
 pub(super) fn switch_ws(mi: usize, n: u8, focus: Option<isize>) {
     end_divider(false);
+    pin_covering_before_switch(mi, n);
     let changed = STATE.with(|s| {
         let mut s = s.borrow_mut();
         switch_workspace_state(&mut s, mi, n, Instant::now())
@@ -168,7 +189,7 @@ pub(super) fn switch_ws(mi: usize, n: u8, focus: Option<isize>) {
 }
 
 /// Focuses the fullscreen window of workspace `n` on monitor `mi` if it has one, otherwise the
-/// first tiled one.
+/// window the user last worked in there (a maximized one included), otherwise the first tiled one.
 pub(super) fn focus_workspace(mi: usize, n: u8) {
     let fs = STATE.with(|s| {
         let s = s.borrow();
@@ -186,15 +207,17 @@ pub(super) fn focus_workspace(mi: usize, n: u8) {
             })
             .map(|(h, _)| *h)
     });
-    match fs {
+    let remembered = fs.or_else(|| STATE.with(|s| remembered_focus(&s.borrow(), mi, n)));
+    match remembered {
         Some(h) => focus_hwnd(h),
         None => focus_first_or_desktop(),
     }
 }
 
 /// A window dropped onto workspace dot `n` of monitor `mi` (or sent there from the dot's menu)
-/// moves to that workspace. The user stays where they are, like dropping a file onto a folder.
-pub(super) fn send_to_workspace(h: isize, mi: usize, n: u8) {
+/// moves to that workspace. Returns whether it was moved. A drop then follows the window to that
+/// workspace; the dot's menu leaves the user where they are.
+pub(super) fn send_to_workspace(h: isize, mi: usize, n: u8) -> bool {
     let hwnd = HWND(h as *mut _);
     let plan = STATE.with(|s| {
         let s = s.borrow();
@@ -210,7 +233,7 @@ pub(super) fn send_to_workspace(h: isize, mi: usize, n: u8) {
     });
     let Some(from) = plan else {
         retile(); // whatever happened, the dropped window goes back to its tile
-        return;
+        return false;
     };
     // where the window really is: a drag can leave it mostly on another monitor than its own
     let actual = monitor::of_window(hwnd).min(MON - 1);
@@ -230,7 +253,7 @@ pub(super) fn send_to_workspace(h: isize, mi: usize, n: u8) {
         };
         if moved.is_err() {
             retile();
-            return;
+            return false;
         }
     }
     STATE.with(|s| {
@@ -259,6 +282,7 @@ pub(super) fn send_to_workspace(h: isize, mi: usize, n: u8) {
         n + 1,
         mi + 1
     ));
+    true
 }
 
 /// Right-click on a workspace dot: switch to it, or move the active window there.
@@ -281,7 +305,7 @@ pub(super) fn dot_menu(mi: usize, n: u8) {
     match tray::pick(&items) {
         Some(0) => switch_ws_on_monitor(mi, n),
         Some(1) => {
-            send_to_workspace(fg, mi, n);
+            let _ = send_to_workspace(fg, mi, n);
             refocus_after_menu(fg, from_mi);
         }
         _ => refocus_after_menu(fg, from_mi),

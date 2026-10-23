@@ -9,6 +9,7 @@ mod events;
 mod interaction;
 mod monitors;
 mod placement;
+mod ratios_store;
 mod report;
 mod startup;
 #[cfg(test)]
@@ -26,7 +27,7 @@ use crate::layout::{divider, geometry, live_resize};
 use crate::platform::autostart::set_autostart;
 use crate::platform::dialogs::{msgbox, notify};
 use crate::platform::{monitor, parked, update, window};
-use crate::ui::{launcher, overlay, tray};
+use crate::ui::{launcher, overlay, preview, tray};
 
 use actions::*;
 use animation::*;
@@ -101,8 +102,8 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 
 use border::{
-    border_window_shown, clear_border, place_border, refresh_border, sync_border, sync_border_to,
-    update_border,
+    border_window_shown, clear_border, place_border, refresh_border, remembered_focus, sync_border,
+    sync_border_to, update_border,
 };
 use config::{action_name, Action, Dir, FullscreenWindows, Layout, WS_COUNT};
 use geometry::{
@@ -190,6 +191,9 @@ impl TrackedWindow {
 struct State {
     tracked: HashMap<isize, TrackedWindow>,
     divider: Option<divider::Resize>,
+    /// The running separator / edge drag shows outlines instead of resizing the windows live
+    /// (see `config::LiveResize`).
+    resize_preview: bool,
     /// Rects of the layout last applied, same indices as `last`, per monitor.
     rects: [Vec<RECT>; MON],
     /// Stable window order (so the spiral does not reshuffle when focus changes), per monitor.
@@ -206,6 +210,16 @@ struct State {
     fs_mon: HashMap<isize, usize>,
     /// Fullscreen windows we minimized because their workspace is not shown (to restore later).
     fs_hidden: HashSet<isize>,
+    /// Maximized windows of other workspaces that were minimized by tile-rs (see
+    /// `apply_maximized`); only these are restored when their workspace is shown again.
+    max_hidden: HashMap<isize, Instant>,
+    /// Floating windows (media viewers, `toggle_float`) that fill their monitor, with the monitor
+    /// and workspace they belong to, so they can be hidden when that workspace is left.
+    pinned: HashMap<isize, (usize, u8)>,
+    /// The window last focused on each (monitor, workspace), focused again when it is shown.
+    ws_focus: HashMap<(usize, u8), isize>,
+    /// Windows `apply_maximized` just restored; their restore is asynchronous.
+    restored: HashMap<isize, Instant>,
     /// Windows the user floated with `toggle_float` (never tiled this session).
     manual_float: HashSet<isize>,
     /// Windows currently parked off-screen with their original rectangles (mirrored to disk).
@@ -278,6 +292,13 @@ struct State {
     drop_dot: Option<(usize, u8)>,
     /// Split ratios per workspace (see `spiral`), per monitor.
     ratios: [HashMap<u8, Vec<f32>>; MON],
+    /// Saved ratios of displays that are not connected right now (see `ratios_store`).
+    ratios_offline: ratios_store::Stored,
+    /// What the ratios file holds, and whether the user changed the ratios since it was written.
+    ratios_saved: String,
+    ratios_dirty: bool,
+    /// Debounce timer of the ratios save (0 = none pending).
+    save_timer: usize,
     /// Free region each window of the last layout was cut out of (same indices as `last`), per
     /// monitor.
     regions: [Vec<RECT>; MON],
@@ -307,6 +328,12 @@ struct State {
     frame_fallback: usize,
     /// The next layout pass must place windows instantly (workspace switch, startup, ...).
     no_anim: bool,
+    /// The next layout pass slides the windows of a workspace just switched to in, as (monitor,
+    /// direction: 1 = from the right, -1 = from the left), and when it was asked for: a layout
+    /// pass that never came (paused, dragging) must not slide windows in much later.
+    slide: Option<(usize, i32, Instant)>,
+    /// Windows sliding in that must repaint completely when they arrive (see `repaint_moved`).
+    slid: HashSet<isize>,
     /// An animated client refused its target size; reflow once after all current animations settle.
     min_size_reflow: bool,
     /// Registered hotkeys: (id, action)

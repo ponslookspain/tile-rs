@@ -120,6 +120,7 @@ fn catalog() -> Vec<(String, String, String)> {
     add("pause", "Pause tile-rs", "tile-rs");
     add("reload_config", "Reload the config", "tile-rs");
     add("edit_config", "Open the config file", "tile-rs");
+    add("show_hotkeys", "Show all hotkeys", "tile-rs");
     add("quit", "Quit tile-rs", "tile-rs");
     out
 }

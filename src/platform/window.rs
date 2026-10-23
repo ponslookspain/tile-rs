@@ -29,7 +29,8 @@ use windows::Win32::UI::WindowsAndMessaging::{
 use crate::config::{self, FullscreenWindows, MediaWindows, Rule};
 use crate::diagnostics::prof;
 
-/// In `run` mode, windows the user maximized / made fullscreen are left alone.
+/// In `run` mode, windows the user maximized are never tiled (`Verdict::Maximized`): they stay
+/// maximized, but belong to a workspace so they can be hidden when it is left.
 pub static SKIP_ZOOMED: AtomicBool = AtomicBool::new(false);
 
 /// Skip reason for a window that runs fullscreen / borderless fullscreen.
@@ -97,6 +98,18 @@ const MEDIA_PROCESSES: &[&str] = &[
     "kmplayer",
     "kmplayer64",
     "5kplayer",
+    "smplayer",
+    "mpc-qt",
+    "gom",
+    "gomplayer",
+    "bsplayer",
+    "kodi",
+    "plex",
+    "stremio",
+    "jellyfinmediaplayer",
+    // Windows' own players: Movies & TV, and the Media Player of Windows 11
+    "video.ui",
+    "microsoft.media.player",
 ];
 
 /// Executables (lower-case, without ".exe") that are web browsers. A browser tab that opens an
@@ -176,7 +189,7 @@ fn is_terminal(class: &str, process: &str) -> bool {
     )
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Win {
     pub hwnd: HWND,
     pub title: String,
@@ -286,6 +299,39 @@ fn process_elevated(pid: u32) -> bool {
 thread_local! {
     /// Whether tile-rs itself runs elevated (never changes)
     static SELF_ELEVATED: std::cell::Cell<Option<bool>> = const { std::cell::Cell::new(None) };
+}
+
+thread_local! {
+    /// Programs with an elevated window that tile-rs cannot manage: every program seen so far
+    /// (so each is announced once), and those not announced yet.
+    static ELEVATED_SEEN: RefCell<(HashSet<String>, Vec<String>)> =
+        RefCell::new((HashSet::new(), Vec::new()));
+}
+
+/// Remembers the program of a skipped elevated window so the user can be told why it is not
+/// tiled. Windows without a title and windows a rule floats anyway need no hint.
+fn note_elevated(w: &mut Win, rules: &[Rule]) {
+    if w.title.is_empty() {
+        return;
+    }
+    let process = process_name_cached(w.pid);
+    let rule_ws = w.rule_ws;
+    let action = apply_rules(w, rules, &process);
+    w.rule_ws = rule_ws;
+    if matches!(action, RuleAction::Float) {
+        return;
+    }
+    ELEVATED_SEEN.with(|seen| {
+        let mut seen = seen.borrow_mut();
+        if seen.0.insert(process.clone()) {
+            seen.1.push(process);
+        }
+    });
+}
+
+/// Programs of elevated windows found since the last call (each program only once per run).
+pub fn take_new_elevated() -> Vec<String> {
+    ELEVATED_SEEN.with(|seen| std::mem::take(&mut seen.borrow_mut().1))
 }
 
 fn process_elevated_cached(pid: u32) -> bool {
@@ -410,9 +456,6 @@ fn skip_reason(hwnd: HWND, title: &str, class: &str) -> Option<&'static str> {
         if IsIconic(hwnd).as_bool() {
             return Some("minimized");
         }
-        if SKIP_ZOOMED.load(Ordering::Relaxed) && IsZoomed(hwnd).as_bool() {
-            return Some("maximized/fullscreen by user");
-        }
         if title.is_empty() {
             return Some("no title");
         }
@@ -457,6 +500,7 @@ pub fn running_apps() -> Vec<(String, String, String)> {
         .tileable
         .iter()
         .chain(collected.fullscreen.iter())
+        .chain(collected.maximized.iter())
         .chain(skipped)
     {
         let process = process_name(w.pid);
@@ -473,6 +517,10 @@ pub struct Collector {
     pub tileable: Vec<Win>,
     /// Windows that run fullscreen / borderless fullscreen (tracked per workspace).
     pub fullscreen: Vec<Win>,
+    /// Windows the user maximized (never tiled while maximized, tracked per workspace).
+    pub maximized: Vec<Win>,
+    /// Floating windows (media viewers, `toggle_float`) that fill their monitor right now.
+    pub covering: Vec<Win>,
     pub skipped: Vec<(Win, &'static str)>,
 }
 
@@ -571,6 +619,8 @@ pub enum Verdict {
     Tileable(Win),
     /// fullscreen / borderless fullscreen window (tracked per workspace, never tiled)
     Fullscreen(Win),
+    /// a window the user maximized: not tiled while it is maximized, but tracked per workspace
+    Maximized(Win),
     Skipped(Win, &'static str),
 }
 
@@ -616,7 +666,7 @@ pub fn classify(hwnd: HWND, rules: &[Rule]) -> Verdict {
     if !unsafe { IsWindowVisible(hwnd) }.as_bool() {
         return Verdict::Ignore;
     }
-    let w = win_info(hwnd);
+    let mut w = win_info(hwnd);
     // The Slint settings window runs in a child tile-rs process. Keep it out of the managed
     // window set so opening settings never resizes or moves the UI itself.
     if w.title == "tile-rs Settings" && process_name_cached(w.pid).eq_ignore_ascii_case("tile-rs") {
@@ -630,11 +680,12 @@ pub fn classify(hwnd: HWND, rules: &[Rule]) -> Verdict {
         };
     }
     if !self_elevated() && process_elevated_cached(w.pid) {
+        note_elevated(&mut w, rules);
         return Verdict::Skipped(w, ELEVATED_REASON);
     }
     let pn = process_name_cached(w.pid);
     let style = unsafe { GetWindowLongW(hwnd, GWL_STYLE) } as u32;
-    classify_eligible(
+    let verdict = classify_eligible(
         w,
         &pn,
         rules,
@@ -642,7 +693,21 @@ pub fn classify(hwnd: HWND, rules: &[Rule]) -> Verdict {
         style & WS_THICKFRAME.0 != 0,
         config::media_windows(),
         config::fullscreen_windows(),
-    )
+    );
+    // A window the user maximized would be tiled otherwise: it keeps its size, but it is tracked
+    match verdict {
+        Verdict::Tileable(w)
+            if SKIP_ZOOMED.load(Ordering::Relaxed) && unsafe { IsZoomed(hwnd) }.as_bool() =>
+        {
+            Verdict::Maximized(w)
+        }
+        verdict => verdict,
+    }
+}
+
+/// A window that fills its monitor: maximized, or borderless fullscreen.
+pub fn covers_monitor(hwnd: HWND) -> bool {
+    unsafe { IsZoomed(hwnd) }.as_bool() || is_fullscreen(hwnd)
 }
 
 fn classify_eligible(
@@ -693,7 +758,7 @@ fn floating_reason(
 /// Shared by event admission and full enumeration, including fullscreen windows.
 pub fn classify_with_manual(hwnd: HWND, rules: &[Rule], manual_float: &HashSet<isize>) -> Verdict {
     match classify(hwnd, rules) {
-        Verdict::Tileable(w) | Verdict::Fullscreen(w)
+        Verdict::Tileable(w) | Verdict::Fullscreen(w) | Verdict::Maximized(w)
             if manual_float.contains(&(hwnd.0 as isize)) =>
         {
             Verdict::Skipped(w, MANUAL_REASON)
@@ -744,7 +809,14 @@ unsafe extern "system" fn enum_proc(hwnd: HWND, lparam: LPARAM) -> BOOL {
         Verdict::Ignore => {}
         Verdict::Tileable(w) => context.collector.tileable.push(w),
         Verdict::Fullscreen(w) => context.collector.fullscreen.push(w),
+        Verdict::Maximized(w) => context.collector.maximized.push(w),
         Verdict::Skipped(w, r) => {
+            // A media viewer or a window the user floated that fills the monitor still covers the
+            // workspace it is on: it is tracked so it can be hidden when that workspace is left.
+            // A "float" rule means completely unmanaged and is left alone.
+            if (r == MEDIA_REASON || r == MANUAL_REASON) && covers_monitor(hwnd) {
+                context.collector.covering.push(w.clone());
+            }
             if context.keep_skipped {
                 context.collector.skipped.push((w, r));
             }
@@ -763,6 +835,8 @@ pub fn collect(keep_skipped: bool, manual_float: &HashSet<isize>) -> Collector {
     let mut c = Collector {
         tileable: vec![],
         fullscreen: vec![],
+        maximized: vec![],
+        covering: vec![],
         skipped: vec![],
     };
     let rules = config::rules();
@@ -801,6 +875,11 @@ pub fn diagnostic_snapshot(
     let (verdict, reason, workspace) = match classify_with_manual(hwnd, rules, manual_float) {
         Verdict::Tileable(w) => ("tileable", None, w.rule_ws),
         Verdict::Fullscreen(w) => ("fullscreen", Some(FULLSCREEN_REASON), w.rule_ws),
+        Verdict::Maximized(w) => (
+            "maximized",
+            Some("maximized: kept with its workspace"),
+            w.rule_ws,
+        ),
         Verdict::Skipped(w, reason) => ("skipped", Some(reason), w.rule_ws),
         Verdict::Ignore => ("ignored", skip_reason(hwnd, &w.title, &w.class), None),
     };
@@ -1152,6 +1231,8 @@ mod tests {
         let mut collector = Collector {
             tileable: Vec::new(),
             fullscreen: Vec::new(),
+            maximized: Vec::new(),
+            covering: Vec::new(),
             skipped: Vec::new(),
         };
         let mut context = EnumContext {
@@ -1192,6 +1273,78 @@ mod tests {
         assert!(!title_has_media_ext("my_mp4_notes.txt"));
         assert!(!title_has_media_ext("index.ts")); // ts is deliberately not a video extension
         assert!(!title_has_media_ext("Just a normal document"));
+    }
+
+    #[test]
+    fn windows_own_players_and_common_third_party_players_count_as_media() {
+        for process in [
+            "video.ui",
+            "microsoft.media.player",
+            "smplayer",
+            "gom",
+            "kodi",
+            "plex",
+        ] {
+            assert!(is_media("", process), "{process}");
+        }
+        // the list holds lower-case names without ".exe", like `process_name_cached` returns
+        assert!(MEDIA_PROCESSES
+            .iter()
+            .all(|name| *name == name.to_ascii_lowercase() && !name.ends_with(".exe")));
+    }
+
+    #[test]
+    fn a_maximized_window_is_tracked_not_tiled_and_a_floating_one_that_covers_is_collected() {
+        use windows::Win32::UI::WindowsAndMessaging::{ShowWindow, SW_MAXIMIZE};
+        let _config_lock = config::test_lock();
+        let was = SKIP_ZOOMED.swap(true, Ordering::Relaxed);
+        // a titled, resizable window, so it is neither fullscreen nor "not resizable"
+        let window = Fixture(unsafe {
+            windows::Win32::UI::WindowsAndMessaging::CreateWindowExW(
+                Default::default(),
+                windows::core::w!("STATIC"),
+                windows::core::w!("tile-rs classification fixture"),
+                windows::Win32::UI::WindowsAndMessaging::WS_OVERLAPPEDWINDOW
+                    | windows::Win32::UI::WindowsAndMessaging::WS_VISIBLE,
+                100,
+                100,
+                500,
+                400,
+                None,
+                None,
+                None,
+                None,
+            )
+            .unwrap()
+        });
+        let rules = [rule("tile")];
+        assert!(matches!(classify(window.0, &rules), Verdict::Tileable(_)));
+        unsafe {
+            let _ = ShowWindow(window.0, SW_MAXIMIZE);
+        }
+        assert!(matches!(classify(window.0, &rules), Verdict::Maximized(_)));
+        assert!(covers_monitor(window.0));
+        // floated by the user and maximized: collected as a covering floating window
+        let manual = HashSet::from([window.0 .0 as isize]);
+        let mut collector = Collector {
+            tileable: Vec::new(),
+            fullscreen: Vec::new(),
+            maximized: Vec::new(),
+            covering: Vec::new(),
+            skipped: Vec::new(),
+        };
+        let mut context = EnumContext {
+            collector: &mut collector,
+            keep_skipped: true,
+            rules: &rules,
+            manual_float: &manual,
+        };
+        unsafe {
+            let _ = enum_proc(window.0, LPARAM(&mut context as *mut _ as isize));
+        }
+        assert_eq!(collector.covering.len(), 1);
+        assert!(collector.maximized.is_empty() && collector.tileable.is_empty());
+        SKIP_ZOOMED.store(was, Ordering::Relaxed);
     }
 
     #[test]

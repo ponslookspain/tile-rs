@@ -890,6 +890,7 @@ fn closed_window_is_discarded_during_animation_before_another_placement_is_submi
             dur_ms: 1000,
             last: None,
             frame_at: None,
+            tangent: None,
         });
         arm_anim_timer(&mut s);
         assert!(s.frame_armed);
@@ -903,4 +904,317 @@ fn closed_window_is_discarded_during_animation_before_another_placement_is_submi
         assert!(!s.frame_armed);
         assert_eq!(s.frame_fallback, 0);
     });
+}
+
+/// Runs the messages of `window` until `done` holds (ShowWindowAsync finishes on the window's thread).
+fn pump_until(window: HWND, done: impl Fn() -> bool) {
+    let started = Instant::now();
+    while !done() && started.elapsed() < Duration::from_millis(1000) {
+        let mut message = MSG::default();
+        unsafe {
+            while PeekMessageW(&mut message, Some(window), 0, 0, PM_REMOVE).as_bool() {
+                DispatchMessageW(&message);
+            }
+        }
+        std::thread::sleep(Duration::from_millis(2));
+    }
+}
+
+#[test]
+fn maximized_window_is_minimized_off_its_workspace_and_restored_on_return() {
+    use windows::Win32::UI::WindowsAndMessaging::{IsZoomed, SW_MAXIMIZE};
+    let _config = ConfigGuard::new(|_| {});
+    let ours = Fixture::new();
+    let users = Fixture::new();
+    unsafe {
+        let _ = ShowWindow(ours.0, SW_MAXIMIZE);
+        let _ = ShowWindow(users.0, SW_SHOWMINNOACTIVE);
+    }
+    assert!(unsafe { IsZoomed(ours.0) }.as_bool());
+    let mut state = State::default();
+    for window in [&ours, &users] {
+        state.ws.insert(window.h(), 1); // both belong to workspace 2
+        state.mon.insert(window.h(), 0);
+        state.suspended.insert(window.h());
+    }
+    state.cur[0] = 0; // workspace 1 is shown
+
+    apply_maximized(&mut state);
+    assert!(state.max_hidden.contains_key(&ours.h()));
+    assert!(
+        !state.max_hidden.contains_key(&users.h()),
+        "a user-minimized app is not ours to restore"
+    );
+    pump_until(ours.0, || unsafe { IsIconic(ours.0) }.as_bool());
+    assert!(unsafe { IsIconic(ours.0) }.as_bool());
+
+    // coming back to workspace 2 restores ours, not the one the user minimized
+    state.cur[0] = 1;
+    apply_maximized(&mut state);
+    assert!(state.max_hidden.is_empty());
+    pump_until(ours.0, || !unsafe { IsIconic(ours.0) }.as_bool());
+    assert!(!unsafe { IsIconic(ours.0) }.as_bool());
+    assert!(
+        unsafe { IsZoomed(ours.0) }.as_bool(),
+        "it comes back maximized"
+    );
+    assert!(unsafe { IsIconic(users.0) }.as_bool());
+}
+
+#[test]
+fn a_maximized_window_of_the_shown_workspace_is_left_alone() {
+    use windows::Win32::UI::WindowsAndMessaging::{IsZoomed, SW_MAXIMIZE};
+    let _config = ConfigGuard::new(|_| {});
+    let window = Fixture::new();
+    unsafe {
+        let _ = ShowWindow(window.0, SW_MAXIMIZE);
+    }
+    let mut state = State::default();
+    state.ws.insert(window.h(), 0);
+    state.mon.insert(window.h(), 0);
+    state.suspended.insert(window.h());
+    apply_maximized(&mut state);
+    assert!(state.max_hidden.is_empty());
+    assert!(unsafe { IsZoomed(window.0) }.as_bool() && !unsafe { IsIconic(window.0) }.as_bool());
+}
+
+#[test]
+fn a_hidden_maximized_window_that_lost_its_workspace_is_restored_and_forgotten() {
+    let _config = ConfigGuard::new(|_| {});
+    let window = Fixture::new();
+    unsafe {
+        let _ = ShowWindow(window.0, SW_SHOWMINNOACTIVE);
+    }
+    let mut state = State::default();
+    state.max_hidden.insert(window.h(), Instant::now()); // minimized by us earlier, then its assignment went away
+    apply_maximized(&mut state);
+    assert!(state.max_hidden.is_empty());
+    pump_until(window.0, || !unsafe { IsIconic(window.0) }.as_bool());
+    assert!(!unsafe { IsIconic(window.0) }.as_bool());
+}
+
+#[test]
+fn a_window_the_user_brings_back_joins_the_workspace_they_are_on() {
+    use windows::Win32::UI::WindowsAndMessaging::SW_MAXIMIZE;
+    let _config = ConfigGuard::new(|_| {});
+    let window = Fixture::new();
+    unsafe {
+        let _ = ShowWindow(window.0, SW_MAXIMIZE);
+    }
+    let mut state = State::default();
+    state.ws.insert(window.h(), 1);
+    state.mon.insert(window.h(), 0);
+    state.suspended.insert(window.h());
+    state.cur[0] = 0;
+    // minimized by us a moment ago: the minimize may simply not have happened yet
+    state.max_hidden.insert(window.h(), Instant::now());
+    apply_maximized(&mut state);
+    assert_eq!(
+        state.ws[&window.h()],
+        1,
+        "not mistaken for the user's own restore"
+    );
+    // long ago: it is visible again, so the user took it out of the taskbar
+    let long_ago = Instant::now()
+        .checked_sub(Duration::from_secs(5))
+        .unwrap_or_else(Instant::now);
+    state.max_hidden.insert(window.h(), long_ago);
+    assert!(state.max_hidden[&window.h()].elapsed() >= MINIMIZE_GRACE);
+    apply_maximized(&mut state);
+    assert_eq!(state.ws[&window.h()], 0);
+    assert!(state.max_hidden.is_empty());
+}
+
+#[test]
+fn a_pinned_fullscreen_floating_window_is_minimized_off_its_workspace_and_restored() {
+    use windows::Win32::UI::WindowsAndMessaging::{IsZoomed, SW_MAXIMIZE};
+    let _config = ConfigGuard::new(|_| {});
+    let video = Fixture::new();
+    unsafe {
+        let _ = ShowWindow(video.0, SW_MAXIMIZE);
+    }
+    assert!(unsafe { IsZoomed(video.0) }.as_bool());
+    // a media viewer: floating, so not in `ws`, but pinned to workspace 2 while it covers the screen
+    let mut state = State::default();
+    state.pinned.insert(video.h(), (0, 1));
+    state.cur[0] = 0;
+
+    apply_maximized(&mut state);
+    assert!(state.max_hidden.contains_key(&video.h()));
+    pump_until(video.0, || unsafe { IsIconic(video.0) }.as_bool());
+    assert!(unsafe { IsIconic(video.0) }.as_bool());
+
+    state.cur[0] = 1;
+    apply_maximized(&mut state);
+    assert!(state.max_hidden.is_empty());
+    pump_until(video.0, || !unsafe { IsIconic(video.0) }.as_bool());
+    assert!(!unsafe { IsIconic(video.0) }.as_bool());
+    assert!(unsafe { IsZoomed(video.0) }.as_bool());
+    assert_eq!(
+        state.pinned[&video.h()],
+        (0, 1),
+        "it stays pinned to its workspace"
+    );
+}
+
+#[test]
+fn a_floating_window_that_does_not_cover_the_screen_is_never_hidden() {
+    let _config = ConfigGuard::new(|_| {});
+    let small = Fixture::new();
+    let mut state = State::default();
+    state.pinned.insert(small.h(), (0, 1));
+    state.cur[0] = 0;
+    apply_maximized(&mut state);
+    assert!(state.max_hidden.is_empty());
+    assert!(!unsafe { IsIconic(small.0) }.as_bool());
+}
+
+#[test]
+fn a_window_that_opens_maximized_joins_the_workspace_it_appeared_on() {
+    use windows::Win32::UI::WindowsAndMessaging::SW_MAXIMIZE;
+    let _config = ConfigGuard::new(|_| {});
+    let window = Fixture::new();
+    unsafe {
+        let _ = ShowWindow(window.0, SW_MAXIMIZE);
+    }
+    let mut state = State::default();
+    state.cur[0] = 2;
+    let collected = window::Collector {
+        tileable: Vec::new(),
+        fullscreen: Vec::new(),
+        maximized: vec![window::Win {
+            hwnd: window.0,
+            title: "opened maximized".into(),
+            class: "Fixture".into(),
+            pid: 1,
+            rule_ws: None,
+        }],
+        covering: Vec::new(),
+        skipped: Vec::new(),
+    };
+    track_covering_windows(&mut state, &collected);
+    assert_eq!(state.ws.get(&window.h()), Some(&2));
+    assert!(state.order[state.mi(window.h())].contains(&window.h()));
+    // it is hidden when that workspace is left, and not counted against the tile budget
+    state.suspended.insert(window.h());
+    state.cur[0] = 0;
+    apply_maximized(&mut state);
+    assert!(state.max_hidden.contains_key(&window.h()));
+    assert!(workspace_windows(&state, 0, 2).is_empty());
+}
+
+#[test]
+fn coming_back_focuses_the_window_the_user_worked_in_not_the_first_tile() {
+    use windows::Win32::UI::WindowsAndMessaging::SW_MAXIMIZE;
+    let _config = ConfigGuard::new(|_| {});
+    let tile = Fixture::new();
+    let maximized = Fixture::new();
+    unsafe {
+        let _ = ShowWindow(maximized.0, SW_MAXIMIZE);
+    }
+    let mut state = State::default();
+    for window in [&tile, &maximized] {
+        state.ws.insert(window.h(), 0);
+        state.mon.insert(window.h(), 0);
+    }
+    state.last[0] = vec![tile.h()]; // the maximized window is not in the layout
+                                    // the user focused the maximized one
+    update_border(&mut state, maximized.h());
+    assert_eq!(remembered_focus(&state, 0, 0), Some(maximized.h()));
+    // elsewhere / nothing remembered: no answer, the caller falls back to the first tile
+    assert_eq!(remembered_focus(&state, 0, 1), None);
+    assert_eq!(remembered_focus(&State::default(), 0, 0), None);
+}
+
+#[test]
+fn focus_changes_right_after_a_workspace_switch_are_not_remembered() {
+    let _config = ConfigGuard::new(|_| {});
+    let hidden_one = Fixture::new();
+    let mut state = State::default();
+    state.ws.insert(hidden_one.h(), 0);
+    state.mon.insert(hidden_one.h(), 0);
+    state.last_switch = Some(Instant::now());
+    update_border(&mut state, hidden_one.h());
+    assert!(
+        state.ws_focus.is_empty(),
+        "Windows moved the focus, not the user"
+    );
+}
+
+#[test]
+fn a_remembered_window_the_user_minimized_or_moved_away_is_not_brought_back() {
+    use windows::Win32::UI::WindowsAndMessaging::SW_MAXIMIZE;
+    let _config = ConfigGuard::new(|_| {});
+    let window = Fixture::new();
+    unsafe {
+        let _ = ShowWindow(window.0, SW_MAXIMIZE);
+    }
+    let mut state = State::default();
+    state.ws.insert(window.h(), 0);
+    state.mon.insert(window.h(), 0);
+    update_border(&mut state, window.h());
+    assert_eq!(remembered_focus(&state, 0, 0), Some(window.h()));
+    state.ws.insert(window.h(), 3); // moved to another workspace
+    assert_eq!(remembered_focus(&state, 0, 0), None);
+    state.ws.insert(window.h(), 0);
+    unsafe {
+        let _ = ShowWindow(window.0, SW_SHOWMINNOACTIVE);
+    }
+    assert_eq!(
+        remembered_focus(&state, 0, 0),
+        None,
+        "the user minimized it"
+    );
+}
+
+#[test]
+fn a_window_being_restored_gets_the_focus_even_when_nothing_was_remembered() {
+    let _config = ConfigGuard::new(|_| {});
+    let window = Fixture::new();
+    unsafe {
+        let _ = ShowWindow(window.0, SW_SHOWMINNOACTIVE); // its restore is still pending
+    }
+    let mut state = State::default();
+    state.ws.insert(window.h(), 2);
+    state.mon.insert(window.h(), 0);
+    assert_eq!(remembered_focus(&state, 0, 2), None);
+    state.restored.insert(window.h(), Instant::now());
+    assert_eq!(remembered_focus(&state, 0, 2), Some(window.h()));
+    let old = Instant::now()
+        .checked_sub(Duration::from_secs(5))
+        .unwrap_or_else(Instant::now);
+    state.restored.insert(window.h(), old);
+    assert_eq!(
+        remembered_focus(&state, 0, 2),
+        None,
+        "a stale restore is no longer pending"
+    );
+}
+
+#[test]
+fn a_pinned_window_is_kept_while_it_is_being_restored_and_dropped_once_it_is_free() {
+    let _config = ConfigGuard::new(|_| {});
+    let window = Fixture::new();
+    let none = window::Collector {
+        tileable: Vec::new(),
+        fullscreen: Vec::new(),
+        maximized: Vec::new(),
+        covering: Vec::new(),
+        skipped: Vec::new(),
+    };
+    let mut state = State::default();
+    state.pinned.insert(window.h(), (0, 1));
+    // not covering and not ours to bring back: it is a free floating window again
+    track_covering_windows(&mut state, &none);
+    assert!(state.pinned.is_empty());
+    // its restore is still under way: it stays pinned, or the next pass would forget it
+    state.pinned.insert(window.h(), (0, 1));
+    state.restored.insert(window.h(), Instant::now());
+    track_covering_windows(&mut state, &none);
+    assert_eq!(state.pinned.len(), 1);
+    // minimized by us: pinned until it is back
+    state.restored.clear();
+    state.max_hidden.insert(window.h(), Instant::now());
+    track_covering_windows(&mut state, &none);
+    assert_eq!(state.pinned.len(), 1);
 }

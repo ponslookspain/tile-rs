@@ -3,4 +3,5 @@
 pub(crate) mod launcher;
 pub(crate) mod launcher_model;
 pub(crate) mod overlay;
+pub(crate) mod preview;
 pub(crate) mod tray;

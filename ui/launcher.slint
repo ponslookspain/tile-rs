@@ -19,7 +19,10 @@ export component MainWindow inherits Window {
     preferred-height: 820px;
     min-width: 1000px;
     min-height: 640px;
-    background: AppTheme.canvas;
+    // Flipping `full_repaint` changes the window background by an invisible 1/255 of alpha, which
+    // makes the software renderer repaint the whole window (see `launcher::force_full_repaint`).
+    in-out property <bool> full_repaint: false;
+    background: full_repaint ? AppTheme.canvas.with-alpha(0.996) : AppTheme.canvas;
 
     in-out property <int> page: 0;
     in-out property <int> layout_index: 0;

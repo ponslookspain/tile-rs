@@ -163,6 +163,16 @@ pub(crate) fn run() {
                         );
                     }
                 }
+                if !c.maximized.is_empty() {
+                    let _ = writeln!(out, "\nMAXIMIZED ({}):", c.maximized.len());
+                    for w in &c.maximized {
+                        let _ = writeln!(
+                            out,
+                            "  [{:>6}] {:<28} {}  <- maximized: kept with its workspace, not tiled",
+                            w.pid, w.class, w.title
+                        );
+                    }
+                }
                 let _ = writeln!(out, "\nSKIPPED ({}):", c.skipped.len());
                 for (w, r) in &c.skipped {
                     let _ = writeln!(

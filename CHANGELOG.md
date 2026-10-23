@@ -6,6 +6,53 @@ follows [Semantic Versioning](https://semver.org) (see [docs/RELEASING.md](docs/
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-10-24
+
+### Added
+- Window sizes you set by dragging or with the keyboard are remembered per screen and workspace
+  and come back after a restart.
+- `Alt+[` / `Alt+]` focus the previous / next monitor, `Alt+Shift+[` / `Alt+Shift+]` send the
+  window there. Older configs get the keys added on start-up.
+- `Alt+/` opens the settings on the Hotkeys page.
+- tile-rs says once per program when it leaves a window alone because the program runs as
+  administrator.
+- `live_resize = "live" | "preview" | "auto"`: with outlines, a separator or edge drag shows the
+  new tiles and the windows move once on release. `auto` (default) switches to outlines with more
+  than five windows on the monitor or on a slow machine.
+- Separator highlights fade on hover; a dragged window outlines the tile it would land in.
+- Switching workspace slides the windows in a short way; on arrival each window repaints
+  completely, so browsers and Electron apps do not leave their content behind.
+
+### Changed
+- A window dropped onto a workspace dot takes you along to that workspace. Moving the active
+  window from the dot's right-click menu still leaves you where you are.
+- Dragging a separator is smoother with many windows: the windows on both sides of it move
+  together, windows further away update less often, and the pointer moves in small steps.
+- A layout change during a running animation keeps the windows' speed instead of restarting it.
+
+### Fixed
+- A window maximized on one workspace no longer stays on top when you switch to another
+  workspace: it is minimized and comes back maximized when you return. A window you minimized
+  yourself is left alone, and one you bring back from the taskbar joins the workspace you are on.
+  Coming back to a workspace now focuses the window you last worked in there (a maximized one
+  included) instead of the first tile, which used to end up on top of it.
+  This also covers windows that open maximized (browsers, Explorer) and floating windows that fill
+  their monitor, such as a video player or a photo viewer in fullscreen.
+- More video players are recognised and left floating: Movies & TV, the Media Player of Windows 11,
+  SMPlayer, GOM Player, Kodi, Plex, Stremio and others.
+- With "No gaps for a single window" (`smart_gaps`) turned on, windows are tiled again: the lone
+  first window filled the screen without gaps but was then checked against the gapped area,
+  rejected, and every window was left floating.
+- Moving several windows at once no longer tries a batch that Windows always rejected: each frame
+  used to fail, write a line to the log and only then place the windows one by one. Drags and
+  animations, especially right after start, react faster, and window edges no longer jitter
+  while you drag a separator.
+- The settings window no longer shows parts of other windows after it is restored, resized,
+  shown again or moved to another display: it repaints completely then.
+- The workspace dots stay above a window you are dragging, also above other always-on-top windows.
+- After the computer wakes from sleep or hibernation the layout is rebuilt, and once more a few
+  seconds later for monitors that come back late.
+
 ## [0.7.1] - 2026-10-23
 
 ### Security
@@ -342,7 +389,8 @@ First working prototype.
 - Tray icon with menu, autostart, single-instance guard, first-run dialog.
 - `config.toml`: gap, animations, hotkeys, per-application rules (float / workspace).
 
-[Unreleased]: https://github.com/ponslookspain/tile-rs/compare/v0.7.1...HEAD
+[Unreleased]: https://github.com/ponslookspain/tile-rs/compare/v0.8.0...HEAD
+[0.8.0]: https://github.com/ponslookspain/tile-rs/compare/v0.7.1...v0.8.0
 [0.7.1]: https://github.com/ponslookspain/tile-rs/compare/v0.7.0...v0.7.1
 [0.7.0]: https://github.com/ponslookspain/tile-rs/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/ponslookspain/tile-rs/compare/v0.5.0...v0.6.0

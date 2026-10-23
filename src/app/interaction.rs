@@ -35,6 +35,21 @@ pub(super) fn sync_dividers() {
     divider::sync(handles);
 }
 
+/// Pointer step of the live separator drag at 96 DPI (see `divider::Resize::live_target`).
+const LIVE_STEP_PX: i32 = 4;
+/// With more windows than this on the monitor, `live_resize = "auto"` shows outlines.
+const AUTO_PREVIEW_WINDOWS: usize = 5;
+
+/// Whether a separator / edge drag over `windows` windows shows outlines instead of resizing
+/// the windows while the pointer moves.
+pub(super) fn use_resize_preview(s: &State, windows: usize) -> bool {
+    match config::live_resize() {
+        config::LiveResize::Live => false,
+        config::LiveResize::Preview => true,
+        config::LiveResize::Auto => windows > AUTO_PREVIEW_WINDOWS || animations_suspended(s),
+    }
+}
+
 pub(crate) fn begin_divider(handle: divider::Handle, origin: POINT) -> bool {
     let _profile = Timer::new("divider_prepare");
     if STATE.with(|s| s.try_borrow_mut().is_err()) {
@@ -112,6 +127,7 @@ pub(crate) fn begin_divider(handle: divider::Handle, origin: POINT) -> bool {
                 )
             })
             .collect();
+        s.resize_preview = use_resize_preview(&s, windows.len());
         s.divider = Some(divider::Resize {
             handle,
             layout,
@@ -138,6 +154,7 @@ pub(crate) fn begin_divider(handle: divider::Handle, origin: POINT) -> bool {
         arm_anim_timer(&mut s);
         if !s.frame_armed {
             s.divider = None;
+            s.resize_preview = false;
             s.live_borders.clear();
             return false;
         }
@@ -181,17 +198,33 @@ pub(crate) fn update_divider(point: POINT) {
             return true;
         }
         let gesture = s.divider.as_ref().unwrap();
-        let (_, tiles, _) = gesture.target(point);
+        let step = LIVE_STEP_PX * monitor::dpi(mi) as i32 / 96;
+        let (_, tiles, _) = gesture.live_target(point, step);
         if tiles == gesture.preview {
             return true;
         }
+        if s.resize_preview {
+            preview::show(&tiles);
+            s.divider.as_mut().unwrap().preview = tiles;
+            return true;
+        }
+        let near = gesture.touching_split(&tiles);
         let targets: Vec<_> = gesture
             .windows
             .iter()
             .copied()
             .zip(tiles.iter().copied())
+            .zip(near)
+            .map(|((h, r), near)| {
+                let class = if near {
+                    live_resize::Class::Near
+                } else {
+                    live_resize::Class::Far
+                };
+                (h, r, class)
+            })
             .collect();
-        s.live_resize.queue(&targets);
+        s.live_resize.queue_frame(&targets);
         s.divider.as_mut().unwrap().preview = tiles;
         true
     });
@@ -273,10 +306,21 @@ pub(super) fn finish_divider(finish: DividerFinish) {
                         && unsafe { IsWindowVisible(hwnd).as_bool() && !IsIconic(hwnd).as_bool() }
                 })
                 .collect();
-            place_batch(&mut s, &targets);
+            if s.resize_preview {
+                // the windows were left where they were: glide them once into the new tiles
+                for (h, target) in targets {
+                    move_window(&mut s, HWND(h as *mut _), target, true);
+                }
+            } else {
+                place_batch(&mut s, &targets);
+            }
+        }
+        if std::mem::take(&mut s.resize_preview) {
+            preview::hide();
         }
         if let Some((ratios, tiles, regions)) = result {
             s.ratios[mi].insert(gesture.workspace, ratios);
+            s.touch_ratios();
             s.rects[mi] = tiles;
             s.regions[mi] = regions;
         }

@@ -1,5 +1,6 @@
 //! Layout reconciliation, capacity checks and interactive resizing.
 
+use super::placement::MINIMIZE_GRACE;
 use super::*;
 
 /// Does the visible frame of `hwnd` differ from `target` by more than a few pixels?
@@ -64,6 +65,7 @@ pub(super) fn resize_focused(width: bool, grow: bool) {
             }
             rs.clone()
         };
+        s.touch_ratios();
         let monocle = is_monocle(&s, mi, cur);
         let (tiles, regions) = fitted(monitor_work(mi), &s.last[mi], &ratios, &s.min_size, monocle);
         if !valid_layout(mi, &s.last[mi], &tiles, &s.min_size) {
@@ -90,6 +92,12 @@ pub(super) fn resize_focused(width: bool, grow: bool) {
     refresh_border();
 }
 
+/// Workspace slide: how far the incoming windows start off their tiles (share of the monitor
+/// width, capped), and up to how many windows it is shown.
+const SLIDE_SHARE: f32 = 0.04;
+const SLIDE_MAX_PX: f32 = 80.0;
+const SLIDE_MAX_WINDOWS: usize = 6;
+
 /// Live drag & drop preview: while the user drags a tiled window over the tile of another one,
 /// slide that window into the dragged window's (now empty) slot so it is obvious that releasing
 /// here swaps the two. Moving away - or hovering the dragged window's own slot - undoes it.
@@ -110,6 +118,11 @@ pub(super) fn update_drag_preview(s: &mut State, h: isize) {
         .iter()
         .position(|r| p.x >= r.left && p.x < r.right && p.y >= r.top && p.y < r.bottom);
     let slot = s.rects[mi][k];
+    // outline the tile the dragged window would land in (none over its own slot)
+    match hit.filter(|i| *i != k) {
+        Some(i) => preview::show(&[s.rects[mi][i]]),
+        None => preview::hide(),
+    }
     // cursor over the dragged window's own slot (or over nothing): undo any preview
     if hit.is_none() || hit == Some(k) {
         if let Some((pi, ph)) = s.drag_preview.take() {
@@ -195,7 +208,13 @@ pub(super) fn live_resize() {
                 .zip(new_tiles.iter().copied())
                 .filter(|(hw, _)| *hw != h)
                 .collect();
-            s.live_resize.queue(&others);
+            if use_resize_preview(&s, last.len()) {
+                s.resize_preview = true;
+                let outlines: Vec<RECT> = others.iter().map(|(_, r)| *r).collect();
+                preview::show(&outlines);
+            } else {
+                s.live_resize.queue(&others);
+            }
             s.rects[mi] = new_tiles;
             s.regions[mi] = new_regions;
         }
@@ -354,6 +373,67 @@ pub(super) fn workspace_visibility(
         .partition(|h| s.ws[h] != s.cur[mi])
 }
 
+/// Windows that fill a monitor without being tiled still cover the workspace they are on:
+/// - a maximized window (also one that opened maximized) belongs to the workspace it appeared on,
+///   like a tiled one, so it is hidden when that workspace is left and tiled when un-maximized;
+/// - a floating window that fills its monitor (a media viewer, a window floated with
+///   `toggle_float`) is pinned to its workspace while it does, and is free again afterwards.
+///   Small floating windows stay visible everywhere.
+pub(super) fn track_covering_windows(s: &mut State, c: &window::Collector) {
+    for w in &c.maximized {
+        let h = w.hwnd.0 as isize;
+        let mi = monitor::of_window(w.hwnd).min(MON - 1);
+        if s.ws.contains_key(&h) {
+            // moved to another monitor while maximized (Win+Shift+Arrow): it belongs to the
+            // workspace that monitor shows now, as a window dragged there does
+            let from = s.mi(h);
+            if from != mi {
+                s.order[from].retain(|window| *window != h);
+                if !s.order[mi].contains(&h) {
+                    s.order[mi].push(h);
+                }
+                s.mon.insert(h, mi);
+                s.ws.insert(h, s.cur[mi]);
+            }
+            continue;
+        }
+        if s.fs_ws.contains_key(&h) {
+            continue;
+        }
+        s.ws.insert(h, w.rule_ws.unwrap_or(s.cur[mi]));
+        s.mon.insert(h, mi);
+        if !s.order[mi].contains(&h) {
+            s.order[mi].push(h);
+        }
+        remember_identity(s, w.hwnd);
+    }
+    let covering: HashSet<isize> = c.covering.iter().map(|w| w.hwnd.0 as isize).collect();
+    for w in &c.covering {
+        let h = w.hwnd.0 as isize;
+        if !s.pinned.contains_key(&h) {
+            let mi = monitor::of_window(w.hwnd).min(MON - 1);
+            s.pinned.insert(h, (mi, s.cur[mi]));
+        }
+    }
+    // one we minimized (or are restoring) stays pinned until it is back; one that is no longer
+    // covering is free
+    let keep: HashSet<isize> = s
+        .max_hidden
+        .keys()
+        .chain(
+            s.restored
+                .iter()
+                .filter(|(_, at)| at.elapsed() < MINIMIZE_GRACE)
+                .map(|(h, _)| h),
+        )
+        .copied()
+        .collect();
+    s.pinned.retain(|h, _| {
+        unsafe { IsWindow(Some(HWND(*h as *mut _))) }.as_bool()
+            && (covering.contains(h) || keep.contains(h))
+    });
+}
+
 pub(super) fn retile() {
     if SESSION_ENDING.with(Cell::get) {
         return;
@@ -410,6 +490,7 @@ pub(super) fn retile() {
         }
         reconcile_fullscreen(&mut s, &c.fullscreen);
         apply_fullscreen(&mut s);
+        track_covering_windows(&mut s, &c);
         let present: Vec<isize> = c.tileable.iter().map(|w| w.hwnd.0 as isize).collect();
         let present_set: HashSet<isize> = present.iter().copied().collect();
         // windows we have not seen before are placed instantly; known ones glide
@@ -419,6 +500,7 @@ pub(super) fn retile() {
             .filter(|h| !s.ws.contains_key(h))
             .collect();
         let animate_all = !std::mem::take(&mut s.no_anim);
+        let slide = s.slide.take();
         // forget windows that are gone (their observed minimum size goes with them)
         s.min_size
             .retain(|h, _| unsafe { IsWindow(Some(HWND(*h as *mut _))) }.as_bool());
@@ -434,6 +516,8 @@ pub(super) fn retile() {
             .map(|window| window.hwnd.0 as isize)
             .collect();
         retain_assignments(&mut s, &present_set, &fullscreen, &manual);
+        // `suspended` is current now: minimize / restore the maximized windows of other workspaces
+        apply_maximized(&mut s);
         // Restore/migrate every known window's order before admitting any new one.
         // Otherwise a fullscreen exit later in the enumeration could change a
         // layout that an earlier new window already used for its capacity check.
@@ -534,13 +618,36 @@ pub(super) fn retile() {
             }
             s.rects[mi] = rects;
             s.regions[mi] = regions;
+            // the windows of the workspace just switched to come in with a short slide from the
+            // side of the dot they belong to; a slide only moves them, so it costs the apps little
+            let slide_offset = slide
+                .filter(|(smi, _, at)| {
+                    *smi == mi
+                        && layout.len() <= SLIDE_MAX_WINDOWS
+                        && at.elapsed() < Duration::from_millis(1000)
+                })
+                .map(|(_, dir, _)| {
+                    let work = monitor_work(mi);
+                    dir * ((work.right - work.left) as f32 * SLIDE_SHARE).min(SLIDE_MAX_PX) as i32
+                });
             for (i, h) in layout.iter().enumerate() {
                 if s.dragging == Some(*h) {
                     continue; // the user is dragging it right now: leave it under the cursor
                 }
                 let animate = animate_all && !fresh.contains(h);
                 let target = s.rects[mi][i];
-                move_window(&mut s, HWND(*h as *mut _), target, animate);
+                let hwnd = HWND(*h as *mut _);
+                match slide_offset {
+                    Some(dx) if !fresh.contains(h) && is_parked(hwnd) => {
+                        let from = RECT {
+                            left: target.left + dx,
+                            right: target.right + dx,
+                            ..target
+                        };
+                        slide_in(&mut s, hwnd, from, target);
+                    }
+                    _ => move_window(&mut s, hwnd, target, animate),
+                }
             }
             log(format!(
                 "monitor {}: workspace {}: tiled {} window(s)",

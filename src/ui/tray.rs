@@ -12,12 +12,13 @@ use windows::Win32::UI::Shell::{
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     AppendMenuW, CreateIconIndirect, CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyIcon,
-    DestroyMenu, GetCursorPos, PostMessageW, PostQuitMessage, RegisterClassW,
-    RegisterWindowMessageW, SendMessageTimeoutW, SetForegroundWindow, TrackPopupMenu, HICON,
-    ICONINFO, MF_CHECKED, MF_GRAYED, MF_POPUP, MF_SEPARATOR, MF_STRING, SMTO_ABORTIFHUNG,
-    SPI_SETWORKAREA, SW_SHOWNORMAL, TPM_RETURNCMD, TPM_RIGHTBUTTON, WINDOW_EX_STYLE, WM_APP,
-    WM_DESTROY, WM_DISPLAYCHANGE, WM_ENDSESSION, WM_LBUTTONUP, WM_NULL, WM_QUERYENDSESSION,
-    WM_RBUTTONUP, WM_SETTINGCHANGE, WNDCLASSW, WS_EX_TOOLWINDOW, WS_OVERLAPPED,
+    DestroyMenu, GetCursorPos, KillTimer, PostMessageW, PostQuitMessage, RegisterClassW,
+    RegisterWindowMessageW, SendMessageTimeoutW, SetForegroundWindow, SetTimer, TrackPopupMenu,
+    HICON, ICONINFO, MF_CHECKED, MF_GRAYED, MF_POPUP, MF_SEPARATOR, MF_STRING,
+    PBT_APMRESUMEAUTOMATIC, PBT_APMRESUMESUSPEND, SMTO_ABORTIFHUNG, SPI_SETWORKAREA, SW_SHOWNORMAL,
+    TPM_RETURNCMD, TPM_RIGHTBUTTON, WINDOW_EX_STYLE, WM_APP, WM_DESTROY, WM_DISPLAYCHANGE,
+    WM_ENDSESSION, WM_LBUTTONUP, WM_NULL, WM_POWERBROADCAST, WM_QUERYENDSESSION, WM_RBUTTONUP,
+    WM_SETTINGCHANGE, WM_TIMER, WNDCLASSW, WS_EX_TOOLWINDOW, WS_OVERLAPPED,
 };
 
 use crate::config::{self, Action};
@@ -36,6 +37,11 @@ static BALLOON_IS_UPDATE: AtomicBool = AtomicBool::new(false);
 /// When the last update notice was shown (seconds since the Unix epoch).
 static UPDATE_BALLOON_AT: AtomicU64 = AtomicU64::new(0);
 const TRAY_UID: u32 = 1;
+/// Timer for the follow-up relayout after resuming from sleep.
+const RESUME_TIMER: usize = 1;
+/// Monitors (especially over DisplayPort / docks) can reappear seconds after the resume
+/// notification, so the layout is rebuilt once more after this delay.
+const RESUME_SETTLE_MS: u32 = 3000;
 
 static TRAY_HWND: AtomicIsize = AtomicIsize::new(0);
 static TASKBAR_CREATED: AtomicU32 = AtomicU32::new(0);
@@ -187,6 +193,22 @@ pub fn notify_paused() {
     balloon(
         "tile-rs is paused",
         "Your windows are left alone. Click here to open the settings, or resume from the tray icon menu.",
+        false,
+    );
+}
+
+/// Explains why windows of the given programs are not tiled: they run as administrator and
+/// tile-rs does not.
+pub fn notify_elevated(programs: &[String]) {
+    let shown: Vec<&str> = programs.iter().take(3).map(String::as_str).collect();
+    let more = programs.len().saturating_sub(shown.len());
+    let mut names = shown.join(", ");
+    if more > 0 {
+        names.push_str(&format!(" and {more} more"));
+    }
+    balloon(
+        "tile-rs can't tile some windows",
+        &format!("{names} runs as administrator. Start tile-rs as administrator to tile it too."),
         false,
     );
 }
@@ -591,6 +613,21 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
     if msg == WM_DISPLAYCHANGE
         || (msg == WM_SETTINGCHANGE && wparam.0 == SPI_SETWORKAREA.0 as usize)
     {
+        crate::app::request_relayout();
+        return LRESULT(0);
+    }
+    // back from sleep / hibernation: monitors may have been re-enumerated in another order
+    // or not be back yet, so rebuild the layout now and again once they have settled
+    if msg == WM_POWERBROADCAST
+        && (wparam.0 == PBT_APMRESUMEAUTOMATIC as usize
+            || wparam.0 == PBT_APMRESUMESUSPEND as usize)
+    {
+        crate::app::request_relayout();
+        SetTimer(Some(hwnd), RESUME_TIMER, RESUME_SETTLE_MS, None);
+        return LRESULT(1);
+    }
+    if msg == WM_TIMER && wparam.0 == RESUME_TIMER {
+        let _ = KillTimer(Some(hwnd), RESUME_TIMER);
         crate::app::request_relayout();
         return LRESULT(0);
     }

@@ -396,10 +396,12 @@ pub fn raise_indicators(raise: bool) {
             continue;
         }
         let hwnd = HWND(raw as *mut _);
-        // called on every drag move: skip the z-order change once it is already in place
+        // Being topmost is not enough: other topmost windows (an always-on-top dragged window,
+        // the shell's snap flyout at the top of the screen) can sit above the dots, so a raise
+        // is re-asserted on every drag move. Lowering is skipped once already done.
         let topmost =
             unsafe { GetWindowLongPtrW(hwnd, GWL_EXSTYLE) } & WS_EX_TOPMOST.0 as isize != 0;
-        if topmost == raise {
+        if !raise && !topmost {
             continue;
         }
         unsafe {

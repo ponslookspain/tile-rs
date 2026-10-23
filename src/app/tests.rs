@@ -593,6 +593,7 @@ fn slow_frames_suspend_animations_and_finish_running_ones() {
         dur_ms: 500,
         last: None,
         frame_at: None,
+        tangent: None,
     });
     // fast frames reset the streak
     note_frame_cost(&mut s, Duration::from_millis(40), interval);
@@ -903,6 +904,7 @@ fn repeating_an_animation_target_preserves_its_start_time() {
         dur_ms: 140,
         last: None,
         frame_at: None,
+        tangent: None,
     });
     move_window(&mut state, HWND(11usize as *mut _), target, true);
     assert_eq!(state.anims.len(), 1);
@@ -1110,6 +1112,7 @@ fn closing_window_removes_every_cached_entry_and_reference() {
             dur_ms: 140,
             last: None,
             frame_at: None,
+            tangent: None,
         });
         for mi in 0..MON {
             s.order[mi].push(h);
@@ -1243,4 +1246,21 @@ fn optional_tracked_fields_preserve_siblings_and_discard_empty_entries() {
     assert!(!s.tracked.contains_key(&11));
     s.update_tracked(22, |window| window.pending_monitor = None);
     assert!(s.tracked.is_empty());
+}
+
+#[test]
+fn a_lone_window_is_admitted_with_smart_gaps() {
+    let _config_lock = config::test_lock();
+    config::set(config::parse("smart_gaps = true\nmax_tiles = 0\nauto_overflow = true").unwrap());
+    let mut s = State::default();
+    // the lone window fills the work area without gaps; validation must use the same gaps
+    assert!(workspace_accepts(&s, 0, 0, 1));
+    s.ws.insert(1, 0);
+    s.mon.insert(1, 0);
+    s.order[0].push(1);
+    assert!(
+        workspace_accepts(&s, 0, 0, 2),
+        "a second window joins with normal gaps"
+    );
+    config::set(config::parse("").unwrap());
 }

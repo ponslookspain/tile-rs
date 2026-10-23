@@ -1,9 +1,17 @@
 # Live window motion and resize
 
-All tile resizing uses real application windows. There are no screenshot overlays, frozen
-previews, capture sessions or GPU image uploads. Applications reflow and repaint their own
-content as their native window sizes change. Layout changes still use ordinary geometry
-animations; workspace switching restores the actual workspace directly.
+All tile resizing uses real application windows. There are no screenshots, frozen previews,
+capture sessions or GPU image uploads. Applications reflow and repaint their own content as their
+native window sizes change. Layout changes use ordinary geometry animations; switching workspace
+slides the incoming windows a short way in (4% of the monitor width, at most 80 px, position only,
+up to six windows). Chromium and Electron windows can keep drawing their content at an old spot
+after a move without a size change, so every slid window gets a frame recalculation and a full
+invalidation (both posted, never waited for) when it arrives.
+
+`live_resize` chooses what a separator or edge drag does to the other windows: `live` resizes
+them while the pointer moves, `preview` shows translucent outlines of the new tiles and glides the
+windows into them once on release, and `auto` (default) is live up to five windows on the monitor
+and outlines above that or while animations are suspended on a slow machine.
 
 ## Dragging a tile divider
 
@@ -28,11 +36,23 @@ surviving windows to their original geometry. Hidden, minimized or departed wind
   up to 90 ms before another request; responsive windows can continue at the normal frame rate.
   This limits submissions to slow clients, but does not cancel requests already posted to Windows
   or guarantee that an unresponsive application's message queue remains empty.
-- A frame places ready windows through `DeferWindowPos`. Individual bounded placements recover
-  from batch failure. Both paths use `SWP_ASYNCWINDOWPOS`; the manager does not wait for a foreign
-  UI thread to finish processing a resize. No process is suspended or sent `WM_SETREDRAW`.
+- During a divider drag the windows bordering the dragged separator move together: while one of
+  them has not applied its previous size (for at most 34 ms, two frames), its partners wait, so
+  the separator never opens into a gap or an overlap. Windows away from the separator are resized
+  at most every 33 ms. The pointer moves in steps of 4 px at 96 DPI (scaled with the monitor);
+  release uses the exact position.
+- A frame sends one `SetWindowPos` request per window, back to back, shrinking windows first so
+  a tile vacates its space before its neighbour grows into it. Every request uses
+  `SWP_ASYNCWINDOWPOS`; the manager does not wait for a foreign UI thread to finish processing a
+  resize. `DeferWindowPos` is not used: it rejects `SWP_ASYNCWINDOWPOS` (`ERROR_INVALID_PARAMETER`),
+  and a synchronous batch would let a hung application block the manager. No process is suspended
+  or sent `WM_SETREDRAW`.
 - Release discards unsent intermediate targets and immediately submits the final geometry,
-  bypassing the interactive throttle. There is no screenshot fade or catch-up animation.
+  bypassing the interactive throttle. With outlines the windows glide into their final tiles.
+- A layout change that arrives while windows are still gliding keeps their speed: the new glide
+  starts with the current velocity of every edge (capped so it never overshoots) instead of
+  restarting the easing curve.
+- Separator highlights fade in and out on hover (they are tile-rs's own windows).
 - During native edge resizing Windows owns the selected window; tile-rs updates its neighbours.
   The selected application's own native resize loop is outside tile-rs's frame limit.
 - During a divider gesture, a settled larger size can raise the relevant minimum and clamp the
@@ -76,7 +96,8 @@ layout) avoids crossing the breakpoint. The manager never reloads browser tabs.
 ## Verification
 
 Automated checks cover latest-target replacement, independent pacing of slow and responsive
-windows, unchanged geometry, expected-event ownership, cancelled pending motion, geometry ratios,
+windows, separator partners waiting for each other, far-window pacing, stepped live targets,
+velocity-preserving retargeting, unchanged geometry, expected-event ownership, cancelled pending motion, geometry ratios,
 minimum-size reversal, frame-timer fallback, hidden-workspace guards and deferred event replay.
 A Win32 regression test moves off-screen fixture windows, cancels a divider gesture and verifies
 that their original native geometry is restored. Another fixture stops pumping messages for

@@ -84,7 +84,7 @@ untick *Start with Windows* → *Quit tile-rs*, then delete the folder. Settings
 - Drag a window **onto another one** to swap them. Dropped anywhere else, it returns to its place.
 - Drag the **gap between windows** to resize both sides at once.
 - **Workspace dots** at the top of each screen show where your windows are. Click a dot to switch,
-  drag a window onto a dot to send it there, right-click a dot for more.
+  drag a window onto a dot to move it there and follow it, right-click a dot for more.
 
 ### Keyboard
 
@@ -152,12 +152,15 @@ Prefer text? Everything is also in `%APPDATA%\tile-rs\config.toml`; see the
 | `Alt+Shift+Z` | go back to the previous workspace |
 | `Alt+.` / `Alt+,` | master / stack: one more / one fewer window in the master column |
 | `Alt+Shift+Q` | close the focused window (like `Alt+F4`) |
+| `Alt+[` / `Alt+]` | focus the previous / next monitor |
+| `Alt+Shift+[` / `Alt+Shift+]` | send the focused window to the previous / next monitor |
+| `Alt+/` | open the settings on the Hotkeys page: every key in one list |
 | `Ctrl+Alt+L` | next layout (spiral, master / stack, grid, columns) |
 | `Ctrl+Alt+P` or `Alt+Shift+P` | pause / resume tiling |
 | `Ctrl+Alt+Q` | quit (all windows come back to the current workspace) |
 
-Actions without a default key: `grow_height`, `shrink_height`, `retile`, `reload_config`,
-`edit_config`, `focus_next_monitor`, `move_to_next_monitor` and their `prev` versions.
+Actions without a default key: `grow_height`, `shrink_height`, `retile`, `reload_config` and
+`edit_config`.
 
 </details>
 

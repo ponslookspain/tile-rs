@@ -30,7 +30,11 @@ pub(super) fn register_hotkeys() -> Vec<String> {
     for (action, spec) in &cfg.bindings {
         let essential = matches!(
             action,
-            Action::Pause | Action::Quit | Action::ReloadConfig | Action::EditConfig
+            Action::Pause
+                | Action::Quit
+                | Action::ReloadConfig
+                | Action::EditConfig
+                | Action::ShowHotkeys
         );
         if paused && !essential {
             continue;
@@ -488,6 +492,8 @@ pub(crate) fn dispatch(a: Action) {
                 for mi in 0..MON {
                     s.ratios[mi].clear();
                 }
+                s.ratios_offline.clear();
+                s.touch_ratios();
                 s.clear_layouts();
             });
             retile();
@@ -507,6 +513,7 @@ pub(crate) fn dispatch(a: Action) {
                 &format!("\"{}\"", config::config_path().display()),
             );
         }
+        Action::ShowHotkeys => launcher::show_hotkeys(),
     }
 }
 

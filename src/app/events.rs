@@ -74,6 +74,11 @@ pub(super) fn drop_window_data(s: &mut State, h: isize) -> bool {
         tracked = true;
     }
     tracked |= s.live_borders.remove(&h).is_some();
+    tracked |= s.slid.remove(&h);
+    tracked |= s.max_hidden.remove(&h).is_some();
+    tracked |= s.pinned.remove(&h).is_some();
+    s.ws_focus.retain(|_, window| *window != h);
+    tracked |= s.restored.remove(&h).is_some();
     tracked |= s.ws.remove(&h).is_some();
     tracked |= s.mon.remove(&h).is_some();
     tracked |= s.tracked.remove(&h).is_some();
@@ -136,6 +141,8 @@ pub(super) fn forget_window(s: &mut State, h: isize) -> bool {
     if s.dragging == Some(h) {
         s.live_resize.clear();
         s.live_borders.clear();
+        s.resize_preview = false;
+        preview::hide();
         s.drop_dot = None;
         overlay::set_drop_target(None);
         overlay::raise_indicators(false);
@@ -580,6 +587,7 @@ pub(super) unsafe extern "system" fn on_event(
                                 config::inner_gap(),
                             );
                             s.ratios[mi].insert(cur, rs);
+                            s.touch_ratios();
                             let (tiles, regions) = layout_tiles(
                                 config::layout(),
                                 monitor_work(mi),
@@ -592,9 +600,19 @@ pub(super) unsafe extern "system" fn on_event(
                                 .copied()
                                 .zip(tiles.iter().copied())
                                 .collect();
-                            place_batch(&mut s, &targets);
+                            if s.resize_preview {
+                                // the neighbours were only outlined: glide them into place now
+                                for (w, target) in targets {
+                                    move_window(&mut s, HWND(w as *mut _), target, w != h);
+                                }
+                            } else {
+                                place_batch(&mut s, &targets);
+                            }
                             s.rects[mi] = tiles;
                             s.regions[mi] = regions;
+                        }
+                        if std::mem::take(&mut s.resize_preview) {
+                            preview::hide();
                         }
                         s.resizing = false;
                         s.live = false;
@@ -627,6 +645,9 @@ pub(super) unsafe extern "system" fn on_event(
                             }
                         }
                     }
+                    // whichever way the drag ended, its outlines (resize or drop target) go away
+                    s.resize_preview = false;
+                    preview::hide();
                     s.reflow = true;
                     for h in &affected {
                         s.live_borders.remove(h);
@@ -709,6 +730,7 @@ pub(super) unsafe extern "system" fn on_event(
                             overlay::set_drop_target(dot);
                             s.drop_dot = dot;
                             if dot.is_some() {
+                                preview::hide();
                                 let mi = s.mi(h);
                                 if let Some((pi, ph)) = s.drag_preview.take() {
                                     if pi < s.rects[mi].len() {
@@ -786,6 +808,8 @@ pub(super) unsafe extern "system" fn on_event(
                         changed
                     }
                     Verdict::Fullscreen(_) => !s.fs_ws.contains_key(&h),
+                    // a maximized window whose title only appeared now
+                    Verdict::Maximized(_) => !s.ws.contains_key(&h),
                     _ => {
                         (s.ws.contains_key(&h) || s.fs_ws.contains_key(&h))
                             && !temporarily_unavailable(hwnd)
@@ -813,7 +837,11 @@ pub(super) unsafe extern "system" fn on_event(
                     .copied()
                     .unwrap_or_else(|| monitor::of_window(HWND(h as *mut _)))
                     .min(MON - 1);
-                let ws = s.ws.get(&h).copied().or_else(|| s.fs_ws.get(&h).copied());
+                let ws =
+                    s.ws.get(&h)
+                        .copied()
+                        .or_else(|| s.fs_ws.get(&h).copied())
+                        .or_else(|| s.pinned.get(&h).map(|(_, ws)| *ws));
                 match ws {
                     Some(w) if w != s.cur[mi] && !s.paused && !recently => {
                         s.follow = Some((mi, w, h));
@@ -829,7 +857,9 @@ pub(super) unsafe extern "system" fn on_event(
                                 s.manual_float.union(&s.capacity_float).copied().collect();
                             if matches!(
                                 window::classify_with_manual(hwnd, &config::rules(), &ignored),
-                                Verdict::Tileable(_) | Verdict::Fullscreen(_)
+                                Verdict::Tileable(_)
+                                    | Verdict::Fullscreen(_)
+                                    | Verdict::Maximized(_)
                             ) {
                                 s.windows_changed = true;
                                 dirty = true;
@@ -873,7 +903,10 @@ pub(super) unsafe extern "system" fn on_event(
         }
     });
     if let Some((window, mi, n)) = dot_drop {
-        send_to_workspace(window, mi, n);
+        // a window dropped onto a dot takes the user along to that workspace
+        if send_to_workspace(window, mi, n) {
+            switch_ws(mi, n, Some(window));
+        }
     }
     if reposition {
         // the borrow above is released: move the border onto the window that just got focus
@@ -984,10 +1017,14 @@ pub(super) fn handle_debounce_timer(wparam: usize) {
         trim_working_set();
         return;
     }
-    let (timer, ffm, drag_timer, dragging) = STATE.with(|s| {
+    let (timer, ffm, drag_timer, dragging, save_timer) = STATE.with(|s| {
         let s = s.borrow();
-        (s.timer, s.ffm_timer, s.drag_timer, s.dragging)
+        (s.timer, s.ffm_timer, s.drag_timer, s.dragging, s.save_timer)
     });
+    if save_timer != 0 && wparam == save_timer {
+        STATE.with(|s| ratios_store::flush(&mut s.borrow_mut()));
+        return;
+    }
     if ffm != 0 && wparam == ffm {
         focus_follows_tick();
         return;
@@ -1099,4 +1136,13 @@ pub(super) fn handle_debounce_timer(wparam: usize) {
     }
     sync_border();
     sync_dividers();
+    announce_elevated();
+}
+
+/// Tell the user once about programs whose elevated windows are left alone.
+pub(super) fn announce_elevated() {
+    let programs = window::take_new_elevated();
+    if !programs.is_empty() {
+        tray::notify_elevated(&programs);
+    }
 }
