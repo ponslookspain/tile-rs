@@ -74,7 +74,7 @@ pub fn save(saved: &Saved) {
     if saved.is_empty() {
         let _ = std::fs::remove_file(p);
     } else {
-        let _ = std::fs::write(p, encode(saved));
+        let _ = crate::config::save_atomic(&p, &encode(saved));
     }
 }
 
