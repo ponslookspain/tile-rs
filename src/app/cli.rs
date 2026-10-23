@@ -15,11 +15,20 @@ pub(super) fn console_out() -> Box<dyn Write> {
     }
 }
 
+fn is_apply_update(command: Option<&std::ffi::OsStr>) -> bool {
+    command == Some(std::ffi::OsStr::new("--apply-update"))
+}
+
 pub(crate) fn run() {
+    let command = std::env::args_os().nth(1);
+    if is_apply_update(command.as_deref()) {
+        update::apply_update();
+        return;
+    }
     if std::env::var_os("TILE_RS_PROFILE").is_some() {
         prof::PROFILE.store(true, Ordering::Relaxed);
     }
-    let cmd = std::env::args().nth(1);
+    let cmd = command.map(|command| command.to_string_lossy().into_owned());
     match cmd.as_deref() {
         None => start(true),
         Some("run") | Some("--autostart") => start(false),
@@ -204,5 +213,19 @@ pub(crate) fn run() {
                 "usage: tile-rs [--autostart | list | tile | --version | --help]"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::ffi::OsStr;
+
+    #[test]
+    fn native_update_mode_is_recognized_before_normal_startup() {
+        assert!(is_apply_update(Some(OsStr::new("--apply-update"))));
+        assert!(!is_apply_update(None));
+        assert!(!is_apply_update(Some(OsStr::new("--launcher-ui"))));
+        assert!(!is_apply_update(Some(OsStr::new("--apply-update-extra"))));
     }
 }

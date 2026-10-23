@@ -132,6 +132,16 @@ updates the current executable's folder, then starts tile-rs again. Existing use
 is preserved. Windows may request elevation for a protected installation directory. Cancelling
 or failing installation shows an error and attempts to restart the existing executable.
 
+The helper is a copy of `tile-rs.exe` in `%TEMP%\tile-rs-update-*`, launched with
+`--apply-update` before the normal single-instance check and without a console window.
+It uses native Windows process handles and launches Inno Setup directly; PowerShell is not
+required. The launcher stays open until the helper validates its paths and process handles and
+creates the ready file. The helper waits up to 60 seconds for the launcher and 30 seconds for
+each manager running from the same executable path. It checks the installer exit code, shows a
+native error dialog on failure, and restarts the installed executable after the launcher exits.
+The installer and ready file are removed after completion; Windows keeps the running helper
+copy open, so that copy and its temporary directory may remain for normal TEMP cleanup.
+
 The update button uses the Windows installer, including for copies originally extracted from a
 portable ZIP; the updated folder becomes a registered Windows installation. Keep using manual
 ZIP downloads if an unregistered portable copy is required. An older release without an installer

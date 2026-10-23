@@ -1,5 +1,9 @@
 //! Stable GitHub release checks and explicitly requested, verified Windows updates.
 
+mod helper;
+
+pub(crate) use helper::run as apply_update;
+
 use std::ffi::c_void;
 use std::io::Write;
 use std::os::windows::process::CommandExt;
@@ -346,7 +350,7 @@ pub fn install(release: &Release, progress: impl Fn(u8)) -> Result<(), String> {
             std::env::temp_dir().join(format!("tile-rs-update-{}-{nonce}", std::process::id()));
         std::fs::create_dir(&directory).map_err(|e| format!("Cannot create update folder: {e}"))?;
         let installer = directory.join("setup.exe");
-        let helper = directory.join("install.ps1");
+        let helper = directory.join("apply-update.exe");
         let ready = directory.join("ready");
         let stage: Result<(), String> = (|| {
             let mut file = std::fs::OpenOptions::new()
@@ -357,17 +361,10 @@ pub fn install(release: &Release, progress: impl Fn(u8)) -> Result<(), String> {
             file.write_all(&bytes)
                 .and_then(|_| file.sync_all())
                 .map_err(|e| e.to_string())?;
-            std::fs::write(&helper, INSTALL_HELPER).map_err(|e| e.to_string())?;
-            let mut child = Command::new("powershell.exe")
-                .args([
-                    "-NoLogo",
-                    "-NoProfile",
-                    "-NonInteractive",
-                    "-ExecutionPolicy",
-                    "Bypass",
-                    "-File",
-                ])
-                .arg(&helper)
+            std::fs::copy(&exe, &helper)
+                .map_err(|e| format!("Cannot copy the update helper: {e}"))?;
+            let mut child = Command::new(&helper)
+                .arg("--apply-update")
                 .env("TILE_UPDATE_PARENT", std::process::id().to_string())
                 .env("TILE_UPDATE_EXE", &exe)
                 .env("TILE_UPDATE_TARGET", target)
@@ -384,16 +381,14 @@ pub fn install(release: &Release, progress: impl Fn(u8)) -> Result<(), String> {
                 .creation_flags(0x08000000)
                 .spawn()
                 .map_err(|e| format!("Cannot start the update installer: {e}"))?;
-            // A policy can block a script even after process creation succeeds.
-            // Keep both applications running until the helper confirms execution.
+            // Keep both applications running until the native helper validates its inputs
+            // and holds the process handles it will wait for.
             for _ in 0..100 {
                 if ready.is_file() {
                     return Ok(());
                 }
                 if child.try_wait().map_err(|e| e.to_string())?.is_some() {
-                    return Err(
-                        "The update helper could not run. Check your PowerShell policy.".into(),
-                    );
+                    return Err("The update helper could not run. Nothing was installed.".into());
                 }
                 std::thread::sleep(Duration::from_millis(50));
             }
@@ -417,35 +412,6 @@ pub fn install(release: &Release, progress: impl Fn(u8)) -> Result<(), String> {
     }
     result
 }
-
-const INSTALL_HELPER: &str = r#"
-$ErrorActionPreference = 'Stop'
-try {
-    [System.IO.File]::WriteAllText($env:TILE_UPDATE_READY, 'ready')
-    $launcher = Get-Process -Id ([int]$env:TILE_UPDATE_PARENT) -ErrorAction SilentlyContinue
-    if ($launcher -and -not $launcher.WaitForExit(60000)) { throw 'The launcher is still running. Close it and try again.' }
-    $processes = Get-Process -Name 'tile-rs' -ErrorAction SilentlyContinue | Where-Object { $_.Path -eq $env:TILE_UPDATE_EXE }
-    foreach ($manager in $processes) {
-        if (-not $manager.WaitForExit(30000)) { throw 'tile-rs is still running. Quit it and try again.' }
-    }
-    $arguments = @('/SILENT', '/NORESTART', '/SUPPRESSMSGBOXES', '/NOCLOSEAPPLICATIONS', ('/DIR="' + $env:TILE_UPDATE_TARGET + '"'))
-    if ($env:TILE_UPDATE_AUTOSTART -eq '1') { $arguments += '/MERGETASKS=autostart' }
-    else { $arguments += '/MERGETASKS=!autostart' }
-    $setup = Start-Process -FilePath $env:TILE_UPDATE_SETUP -ArgumentList $arguments -PassThru -Wait
-    if ($setup.ExitCode -ne 0) { throw ('Installer exited with code ' + $setup.ExitCode + '. Your previous settings have been kept.') }
-    Start-Process -FilePath $env:TILE_UPDATE_EXE
-} catch {
-    Add-Type -AssemblyName System.Windows.Forms
-    [System.Windows.Forms.MessageBox]::Show($_.Exception.Message, 'tile-rs update failed') | Out-Null
-    if (Test-Path -LiteralPath $env:TILE_UPDATE_EXE) { Start-Process -FilePath $env:TILE_UPDATE_EXE }
-} finally {
-    Remove-Item -LiteralPath $env:TILE_UPDATE_READY -ErrorAction SilentlyContinue
-    Remove-Item -LiteralPath $env:TILE_UPDATE_SETUP -ErrorAction SilentlyContinue
-    $scriptPath = $PSCommandPath
-    Remove-Item -LiteralPath $scriptPath -ErrorAction SilentlyContinue
-    Remove-Item -LiteralPath (Split-Path -Parent $scriptPath) -ErrorAction SilentlyContinue
-}
-"#;
 
 /// Stable releases are checked on startup and every six hours; no automatic installation.
 pub fn start_background_checks() {
