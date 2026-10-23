@@ -413,7 +413,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
         return LRESULT(0);
     }
     if msg == WM_LAUNCHER_RELOAD {
-        crate::reload_config();
+        crate::reload_config_quiet();
         return LRESULT(0);
     }
     if msg == WM_LAUNCHER_QUIT {

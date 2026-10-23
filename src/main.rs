@@ -4252,6 +4252,16 @@ pub fn dispatch_quit() {
 }
 
 pub fn reload_config() {
+    reload(true);
+}
+
+/// Reload triggered by the settings window's autosave: refused hotkeys are shown there, so no
+/// message box pops up after every edit.
+pub fn reload_config_quiet() {
+    reload(false);
+}
+
+fn reload(announce_failures: bool) {
     end_divider(false);
     STATE.with(|s| {
         let mut s = s.borrow_mut();
@@ -4278,7 +4288,7 @@ pub fn reload_config() {
                 "config reloaded: minimum={}x{}; learned size constraints cleared",
                 minimum.0, minimum.1
             ));
-            if !failed.is_empty() {
+            if announce_failures && !failed.is_empty() {
                 notify(
                     "tile-rs: some hotkeys were not registered",
                     &failed.join("\n"),
