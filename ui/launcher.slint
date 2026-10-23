@@ -32,6 +32,12 @@ export struct HotkeyRowData {
     group: string,
     keys: [string],
     conflict: bool,
+    refused: bool,
+}
+
+export struct WelcomeItem {
+    keys: string,
+    what: string,
 }
 
 component Icon inherits Image {
@@ -315,7 +321,11 @@ component FieldRow inherits HorizontalLayout {
     in property <string> label;
     in property <string> hint: "";
     in-out property <string> value;
-    in property <length> field-width: 96px;
+    in property <length> field-width: 72px;
+    in property <int> minimum: 0;
+    in property <int> maximum: 9999;
+    in property <int> step: 1;
+    property <int> number: clamp(round(value.to-float()), minimum, maximum);
     height: hint == "" ? 44px : 54px;
     padding-left: 10px;
     padding-right: 10px;
@@ -327,10 +337,16 @@ component FieldRow inherits HorizontalLayout {
         Text { text: label; color: AppTheme.ink; font-size: 13px; }
         if hint != "": Text { text: hint; color: AppTheme.muted; font-size: 12px; overflow: elide; }
     }
-    TextField {
+    HorizontalLayout {
         y: (parent.height - self.height) / 2;
-        width: field-width;
-        text <=> value;
+        spacing: 2px;
+        IconButton { y: (parent.height - self.height) / 2; icon: @image-url("icons/minus.svg"); label: "Меньше"; activated => { value = "" + max(minimum, number - step); } }
+        TextField {
+            y: (parent.height - self.height) / 2;
+            width: field-width;
+            text <=> value;
+        }
+        IconButton { y: (parent.height - self.height) / 2; icon: @image-url("icons/plus.svg"); label: "Больше"; activated => { value = "" + min(maximum, number + step); } }
     }
 }
 
@@ -545,7 +561,11 @@ export component MainWindow inherits Window {
     in-out property <[string]> app_choices;
     in-out property <int> rule_app_index: 0;
     in-out property <int> rule_kind_index: 0;
-    property <[string]> rule_kinds: ["Плавающее окно", "Рабочий стол 1", "Рабочий стол 2", "Рабочий стол 3", "Рабочий стол 4", "Рабочий стол 5", "Рабочий стол 6", "Рабочий стол 7", "Рабочий стол 8", "Рабочий стол 9"];
+    property <[string]> rule_kinds: ["Всегда плавающее окно", "Всегда на рабочем столе 1", "Всегда на рабочем столе 2", "Всегда на рабочем столе 3", "Всегда на рабочем столе 4", "Всегда на рабочем столе 5", "Всегда на рабочем столе 6", "Всегда на рабочем столе 7", "Всегда на рабочем столе 8", "Всегда на рабочем столе 9"];
+    // hints that follow the hotkey table
+    in-out property <[WelcomeItem]> welcome_items;
+    in-out property <string> master_hint: "";
+    in-out property <bool> show_advanced: false;
     in-out property <bool> dirty: false;
     in-out property <bool> show_welcome: false;
     in-out property <string> status: "Настройки загружены";
@@ -590,8 +610,6 @@ export component MainWindow inherits Window {
     changed media_windows => { dirty = true; }
     changed smart_gaps => { dirty = true; }
     changed master_count => { dirty = true; }
-    changed hotkey_rows => { dirty = true; }
-    changed rule_rows => { dirty = true; }
     callback install_update();
     callback open_release();
     callback check_updates();
@@ -671,20 +689,19 @@ export component MainWindow inherits Window {
                     Text { text: page_titles[page]; color: AppTheme.ink; font-size: 24px; font-weight: 700; }
                     Text { text: status == "" ? page_subtitles[page] : status; color: AppTheme.ink-2; font-size: 13px; overflow: elide; }
                 }
-                if dirty: Rectangle {
+                Rectangle {
                     y: (parent.height - self.height) / 2;
-                    width: 196px;
+                    width: 170px;
                     height: 32px;
                     border-radius: 16px;
-                    background: AppTheme.warn-soft;
+                    background: dirty ? AppTheme.warn-soft : AppTheme.accent-soft;
                     HorizontalLayout {
                         alignment: center;
                         spacing: 8px;
-                        Rectangle { y: (parent.height - 8px) / 2; width: 8px; height: 8px; border-radius: 4px; background: #e39a1b; }
-                        Text { text: "Есть несохранённые изменения"; color: AppTheme.warn-ink; font-size: 12px; vertical-alignment: center; }
+                        Rectangle { y: (parent.height - 8px) / 2; width: 8px; height: 8px; border-radius: 4px; background: dirty ? #e39a1b : AppTheme.accent; }
+                        Text { text: dirty ? "Сохраняем…" : "Сохранено автоматически"; color: dirty ? AppTheme.warn-ink : AppTheme.accent-ink; font-size: 12px; vertical-alignment: center; }
                     }
                 }
-                ActionButton { y: (parent.height - self.height) / 2; label: dirty ? "Сохранить" : "Сохранено"; icon: @image-url("icons/check.svg"); has-icon: true; primary: dirty; button-width: 136px; activated => { root.save(); } }
             }
 
             ScrollView {
@@ -748,7 +765,7 @@ export component MainWindow inherits Window {
                                     padding: 18px;
                                     spacing: 4px;
                                     ToggleRow { label: "Плавно перемещать окна"; hint: "Окна скользят на новое место вместо скачка"; checked: animations; changed(value) => { animations = value; } }
-                                    FieldRow { label: "Длительность анимации"; hint: "Миллисекунды"; value <=> animation_ms; }
+                                    FieldRow { label: "Длительность анимации"; hint: "Миллисекунды"; value <=> animation_ms; minimum: 0; maximum: 5000; step: 20; }
                                     HorizontalLayout {
                                         height: 54px;
                                         padding-left: 10px;
@@ -773,8 +790,8 @@ export component MainWindow inherits Window {
                                     Divider { }
                                     HorizontalLayout {
                                         spacing: 8px;
-                                        FieldRow { horizontal-stretch: 1; label: "Между окнами"; hint: "Пиксели"; value <=> inner_gap; field-width: 80px; }
-                                        FieldRow { horizontal-stretch: 1; label: "От края экрана"; hint: "Пиксели"; value <=> outer_gap; field-width: 80px; }
+                                        FieldRow { horizontal-stretch: 1; label: "Между окнами"; hint: "Пиксели"; value <=> inner_gap; field-width: 48px; minimum: 0; maximum: 500; step: 2; }
+                                        FieldRow { horizontal-stretch: 1; label: "От края экрана"; hint: "Пиксели"; value <=> outer_gap; field-width: 48px; minimum: 0; maximum: 500; step: 2; }
                                     }
                                 }
                             }
@@ -855,7 +872,7 @@ export component MainWindow inherits Window {
                                             spacing: 8px;
                                             Text { text: "Окон в главной колонке"; color: AppTheme.ink; font-size: 13px; }
                                             Stepper { value <=> master_count; minimum: 1; maximum: 8; }
-                                            Text { text: "Также Alt + . и Alt + ,"; color: AppTheme.muted; font-size: 12px; }
+                                            Text { text: master_hint; color: AppTheme.muted; font-size: 12px; }
                                         }
                                     }
                                 }
@@ -873,25 +890,29 @@ export component MainWindow inherits Window {
                             }
                         }
                         Card {
-                            card-height: 212px;
+                            card-height: show_advanced ? 224px : 80px;
                             VerticalLayout {
                                 padding: 20px;
                                 spacing: 6px;
-                                CardTitle { title: "Размеры и лимиты"; subtitle: "Плитки не станут меньше этих размеров"; icon: @image-url("icons/resize.svg"); }
-                                Rectangle { height: 4px; }
                                 HorizontalLayout {
+                                    spacing: 12px;
+                                    CardTitle { horizontal-stretch: 1; title: "Дополнительно"; subtitle: "Размеры плиток, лимит окон, шаг изменения размера"; icon: @image-url("icons/resize.svg"); }
+                                    ActionButton { y: (parent.height - self.height) / 2; label: show_advanced ? "Скрыть" : "Показать"; kind: 2; compact: true; button-width: 120px; activated => { show_advanced = !show_advanced; } }
+                                }
+                                if show_advanced: Rectangle { height: 4px; }
+                                if show_advanced: HorizontalLayout {
                                     spacing: 24px;
                                     VerticalLayout {
                                         horizontal-stretch: 1;
-                                        FieldRow { label: "Минимальная ширина"; hint: "Пиксели"; value <=> min_tile_width; }
+                                        FieldRow { label: "Минимальная ширина"; hint: "Пиксели"; value <=> min_tile_width; minimum: 50; maximum: 10000; step: 20; }
                                         Divider { }
-                                        FieldRow { label: "Минимальная высота"; hint: "Пиксели"; value <=> min_tile_height; }
+                                        FieldRow { label: "Минимальная высота"; hint: "Пиксели"; value <=> min_tile_height; minimum: 50; maximum: 10000; step: 20; }
                                     }
                                     VerticalLayout {
                                         horizontal-stretch: 1;
-                                        FieldRow { label: "Лимит окон на стол"; hint: "0 — подбирается автоматически"; value <=> max_tiles; }
+                                        FieldRow { label: "Лимит окон на стол"; hint: "0 — подбирается автоматически"; value <=> max_tiles; minimum: 0; maximum: 1000; step: 1; }
                                         Divider { }
-                                        FieldRow { label: "Шаг изменения размера"; hint: "Пиксели на одно нажатие Alt + плюс"; value <=> resize_step; }
+                                        FieldRow { label: "Шаг изменения размера"; hint: "Пиксели на одно нажатие Alt + плюс"; value <=> resize_step; minimum: 1; maximum: 2000; step: 10; }
                                     }
                                 }
                             }
@@ -1121,6 +1142,11 @@ export component MainWindow inherits Window {
                                                         key-text := Text { text: key; color: row.conflict ? AppTheme.danger : AppTheme.ink; font-size: 12px; font-weight: 600; horizontal-alignment: center; vertical-alignment: center; }
                                                     }
                                                 }
+                                                if row.refused && !row.conflict: HorizontalLayout {
+                                                    spacing: 6px;
+                                                    Icon { y: (parent.height - self.height) / 2; width: 16px; height: 16px; source: @image-url("icons/alert.svg"); tint: AppTheme.danger; }
+                                                    Text { text: "Занято другой программой или Windows"; color: AppTheme.danger; font-size: 12px; vertical-alignment: center; }
+                                                }
                                                 if row.conflict: HorizontalLayout {
                                                     spacing: 6px;
                                                     Icon { y: (parent.height - self.height) / 2; width: 16px; height: 16px; source: @image-url("icons/alert.svg"); tint: AppTheme.danger; }
@@ -1340,15 +1366,7 @@ export component MainWindow inherits Window {
                     }
                 }
                 Rectangle { height: 8px; }
-                for item in [
-                    { keys: "Alt + H J K L", what: "Перейти к соседнему окну" },
-                    { keys: "Alt + Shift + H J K L", what: "Поменять окна местами" },
-                    { keys: "Alt + 1 … 9", what: "Открыть рабочий стол" },
-                    { keys: "Alt + Shift + 1 … 9", what: "Перенести окно на стол" },
-                    { keys: "Alt + M", what: "Окно на весь экран и обратно" },
-                    { keys: "Alt + Z", what: "Вернуться к прошлому окну" },
-                    { keys: "Ctrl + Alt + L", what: "Сменить раскладку" },
-                ]: HorizontalLayout {
+                for item in welcome_items: HorizontalLayout {
                     height: 32px;
                     spacing: 14px;
                     Rectangle {

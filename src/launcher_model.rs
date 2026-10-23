@@ -225,6 +225,74 @@ pub fn display_spec(spec: &str) -> String {
         .join(" + ")
 }
 
+fn first_key(rows: &[Row], action: &str) -> Option<String> {
+    rows.iter()
+        .find(|r| r.action == action)
+        .and_then(|r| r.keys.first())
+        .map(|k| display_spec(k))
+}
+
+/// `Alt + H J K L` for four keys sharing their modifiers; `Alt + 1 … 9` when `range`.
+fn compact(keys: &[String], range: bool) -> String {
+    let parts: Vec<Vec<&str>> = keys.iter().map(|k| k.split(" + ").collect()).collect();
+    let Some(first) = parts.first() else {
+        return "Не назначено".into();
+    };
+    let prefix = &first[..first.len() - 1];
+    if parts
+        .iter()
+        .any(|p| p.len() != first.len() || p[..p.len() - 1] != *prefix)
+    {
+        return keys.join(" / ");
+    }
+    let lasts: Vec<&str> = parts.iter().map(|p| p[p.len() - 1]).collect();
+    let tail = if range && lasts.len() > 2 {
+        format!("{} … {}", lasts[0], lasts[lasts.len() - 1])
+    } else {
+        lasts.join(" ")
+    };
+    if prefix.is_empty() {
+        tail
+    } else {
+        format!("{} + {tail}", prefix.join(" + "))
+    }
+}
+
+/// The welcome card's (keys, meaning) lines, built from the current hotkey table.
+pub fn welcome_items(rows: &[Row]) -> Vec<(String, String)> {
+    let dirs = ["left", "down", "up", "right"];
+    let numbered = |prefix: &str| -> Vec<String> {
+        (1..=config::WS_COUNT).map(|n| format!("{prefix}{n}")).collect()
+    };
+    let groups: Vec<(&str, Vec<String>, bool)> = vec![
+        ("Перейти к соседнему окну", dirs.iter().map(|d| format!("focus_{d}")).collect(), false),
+        ("Поменять окна местами", dirs.iter().map(|d| format!("swap_{d}")).collect(), false),
+        ("Открыть рабочий стол", numbered("workspace_"), true),
+        ("Перенести окно на стол", numbered("move_to_workspace_"), true),
+        ("Окно на весь экран и обратно", vec!["toggle_monocle".into()], false),
+        ("Вернуться к прошлому окну", vec!["focus_last".into()], false),
+        ("Сменить раскладку", vec!["cycle_layout".into()], false),
+    ];
+    groups
+        .into_iter()
+        .map(|(what, actions, range)| {
+            let keys: Vec<String> = actions.iter().filter_map(|a| first_key(rows, a)).collect();
+            (compact(&keys, range), what.to_string())
+        })
+        .collect()
+}
+
+/// "Также Alt + . и Alt + ," for the master-column setting; empty when either key is unbound.
+pub fn master_hint(rows: &[Row]) -> String {
+    match (
+        first_key(rows, "master_count_inc"),
+        first_key(rows, "master_count_dec"),
+    ) {
+        (Some(inc), Some(dec)) => format!("Также {inc} и {dec}"),
+        _ => String::new(),
+    }
+}
+
 /// What a key press means while a hotkey is being recorded.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Capture {
@@ -329,14 +397,14 @@ pub fn rule_label(rule: &Rule) -> String {
     };
     let mut what: Vec<String> = Vec::new();
     match rule.action.as_deref() {
-        Some("float") => what.push("плавающее окно".into()),
+        Some("float") => what.push("всегда плавающее".into()),
         Some("tile") => what.push("всегда в раскладке".into()),
         Some("ignore") => what.push("не управляется".into()),
         Some(other) => what.push(other.to_string()),
         None => {}
     }
     if let Some(ws) = rule.workspace {
-        what.push(format!("рабочий стол {ws}"));
+        what.push(format!("всегда на столе {ws}"));
     }
     if what.is_empty() {
         what.push("без действия".into());
@@ -521,6 +589,26 @@ mod tests {
             capture_key("!", true, false, true, false),
             Capture::Reject(_)
         ));
+    }
+
+    #[test]
+    fn hints_follow_the_hotkey_table() {
+        let mut rows = default_rows();
+        let items = welcome_items(&rows);
+        assert_eq!(items[0].0, "Alt + H J K L");
+        assert_eq!(items[2].0, "Alt + 1 … 9");
+        assert_eq!(master_hint(&rows), "Также Alt + . и Alt + ,");
+        rows.iter_mut()
+            .find(|r| r.action == "master_count_inc")
+            .unwrap()
+            .keys
+            .clear();
+        assert_eq!(master_hint(&rows), "");
+        rows.iter_mut()
+            .find(|r| r.action == "toggle_monocle")
+            .unwrap()
+            .keys = vec!["ctrl+f".into()];
+        assert_eq!(welcome_items(&rows)[4].0, "Ctrl + F");
     }
 
     #[test]

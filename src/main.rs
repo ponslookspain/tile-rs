@@ -2580,6 +2580,7 @@ fn register_hotkeys() -> Vec<String> {
     }
     let mut new = Vec::new();
     let mut failed = Vec::new();
+    let mut refused = String::new();
     let mut next = 100;
     for (action, spec) in &cfg.bindings {
         let essential = matches!(
@@ -2602,6 +2603,8 @@ fn register_hotkeys() -> Vec<String> {
                 if unsafe { RegisterHotKey(None, id, flags, vk) }.is_ok() {
                     new.push((id, *action));
                 } else {
+                    refused.push_str(&format!("{}	{}
+", action_name(*action), spec));
                     failed.push(format!(
                         "{} = {} (already used by another program?)",
                         action_name(*action),
@@ -2613,6 +2616,8 @@ fn register_hotkeys() -> Vec<String> {
         }
     }
     STATE.with(|s| s.borrow_mut().hotkeys = new);
+    // the settings window reads this to mark the combinations Windows refused
+    let _ = std::fs::write(config::hotkey_failures_path(), refused);
     for f in &failed {
         log(format!("hotkey not registered: {f}"));
     }

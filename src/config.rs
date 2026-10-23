@@ -247,6 +247,11 @@ pub fn config_path() -> PathBuf {
     config_dir().join("config.toml")
 }
 
+/// `action<TAB>keys` lines for the hotkeys Windows refused to register at the last (re)load.
+pub fn hotkey_failures_path() -> PathBuf {
+    config_dir().join("hotkey-failures.txt")
+}
+
 pub fn default_config() -> String {
     let mut s = String::from(
         r##"# tile-rs configuration.

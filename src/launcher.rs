@@ -141,7 +141,7 @@ pub fn run() {
         ui.set_page(page.clamp(0, 7));
     }
     wire_updates(&ui);
-    wire_editors(&ui);
+    let _autosave = wire_editors(&ui);
     // The launcher is light-only: keep the caption light even when Windows uses dark mode.
     slint::Timer::single_shot(Duration::from_millis(60), light_caption);
     if std::env::args().any(|arg| arg == "--preview-dirty") {
@@ -434,6 +434,21 @@ struct Editor {
     rules_dirty: bool,
     /// (process, class, title) of the running windows offered in the rule picker.
     apps: Vec<(String, String, String)>,
+    /// (action, keys) pairs Windows refused to register at the manager's last (re)load.
+    refused: Vec<(String, String)>,
+    /// Autosave ticks left before the manager's answer about refused keys is read.
+    recheck: u8,
+    /// A change was seen on the previous autosave tick (saves wait for a short pause).
+    pending: bool,
+}
+
+fn read_refused() -> Vec<(String, String)> {
+    std::fs::read_to_string(config::hotkey_failures_path())
+        .unwrap_or_default()
+        .lines()
+        .filter_map(|line| line.split_once('\t'))
+        .map(|(action, keys)| (action.to_string(), keys.to_string()))
+        .collect()
 }
 
 type Shared = Rc<RefCell<Editor>>;
@@ -455,10 +470,23 @@ fn push_rows(ui: &MainWindow, editor: &Editor) {
                     .collect::<Vec<_>>(),
             )),
             conflict,
+            refused: editor
+                .refused
+                .iter()
+                .any(|(a, k)| *a == row.action && row.keys.contains(k)),
         })
         .collect();
     ui.set_hotkeys_bound(editor.rows.iter().filter(|r| !r.keys.is_empty()).count() as i32);
     ui.set_hotkey_rows(ModelRc::new(VecModel::from(rows)));
+    let items: Vec<WelcomeItem> = launcher_model::welcome_items(&editor.rows)
+        .into_iter()
+        .map(|(keys, what)| WelcomeItem {
+            keys: keys.into(),
+            what: what.into(),
+        })
+        .collect();
+    ui.set_welcome_items(ModelRc::new(VecModel::from(items)));
+    ui.set_master_hint(launcher_model::master_hint(&editor.rows).into());
 }
 
 fn push_rules(ui: &MainWindow, editor: &Editor) {
@@ -484,12 +512,15 @@ fn push_apps(ui: &MainWindow, editor: &Editor) {
 }
 
 /// Hotkey editor, application rules and the welcome card.
-fn wire_editors(ui: &MainWindow) {
+fn wire_editors(ui: &MainWindow) -> slint::Timer {
     let editor: Shared = Rc::new(RefCell::new(Editor {
         rows: launcher_model::rows_from_bindings(&config::current().bindings),
         rules: config::current().rules,
         rules_dirty: false,
         apps: crate::window::running_apps(),
+        refused: read_refused(),
+        recheck: 0,
+        pending: false,
     }));
     {
         let ed = editor.borrow();
@@ -526,6 +557,7 @@ fn wire_editors(ui: &MainWindow) {
                     row.keys.clear();
                     ui.set_recording(-1);
                     push_rows(&ui, &ed);
+                    ui.set_dirty(true);
                 }
                 Capture::Reject(reason) => ui.set_status(reason.into()),
                 Capture::Spec(spec) => {
@@ -537,6 +569,7 @@ fn wire_editors(ui: &MainWindow) {
                     }
                     ui.set_recording(-1);
                     push_rows(&ui, &ed);
+                    ui.set_dirty(true);
                     if launcher_model::conflicts(&ed.rows).iter().any(|c| *c) {
                         ui.set_status(
                             "Это сочетание уже занято другим действием: отмечено ⚠".into(),
@@ -557,6 +590,7 @@ fn wire_editors(ui: &MainWindow) {
             }
             ui.set_recording(-1);
             push_rows(&ui, &ed);
+            ui.set_dirty(true);
         }
     });
     ui.on_reset_hotkeys({
@@ -568,7 +602,8 @@ fn wire_editors(ui: &MainWindow) {
             ed.rows = launcher_model::default_rows();
             ui.set_recording(-1);
             push_rows(&ui, &ed);
-            ui.set_status("Сочетания сброшены к стандартным. Нажмите «Сохранить».".into());
+            ui.set_dirty(true);
+            ui.set_status("Сочетания сброшены к стандартным".into());
         }
     });
 
@@ -615,7 +650,8 @@ fn wire_editors(ui: &MainWindow) {
             ed.rules.push(rule);
             ed.rules_dirty = true;
             push_rules(&ui, &ed);
-            ui.set_status("Правило добавлено. Нажмите «Сохранить».".into());
+            ui.set_dirty(true);
+            ui.set_status("Правило добавлено".into());
         }
     });
     ui.on_delete_rule({
@@ -628,6 +664,7 @@ fn wire_editors(ui: &MainWindow) {
                 if i < ed.rules.len() {
                     ed.rules.remove(i);
                     ed.rules_dirty = true;
+                    ui.set_dirty(true);
                 }
             }
             push_rules(&ui, &ed);
@@ -646,9 +683,13 @@ fn wire_editors(ui: &MainWindow) {
 
     ui.window().on_close_requested({
         let weak = ui.as_weak();
+        let editor = editor.clone();
         move || {
             use slint::CloseRequestResponse::{HideWindow, KeepWindowShown};
             let Some(ui) = weak.upgrade() else { return HideWindow };
+            if ui.get_dirty() {
+                save(&ui, &mut editor.borrow_mut());
+            }
             if !ui.get_dirty() {
                 return HideWindow;
             }
@@ -663,6 +704,43 @@ fn wire_editors(ui: &MainWindow) {
             }
         }
     });
+
+    // Changes are applied by themselves a moment after the last edit; there is no Save button.
+    let timer = slint::Timer::default();
+    let weak = ui.as_weak();
+    timer.start(
+        slint::TimerMode::Repeated,
+        Duration::from_millis(400),
+        move || {
+            let Some(ui) = weak.upgrade() else { return };
+            let mut ed = editor.borrow_mut();
+            if ed.recheck > 0 {
+                ed.recheck -= 1;
+                if ed.recheck == 0 {
+                    ed.refused = read_refused();
+                    push_rows(&ui, &ed);
+                    if !ed.refused.is_empty() {
+                        ui.set_status(
+                            format!(
+                                "Windows не приняла сочетаний: {}. Они отмечены ⚠, выберите другие",
+                                ed.refused.len()
+                            )
+                            .into(),
+                        );
+                    }
+                }
+            }
+            if !ui.get_dirty() || ui.get_recording() >= 0 {
+                ed.pending = false;
+            } else if ed.pending {
+                ed.pending = false;
+                save(&ui, &mut ed);
+            } else {
+                ed.pending = true;
+            }
+        },
+    );
+    timer
 }
 
 /// The letter, digit or punctuation key physically held right now, independent of the keyboard
@@ -703,20 +781,30 @@ fn save(ui: &MainWindow, editor: &mut Editor) {
     let easing = ui.get_easing().to_string();
     let border_color = ui.get_border_color().to_string();
     let accent_color = ui.get_accent_color().to_string();
+    let mut bad: Option<String> = None;
+    let mut num = |label: &str, text: SharedString, min: i64, max: i64| -> String {
+        match text.trim().parse::<i64>() {
+            Ok(v) if (min..=max).contains(&v) => v.to_string(),
+            _ => {
+                bad.get_or_insert(format!("«{label}»: введите число от {min} до {max}"));
+                String::new()
+            }
+        }
+    };
     let pairs: Vec<(&str, String)> = vec![
         ("layout", format!("\"{}\"", layout.name())),
-        ("inner_gap", ui.get_inner_gap().to_string()),
-        ("outer_gap", ui.get_outer_gap().to_string()),
+        ("inner_gap", num("Между окнами", ui.get_inner_gap(), 0, 500)),
+        ("outer_gap", num("От края экрана", ui.get_outer_gap(), 0, 500)),
         ("animations", ui.get_animations().to_string()),
-        ("animation_ms", ui.get_animation_ms().to_string()),
+        ("animation_ms", num("Длительность анимации", ui.get_animation_ms(), 0, 5000)),
         ("easing", format!("\"{easing}\"")),
-        ("resize_step", ui.get_resize_step().to_string()),
-        ("min_tile_width", ui.get_min_tile_width().to_string()),
-        ("min_tile_height", ui.get_min_tile_height().to_string()),
-        ("max_tiles", ui.get_max_tiles().to_string()),
+        ("resize_step", num("Шаг изменения размера", ui.get_resize_step(), 1, 2000)),
+        ("min_tile_width", num("Минимальная ширина", ui.get_min_tile_width(), 50, 10000)),
+        ("min_tile_height", num("Минимальная высота", ui.get_min_tile_height(), 50, 10000)),
+        ("max_tiles", num("Лимит окон на стол", ui.get_max_tiles(), 0, 1000)),
         ("auto_overflow", ui.get_auto_overflow().to_string()),
         ("smart_gaps", ui.get_smart_gaps().to_string()),
-        ("master_count", ui.get_master_count().to_string()),
+        ("master_count", num("Окон в главной колонке", ui.get_master_count(), 1, 64)),
         ("workspace_indicator", ui.get_show_indicator().to_string()),
         (
             "workspace_indicator_size",
@@ -729,7 +817,7 @@ fn save(ui: &MainWindow, editor: &mut Editor) {
         ("border", ui.get_highlight_window().to_string()),
         ("border_color", format!("\"{border_color}\"")),
         ("accent_color", format!("\"{accent_color}\"")),
-        ("border_width", ui.get_border_width().to_string()),
+        ("border_width", num("Толщина рамки", ui.get_border_width(), 0, 50)),
         (
             "fullscreen_windows",
             format!(
@@ -754,6 +842,10 @@ fn save(ui: &MainWindow, editor: &mut Editor) {
         ),
     ];
 
+    if let Some(message) = bad {
+        ui.set_status(message.into());
+        return;
+    }
     if launcher_model::conflicts(&editor.rows).iter().any(|c| *c) {
         ui.set_status(
             "Исправьте сочетания, отмеченные ⚠: одно сочетание нельзя назначить дважды".into(),
@@ -788,7 +880,8 @@ fn save(ui: &MainWindow, editor: &mut Editor) {
     if !crate::set_autostart(ui.get_autostart()) {
         ui.set_status("Настройки сохранены, но не удалось изменить автозапуск".into());
     } else if crate::tray::request_manager_reload() {
-        ui.set_status("Настройки сохранены и применены".into());
+        editor.recheck = 2; // then the manager's answer about refused keys is read
+        ui.set_status("Настройки применены".into());
     } else {
         ui.set_status("Настройки сохранены; применятся при следующем запуске".into());
     }
