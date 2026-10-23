@@ -324,7 +324,7 @@ fn wire_updates(ui: &MainWindow) {
             let Some(ui) = weak.upgrade() else { return; };
             if matches!(ui.get_update_state(), 1 | 4) { return; }
             ui.set_update_state(1);
-            ui.set_update_message("Получаем информацию о последнем релизе…".into());
+            ui.set_update_message("Looking up the latest release…".into());
             let weak = ui.as_weak();
             let release = release.clone();
             if let Err(err) = thread::Builder::new().name("launcher-update-check".into()).spawn(move || {
@@ -334,23 +334,23 @@ fn wire_updates(ui: &MainWindow) {
                         ui.set_update_state(2);
                         ui.set_update_version(found.version.clone().into());
                         ui.set_release_notes(found.notes.clone().into());
-                        ui.set_update_message("После загрузки откроется установщик, затем tile-rs перезапустится. Сохраните изменения настроек перед установкой.".into());
+                        ui.set_update_message("The installer opens after the download, then tile-rs restarts.".into());
                         *release.lock().unwrap() = Some(found);
                     }
                     Ok(None) => {
                         ui.set_update_state(3);
-                        ui.set_update_message("Обновлений нет. Можно продолжать работу.".into());
+                        ui.set_update_message("No updates. You are all set.".into());
                         ui.set_release_notes("".into());
                         *release.lock().unwrap() = None;
                     }
                     Err(err) => {
                         ui.set_update_state(5);
-                        ui.set_update_message(format!("Проверка не удалась: {err}. Нажмите Check update, чтобы повторить.").into());
+                        ui.set_update_message(format!("The check failed: {err}. Press Check to try again.").into());
                     }
                 });
             }) {
                 ui.set_update_state(5);
-                ui.set_update_message(format!("Не удалось запустить проверку: {err}").into());
+                ui.set_update_message(format!("Could not start the check: {err}").into());
             }
         }
     });
@@ -363,7 +363,7 @@ fn wire_updates(ui: &MainWindow) {
             let Some(found) = release.lock().unwrap().clone() else { return; };
             ui.set_update_state(4);
             ui.set_update_progress(0);
-            ui.set_update_message("Загружаем установщик и проверяем SHA-256…".into());
+            ui.set_update_message("Downloading the installer and checking its SHA-256…".into());
             let weak = ui.as_weak();
             let worker_ui = weak.clone();
             if let Err(err) = thread::Builder::new().name("launcher-update-install".into()).spawn(move || {
@@ -375,12 +375,12 @@ fn wire_updates(ui: &MainWindow) {
                     Ok(()) => { let _ = slint::quit_event_loop(); }
                     Err(err) => {
                         ui.set_update_state(5);
-                        ui.set_update_message(format!("Установка не началась: {err}. Повторите проверку или откройте релизы.").into());
+                        ui.set_update_message(format!("The install did not start: {err}. Check again or open the releases page.").into());
                     }
                 });
             }) {
                 ui.set_update_state(5);
-                ui.set_update_message(format!("Не удалось запустить загрузку: {err}").into());
+                ui.set_update_message(format!("Could not start the download: {err}").into());
             }
         }
     });
@@ -572,7 +572,7 @@ fn wire_editors(ui: &MainWindow) -> slint::Timer {
                     ui.set_dirty(true);
                     if launcher_model::conflicts(&ed.rows).iter().any(|c| *c) {
                         ui.set_status(
-                            "Это сочетание уже занято другим действием: отмечено ⚠".into(),
+                            "These keys are already used by another action (marked ⚠)".into(),
                         );
                     }
                 }
@@ -603,7 +603,7 @@ fn wire_editors(ui: &MainWindow) -> slint::Timer {
             ui.set_recording(-1);
             push_rows(&ui, &ed);
             ui.set_dirty(true);
-            ui.set_status("Сочетания сброшены к стандартным".into());
+            ui.set_status("Hotkeys reset to the defaults".into());
         }
     });
 
@@ -644,14 +644,14 @@ fn wire_editors(ui: &MainWindow) -> slint::Timer {
                     && r.workspace == rule.workspace
             };
             if ed.rules.iter().any(same) {
-                ui.set_status("Такое правило уже есть".into());
+                ui.set_status("This rule already exists".into());
                 return;
             }
             ed.rules.push(rule);
             ed.rules_dirty = true;
             push_rules(&ui, &ed);
             ui.set_dirty(true);
-            ui.set_status("Правило добавлено".into());
+            ui.set_status("Rule added".into());
         }
     });
     ui.on_delete_rule({
@@ -722,7 +722,7 @@ fn wire_editors(ui: &MainWindow) -> slint::Timer {
                     if !ed.refused.is_empty() {
                         ui.set_status(
                             format!(
-                                "Windows не приняла сочетаний: {}. Они отмечены ⚠, выберите другие",
+                                "Windows refused {} key combination(s). They are marked ⚠, pick others",
                                 ed.refused.len()
                             )
                             .into(),
@@ -757,7 +757,7 @@ fn ask_save_on_close() -> MESSAGEBOX_RESULT {
     unsafe {
         MessageBoxW(
             owner,
-            w!("Есть несохранённые изменения. Сохранить их перед закрытием?"),
+            w!("Some changes could not be saved. Try saving them again before closing?"),
             LAUNCHER_TITLE,
             MB_YESNOCANCEL | MB_ICONQUESTION,
         )
@@ -786,25 +786,25 @@ fn save(ui: &MainWindow, editor: &mut Editor) {
         match text.trim().parse::<i64>() {
             Ok(v) if (min..=max).contains(&v) => v.to_string(),
             _ => {
-                bad.get_or_insert(format!("«{label}»: введите число от {min} до {max}"));
+                bad.get_or_insert(format!("{label}: enter a number from {min} to {max}"));
                 String::new()
             }
         }
     };
     let pairs: Vec<(&str, String)> = vec![
         ("layout", format!("\"{}\"", layout.name())),
-        ("inner_gap", num("Между окнами", ui.get_inner_gap(), 0, 500)),
-        ("outer_gap", num("От края экрана", ui.get_outer_gap(), 0, 500)),
+        ("inner_gap", num("Between windows", ui.get_inner_gap(), 0, 200)),
+        ("outer_gap", num("From screen edges", ui.get_outer_gap(), 0, 200)),
         ("animations", ui.get_animations().to_string()),
-        ("animation_ms", num("Длительность анимации", ui.get_animation_ms(), 0, 5000)),
+        ("animation_ms", num("Animation length", ui.get_animation_ms(), 0, 1000)),
         ("easing", format!("\"{easing}\"")),
-        ("resize_step", num("Шаг изменения размера", ui.get_resize_step(), 1, 2000)),
-        ("min_tile_width", num("Минимальная ширина", ui.get_min_tile_width(), 50, 10000)),
-        ("min_tile_height", num("Минимальная высота", ui.get_min_tile_height(), 50, 10000)),
-        ("max_tiles", num("Лимит окон на стол", ui.get_max_tiles(), 0, 1000)),
+        ("resize_step", num("Resize step", ui.get_resize_step(), 1, 500)),
+        ("min_tile_width", num("Minimum width", ui.get_min_tile_width(), 100, 4000)),
+        ("min_tile_height", num("Minimum height", ui.get_min_tile_height(), 100, 4000)),
+        ("max_tiles", num("Windows per workspace", ui.get_max_tiles(), 0, 20)),
         ("auto_overflow", ui.get_auto_overflow().to_string()),
         ("smart_gaps", ui.get_smart_gaps().to_string()),
-        ("master_count", num("Окон в главной колонке", ui.get_master_count(), 1, 64)),
+        ("master_count", num("Windows in the main column", ui.get_master_count(), 1, 8)),
         ("workspace_indicator", ui.get_show_indicator().to_string()),
         (
             "workspace_indicator_size",
@@ -817,7 +817,7 @@ fn save(ui: &MainWindow, editor: &mut Editor) {
         ("border", ui.get_highlight_window().to_string()),
         ("border_color", format!("\"{border_color}\"")),
         ("accent_color", format!("\"{accent_color}\"")),
-        ("border_width", num("Толщина рамки", ui.get_border_width(), 0, 50)),
+        ("border_width", num("Border width", ui.get_border_width(), 0, 20)),
         (
             "fullscreen_windows",
             format!(
@@ -848,7 +848,7 @@ fn save(ui: &MainWindow, editor: &mut Editor) {
     }
     if launcher_model::conflicts(&editor.rows).iter().any(|c| *c) {
         ui.set_status(
-            "Исправьте сочетания, отмеченные ⚠: одно сочетание нельзя назначить дважды".into(),
+            "Fix the keys marked ⚠: one combination cannot be used twice".into(),
         );
         return;
     }
@@ -856,7 +856,7 @@ fn save(ui: &MainWindow, editor: &mut Editor) {
     let current = match std::fs::read_to_string(&path) {
         Ok(text) => text,
         Err(err) => {
-            ui.set_status(format!("Не удалось прочитать конфиг: {err}").into());
+            ui.set_status(format!("Could not read the config: {err}").into());
             return;
         }
     };
@@ -868,22 +868,22 @@ fn save(ui: &MainWindow, editor: &mut Editor) {
         updated = launcher_model::edit_rules(&updated, &editor.rules);
     }
     if let Err(err) = config::parse(&updated) {
-        ui.set_status(format!("Проверьте настройки: {err}").into());
+        ui.set_status(format!("Check the settings: {err}").into());
         return;
     }
     if let Err(err) = config::save_atomic(&path, &updated) {
-        ui.set_status(format!("Не удалось сохранить настройки: {err}").into());
+        ui.set_status(format!("Could not save the settings: {err}").into());
         return;
     }
     editor.rules_dirty = false;
     ui.set_dirty(false);
     if !crate::set_autostart(ui.get_autostart()) {
-        ui.set_status("Настройки сохранены, но не удалось изменить автозапуск".into());
+        ui.set_status("Saved, but starting with Windows could not be changed".into());
     } else if crate::tray::request_manager_reload() {
         editor.recheck = 2; // then the manager's answer about refused keys is read
-        ui.set_status("Настройки применены".into());
+        ui.set_status("Settings applied".into());
     } else {
-        ui.set_status("Настройки сохранены; применятся при следующем запуске".into());
+        ui.set_status("Saved; tile-rs is not running, so they apply at its next start".into());
     }
 }
 

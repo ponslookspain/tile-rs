@@ -23,89 +23,89 @@ fn catalog() -> Vec<(String, String, String)> {
         out.push((name.into(), label.into(), group.into()));
     };
     for (dir, label) in [
-        ("left", "влево"),
-        ("down", "вниз"),
-        ("up", "вверх"),
-        ("right", "вправо"),
+        ("left", "left"),
+        ("down", "down"),
+        ("up", "up"),
+        ("right", "right"),
     ] {
-        add(&format!("focus_{dir}"), &format!("Фокус {label}"), "Окна");
+        add(&format!("focus_{dir}"), &format!("Focus the window {label}"), "Windows");
     }
     for (dir, label) in [
-        ("left", "влево"),
-        ("down", "вниз"),
-        ("up", "вверх"),
-        ("right", "вправо"),
+        ("left", "left"),
+        ("down", "down"),
+        ("up", "up"),
+        ("right", "right"),
     ] {
         add(
             &format!("swap_{dir}"),
-            &format!("Поменять окно {label}"),
-            "Окна",
+            &format!("Swap with the window {label}"),
+            "Windows",
         );
     }
-    add("grow_width", "Шире", "Размер");
-    add("shrink_width", "Уже", "Размер");
-    add("grow_height", "Выше", "Размер");
-    add("shrink_height", "Ниже", "Размер");
-    add("minimize", "Свернуть окно", "Окна");
-    add("toggle_float", "Плавающее / в раскладке", "Окна");
-    add("close", "Закрыть окно", "Окна");
-    add("toggle_monocle", "Monocle: окно на весь экран", "Раскладка");
-    add("cycle_layout", "Следующая раскладка", "Раскладка");
-    add("master_count_inc", "Больше окон в master", "Раскладка");
-    add("master_count_dec", "Меньше окон в master", "Раскладка");
-    add("retile", "Перестроить окна", "Раскладка");
+    add("grow_width", "Wider", "Size");
+    add("shrink_width", "Narrower", "Size");
+    add("grow_height", "Taller", "Size");
+    add("shrink_height", "Shorter", "Size");
+    add("minimize", "Minimize the window", "Windows");
+    add("toggle_float", "Float the window / tile it again", "Windows");
+    add("close", "Close the window", "Windows");
+    add("toggle_monocle", "Full screen: one window on the whole screen", "Layout");
+    add("cycle_layout", "Next layout", "Layout");
+    add("master_count_inc", "More windows in the main column", "Layout");
+    add("master_count_dec", "Fewer windows in the main column", "Layout");
+    add("retile", "Re-arrange the windows", "Layout");
     for n in 1..=config::WS_COUNT {
         add(
             &format!("workspace_{n}"),
-            &format!("Рабочий стол {n}"),
-            "Рабочие столы",
+            &format!("Workspace {n}"),
+            "Workspaces",
         );
     }
     for n in 1..=config::WS_COUNT {
         add(
             &format!("move_to_workspace_{n}"),
-            &format!("Окно на рабочий стол {n}"),
-            "Рабочие столы",
+            &format!("Window to workspace {n}"),
+            "Workspaces",
         );
     }
-    add("workspace_next", "Следующий рабочий стол", "Рабочие столы");
-    add("workspace_prev", "Предыдущий рабочий стол", "Рабочие столы");
+    add("workspace_next", "Next workspace", "Workspaces");
+    add("workspace_prev", "Previous workspace", "Workspaces");
     add(
         "move_to_next_workspace",
-        "Окно на следующий стол",
-        "Рабочие столы",
+        "Window to the next workspace",
+        "Workspaces",
     );
     add(
         "move_to_prev_workspace",
-        "Окно на предыдущий стол",
-        "Рабочие столы",
+        "Window to the previous workspace",
+        "Workspaces",
     );
     add(
         "workspace_back_and_forth",
-        "Вернуться на прошлый стол",
-        "Рабочие столы",
+        "Back to the last workspace",
+        "Workspaces",
     );
-    add("focus_last", "Прошлое окно", "Окна");
+    add("focus_last", "Back to the last window", "Windows");
     add(
         "focus_next_monitor",
-        "Фокус на следующий монитор",
-        "Мониторы",
+        "Focus the next screen",
+        "Screens",
     );
-    add("focus_prev_monitor", "Фокус на прошлый монитор", "Мониторы");
+    add("focus_prev_monitor", "Focus the previous screen", "Screens");
     add(
         "move_to_next_monitor",
-        "Окно на следующий монитор",
-        "Мониторы",
+        "Window to the next screen",
+        "Screens",
     );
     add(
         "move_to_prev_monitor",
-        "Окно на прошлый монитор",
-        "Мониторы",
+        "Window to the previous screen",
+        "Screens",
     );
-    add("pause", "Пауза tile-rs", "Программа");
-    add("reload_config", "Перечитать конфиг", "Программа");
-    add("edit_config", "Открыть конфиг", "Программа");
-    add("quit", "Выйти из tile-rs", "Программа");
+    add("pause", "Pause tile-rs", "tile-rs");
+    add("reload_config", "Reload the config", "tile-rs");
+    add("edit_config", "Open the config file", "tile-rs");
+    add("quit", "Quit tile-rs", "tile-rs");
     out
 }
 
@@ -135,7 +135,7 @@ pub fn rows_from_bindings(bindings: &[(Action, String)]) -> Vec<Row> {
             rows.push(Row {
                 label: name.clone(),
                 action: name,
-                group: "Прочее".into(),
+                group: "Other".into(),
                 keys,
             });
         }
@@ -225,18 +225,25 @@ pub fn display_spec(spec: &str) -> String {
         .join(" + ")
 }
 
+/// The key to show for an action. For directional actions an arrow key is preferred over
+/// letters like H/J/K/L, which mean nothing to someone new to tiling.
 fn first_key(rows: &[Row], action: &str) -> Option<String> {
-    rows.iter()
-        .find(|r| r.action == action)
-        .and_then(|r| r.keys.first())
-        .map(|k| display_spec(k))
+    let keys = &rows.iter().find(|r| r.action == action)?.keys;
+    let arrow = ["left", "down", "up", "right"]
+        .into_iter()
+        .find(|d| action.ends_with(&format!("_{d}")))
+        .and_then(|d| {
+            keys.iter()
+                .find(|k| k.to_ascii_lowercase().ends_with(&format!("+{d}")))
+        });
+    arrow.or(keys.first()).map(|k| display_spec(k))
 }
 
 /// `Alt + H J K L` for four keys sharing their modifiers; `Alt + 1 … 9` when `range`.
 fn compact(keys: &[String], range: bool) -> String {
     let parts: Vec<Vec<&str>> = keys.iter().map(|k| k.split(" + ").collect()).collect();
     let Some(first) = parts.first() else {
-        return "Не назначено".into();
+        return "Not set".into();
     };
     let prefix = &first[..first.len() - 1];
     if parts
@@ -260,18 +267,18 @@ fn compact(keys: &[String], range: bool) -> String {
 
 /// The welcome card's (keys, meaning) lines, built from the current hotkey table.
 pub fn welcome_items(rows: &[Row]) -> Vec<(String, String)> {
-    let dirs = ["left", "down", "up", "right"];
+    let dirs = ["left", "up", "down", "right"];
     let numbered = |prefix: &str| -> Vec<String> {
         (1..=config::WS_COUNT).map(|n| format!("{prefix}{n}")).collect()
     };
     let groups: Vec<(&str, Vec<String>, bool)> = vec![
-        ("Перейти к соседнему окну", dirs.iter().map(|d| format!("focus_{d}")).collect(), false),
-        ("Поменять окна местами", dirs.iter().map(|d| format!("swap_{d}")).collect(), false),
-        ("Открыть рабочий стол", numbered("workspace_"), true),
-        ("Перенести окно на стол", numbered("move_to_workspace_"), true),
-        ("Окно на весь экран и обратно", vec!["toggle_monocle".into()], false),
-        ("Вернуться к прошлому окну", vec!["focus_last".into()], false),
-        ("Сменить раскладку", vec!["cycle_layout".into()], false),
+        ("Move to the next window", dirs.iter().map(|d| format!("focus_{d}")).collect(), false),
+        ("Swap two windows", dirs.iter().map(|d| format!("swap_{d}")).collect(), false),
+        ("Open a workspace", numbered("workspace_"), true),
+        ("Send the window to a workspace", numbered("move_to_workspace_"), true),
+        ("Full screen and back", vec!["toggle_monocle".into()], false),
+        ("Back to the last window", vec!["focus_last".into()], false),
+        ("Change the layout", vec!["cycle_layout".into()], false),
     ];
     groups
         .into_iter()
@@ -282,13 +289,13 @@ pub fn welcome_items(rows: &[Row]) -> Vec<(String, String)> {
         .collect()
 }
 
-/// "Также Alt + . и Alt + ," for the master-column setting; empty when either key is unbound.
+/// "Also Alt + . and Alt + ," for the master-column setting; empty when either key is unbound.
 pub fn master_hint(rows: &[Row]) -> String {
     match (
         first_key(rows, "master_count_inc"),
         first_key(rows, "master_count_dec"),
     ) {
-        (Some(inc), Some(dec)) => format!("Также {inc} и {dec}"),
+        (Some(inc), Some(dec)) => format!("Also {inc} and {dec}"),
         _ => String::new(),
     }
 }
@@ -351,11 +358,11 @@ pub fn capture_key(text: &str, alt: bool, ctrl: bool, shift: bool, meta: bool) -
         // Ctrl+letter arrives as a control code
         '\u{1}'..='\u{1a}' => ((b'a' + (c as u8 - 1)) as char).to_string(),
         c if c.is_ascii_alphanumeric() => c.to_ascii_lowercase().to_string(),
-        _ => return Capture::Reject("Эту клавишу нельзя использовать в сочетании".into()),
+        _ => return Capture::Reject("This key cannot be used in a combination".into()),
     };
     let function_key = key.len() >= 2 && key.starts_with('f') && key[1..].parse::<u32>().is_ok();
     if !any_modifier && !function_key {
-        return Capture::Reject("Добавьте Alt, Ctrl, Shift или Win к клавише".into());
+        return Capture::Reject("Add Alt, Ctrl, Shift or Win to the key".into());
     }
     let mut parts: Vec<&str> = Vec::new();
     if ctrl {
@@ -374,7 +381,7 @@ pub fn capture_key(text: &str, alt: bool, ctrl: bool, shift: bool, meta: bool) -
     let spec = parts.join("+");
     match config::parse_hotkey(&spec) {
         Ok(_) => Capture::Spec(spec),
-        Err(_) => Capture::Reject(format!("Сочетание «{spec}» не поддерживается")),
+        Err(_) => Capture::Reject(format!("The combination {spec} is not supported")),
     }
 }
 
@@ -385,29 +392,29 @@ pub fn rule_label(rule: &Rule) -> String {
         who.push(format!("{p}.exe"));
     }
     if let Some(c) = &rule.class {
-        who.push(format!("окна класса {c}"));
+        who.push(format!("windows of class {c}"));
     }
     if let Some(t) = &rule.title {
-        who.push(format!("окна «{t}»"));
+        who.push(format!("windows titled \"{t}\""));
     }
     let who = if who.is_empty() {
-        "Любое окно".to_string()
+        "Any window".to_string()
     } else {
         who.join(", ")
     };
     let mut what: Vec<String> = Vec::new();
     match rule.action.as_deref() {
-        Some("float") => what.push("всегда плавающее".into()),
-        Some("tile") => what.push("всегда в раскладке".into()),
-        Some("ignore") => what.push("не управляется".into()),
+        Some("float") => what.push("always floating".into()),
+        Some("tile") => what.push("always tiled".into()),
+        Some("ignore") => what.push("left alone".into()),
         Some(other) => what.push(other.to_string()),
         None => {}
     }
     if let Some(ws) = rule.workspace {
-        what.push(format!("всегда на столе {ws}"));
+        what.push(format!("always on workspace {ws}"));
     }
     if what.is_empty() {
-        what.push("без действия".into());
+        what.push("no action".into());
     }
     format!("{who}  ·  {}", what.join(", "))
 }
@@ -595,9 +602,10 @@ mod tests {
     fn hints_follow_the_hotkey_table() {
         let mut rows = default_rows();
         let items = welcome_items(&rows);
-        assert_eq!(items[0].0, "Alt + H J K L");
+        assert_eq!(items[0].0, "Alt + ← ↑ ↓ →");
+        assert_eq!(items[1].0, "Alt + Shift + ← ↑ ↓ →");
         assert_eq!(items[2].0, "Alt + 1 … 9");
-        assert_eq!(master_hint(&rows), "Также Alt + . и Alt + ,");
+        assert_eq!(master_hint(&rows), "Also Alt + . and Alt + ,");
         rows.iter_mut()
             .find(|r| r.action == "master_count_inc")
             .unwrap()

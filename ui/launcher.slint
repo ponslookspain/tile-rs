@@ -269,7 +269,7 @@ component TextField inherits Rectangle {
 component Select inherits Rectangle {
     in property <[string]> model;
     in-out property <int> current-index: 0;
-    in property <string> placeholder: "Нет вариантов";
+    in property <string> placeholder: "No options";
     height: 38px;
     border-radius: 12px;
     background: AppTheme.surface;
@@ -340,13 +340,13 @@ component FieldRow inherits HorizontalLayout {
     HorizontalLayout {
         y: (parent.height - self.height) / 2;
         spacing: 2px;
-        IconButton { y: (parent.height - self.height) / 2; icon: @image-url("icons/minus.svg"); label: "Меньше"; activated => { value = "" + max(minimum, number - step); } }
+        IconButton { y: (parent.height - self.height) / 2; icon: @image-url("icons/minus.svg"); label: "Less"; activated => { value = "" + max(minimum, number - step); } }
         TextField {
             y: (parent.height - self.height) / 2;
             width: field-width;
             text <=> value;
         }
-        IconButton { y: (parent.height - self.height) / 2; icon: @image-url("icons/plus.svg"); label: "Больше"; activated => { value = "" + min(maximum, number + step); } }
+        IconButton { y: (parent.height - self.height) / 2; icon: @image-url("icons/plus.svg"); label: "More"; activated => { value = "" + min(maximum, number + step); } }
     }
 }
 
@@ -478,9 +478,9 @@ component Stepper inherits Rectangle {
     background: AppTheme.sunken;
     HorizontalLayout {
         padding: 2px;
-        IconButton { icon: @image-url("icons/minus.svg"); label: "Меньше"; activated => { value = "" + max(minimum, number - 1); } }
+        IconButton { icon: @image-url("icons/minus.svg"); label: "Less"; activated => { value = "" + max(minimum, number - 1); } }
         Text { text: number; color: AppTheme.ink; font-size: 15px; font-weight: 600; horizontal-alignment: center; vertical-alignment: center; horizontal-stretch: 1; }
-        IconButton { icon: @image-url("icons/plus.svg"); label: "Больше"; activated => { value = "" + min(maximum, number + 1); } }
+        IconButton { icon: @image-url("icons/plus.svg"); label: "More"; activated => { value = "" + min(maximum, number + 1); } }
     }
 }
 
@@ -561,30 +561,30 @@ export component MainWindow inherits Window {
     in-out property <[string]> app_choices;
     in-out property <int> rule_app_index: 0;
     in-out property <int> rule_kind_index: 0;
-    property <[string]> rule_kinds: ["Всегда плавающее окно", "Всегда на рабочем столе 1", "Всегда на рабочем столе 2", "Всегда на рабочем столе 3", "Всегда на рабочем столе 4", "Всегда на рабочем столе 5", "Всегда на рабочем столе 6", "Всегда на рабочем столе 7", "Всегда на рабочем столе 8", "Всегда на рабочем столе 9"];
+    property <[string]> rule_kinds: ["Always floating", "Always on workspace 1", "Always on workspace 2", "Always on workspace 3", "Always on workspace 4", "Always on workspace 5", "Always on workspace 6", "Always on workspace 7", "Always on workspace 8", "Always on workspace 9"];
     // hints that follow the hotkey table
     in-out property <[WelcomeItem]> welcome_items;
     in-out property <string> master_hint: "";
     in-out property <bool> show_advanced: false;
     in-out property <bool> dirty: false;
     in-out property <bool> show_welcome: false;
-    in-out property <string> status: "Настройки загружены";
+    in-out property <string> status: "Settings loaded";
 
     in property <string> app_version;
     // 0 idle, 1 checking, 2 available, 3 current, 4 downloading, 5 error
     in-out property <int> update_state: 0;
     in-out property <int> update_progress: 0;
     in-out property <string> update_version;
-    in-out property <string> update_message: "Проверьте, появилась ли новая версия tile-rs.";
+    in-out property <string> update_message: "Check whether a new version of tile-rs is out.";
     in-out property <string> release_notes;
 
-    property <[string]> page_titles: ["Общие", "Раскладка", "Рабочие столы", "Поведение окон", "Горячие клавиши", "Приложения", "Дополнительно", "Обновления"];
-    property <[string]> page_subtitles: ["Раскладка, движение окон и краткая сводка", "Размеры плиток, лимиты и главная колонка", "Индикатор рабочих столов и фокус", "Полноэкранные программы и рамка активного окна", "Каждое действие — своё сочетание клавиш", "Как tile-rs обходится с конкретными программами", "Автозапуск, файлы и сведения о программе", "Новые версии tile-rs приходят прямо сюда"];
+    property <[string]> page_titles: ["General", "Layout", "Workspaces", "Window behaviour", "Hotkeys", "Apps", "Advanced", "Updates"];
+    property <[string]> page_subtitles: ["How windows are arranged and how they move", "Tile sizes, limits and the main column", "Workspace dots and focus", "Fullscreen apps and the focus border", "One key combination per action", "How tile-rs treats particular apps", "Start with Windows, files and about", "New versions of tile-rs arrive here"];
     property <[image]> page_icons: [@image-url("icons/dashboard.svg"), @image-url("icons/layout.svg"), @image-url("icons/desktops.svg"), @image-url("icons/window.svg"), @image-url("icons/keyboard.svg"), @image-url("icons/apps.svg"), @image-url("icons/adjustments.svg"), @image-url("icons/download.svg")];
-    property <[string]> layout_names: ["Спираль", "Мастер и стек", "Сетка", "Колонки"];
-    property <[string]> layout_hints: ["Новое окно делит последнее", "Главное окно слева", "Ровные клетки", "Окна в ряд"];
+    property <[string]> layout_names: ["Spiral", "Main window", "Grid", "Columns"];
+    property <[string]> layout_hints: ["Each new window splits the last one", "One big window, the rest beside it", "Equal cells", "Side by side"];
     property <length> preview_gap: clamp(inner_gap.to-float() / 3, 1, 8) * 1px;
-    property <string> update_title: update_state == 2 ? "Доступна версия " + update_version : (update_state == 1 ? "Проверяем GitHub…" : (update_state == 4 ? "Загружаем обновление" : (update_state == 3 ? "У вас последняя версия" : (update_state == 5 ? "Не удалось обновить" : "Проверка обновлений"))));
+    property <string> update_title: update_state == 2 ? "Version available: " + update_version : (update_state == 1 ? "Checking GitHub…" : (update_state == 4 ? "Downloading the update" : (update_state == 3 ? "You have the latest version" : (update_state == 5 ? "Update failed" : "Updates"))));
 
     init => { Palette.color-scheme = ColorScheme.light; }
     changed animations => { AppTheme.motion = animations; dirty = true; }
@@ -661,10 +661,10 @@ export component MainWindow inherits Window {
                     VerticalLayout {
                         padding: 14px;
                         spacing: 4px;
-                        Text { text: "Версия " + app_version; color: AppTheme.ink; font-size: 13px; font-weight: 600; }
-                        Text { text: "Закрытие окна оставляет tile-rs в трее"; color: AppTheme.muted; font-size: 12px; wrap: word-wrap; }
+                        Text { text: "Version " + app_version; color: AppTheme.ink; font-size: 13px; font-weight: 600; }
+                        Text { text: "Closing this window keeps tile-rs running in the tray"; color: AppTheme.muted; font-size: 12px; wrap: word-wrap; }
                         Rectangle { vertical-stretch: 1; }
-                        ActionButton { label: "Выйти из tile-rs"; icon: @image-url("icons/power.svg"); has-icon: true; kind: 3; compact: true; button-width: 172px; activated => { root.quit_manager(); } }
+                        ActionButton { label: "Quit tile-rs"; icon: @image-url("icons/power.svg"); has-icon: true; kind: 3; compact: true; button-width: 172px; activated => { root.quit_manager(); } }
                     }
                 }
             }
@@ -699,7 +699,7 @@ export component MainWindow inherits Window {
                         alignment: center;
                         spacing: 8px;
                         Rectangle { y: (parent.height - 8px) / 2; width: 8px; height: 8px; border-radius: 4px; background: dirty ? #e39a1b : AppTheme.accent; }
-                        Text { text: dirty ? "Сохраняем…" : "Сохранено автоматически"; color: dirty ? AppTheme.warn-ink : AppTheme.accent-ink; font-size: 12px; vertical-alignment: center; }
+                        Text { text: dirty ? "Saving…" : "Saved automatically"; color: dirty ? AppTheme.warn-ink : AppTheme.accent-ink; font-size: 12px; vertical-alignment: center; }
                     }
                 }
             }
@@ -718,7 +718,7 @@ export component MainWindow inherits Window {
                             horizontal-stretch: 1;
                             alignment: start;
                             spacing: 14px;
-                            Text { text: "Раскладка окон"; color: AppTheme.ink; font-size: 16px; font-weight: 600; }
+                            Text { text: "Window layout"; color: AppTheme.ink; font-size: 16px; font-weight: 600; }
                             HorizontalLayout {
                                 spacing: 12px;
                                 height: 214px;
@@ -758,14 +758,14 @@ export component MainWindow inherits Window {
                                     lt-touch := TouchArea { mouse-cursor: pointer; clicked => { lt-focus.focus(); layout_index = index; } }
                                 }
                             }
-                            Text { text: "Движение и интервалы"; color: AppTheme.ink; font-size: 16px; font-weight: 600; }
+                            Text { text: "Motion and gaps"; color: AppTheme.ink; font-size: 16px; font-weight: 600; }
                             Card {
                                 card-height: 292px;
                                 VerticalLayout {
                                     padding: 18px;
                                     spacing: 4px;
-                                    ToggleRow { label: "Плавно перемещать окна"; hint: "Окна скользят на новое место вместо скачка"; checked: animations; changed(value) => { animations = value; } }
-                                    FieldRow { label: "Длительность анимации"; hint: "Миллисекунды"; value <=> animation_ms; minimum: 0; maximum: 5000; step: 20; }
+                                    ToggleRow { label: "Animate windows"; hint: "Windows slide to their new place instead of jumping"; checked: animations; changed(value) => { animations = value; } }
+                                    FieldRow { label: "Animation length"; hint: "Milliseconds"; value <=> animation_ms; minimum: 0; maximum: 1000; step: 20; }
                                     HorizontalLayout {
                                         height: 54px;
                                         padding-left: 10px;
@@ -775,14 +775,14 @@ export component MainWindow inherits Window {
                                             alignment: center;
                                             horizontal-stretch: 1;
                                             spacing: 2px;
-                                            Text { text: "Кривая движения"; color: AppTheme.ink; font-size: 13px; }
-                                            Text { text: "Как окно разгоняется и тормозит"; color: AppTheme.muted; font-size: 12px; }
+                                            Text { text: "Motion curve"; color: AppTheme.ink; font-size: 13px; }
+                                            Text { text: "How a window speeds up and slows down"; color: AppTheme.muted; font-size: 12px; }
                                         }
                                         Select {
                                             property <[string]> names: ["linear", "out_quad", "out_cubic", "out_quart", "in_out_cubic"];
                                             y: (parent.height - self.height) / 2;
                                             width: 200px;
-                                            model: ["Равномерно", "Мягкое торможение", "Плавное торможение", "Сильное торможение", "Разгон и торможение"];
+                                            model: ["Linear", "Gentle stop", "Smooth stop", "Strong stop", "Ease in and out"];
                                             current-index: easing == "linear" ? 0 : (easing == "out_quad" ? 1 : (easing == "out_quart" ? 3 : (easing == "in_out_cubic" ? 4 : 2)));
                                             changed current-index => { easing = names[self.current-index]; }
                                         }
@@ -790,8 +790,8 @@ export component MainWindow inherits Window {
                                     Divider { }
                                     HorizontalLayout {
                                         spacing: 8px;
-                                        FieldRow { horizontal-stretch: 1; label: "Между окнами"; hint: "Пиксели"; value <=> inner_gap; field-width: 48px; minimum: 0; maximum: 500; step: 2; }
-                                        FieldRow { horizontal-stretch: 1; label: "От края экрана"; hint: "Пиксели"; value <=> outer_gap; field-width: 48px; minimum: 0; maximum: 500; step: 2; }
+                                        FieldRow { horizontal-stretch: 1; label: "Between windows"; hint: "Pixels"; value <=> inner_gap; field-width: 48px; minimum: 0; maximum: 200; step: 2; }
+                                        FieldRow { horizontal-stretch: 1; label: "From screen edges"; hint: "Pixels"; value <=> outer_gap; field-width: 48px; minimum: 0; maximum: 200; step: 2; }
                                     }
                                 }
                             }
@@ -800,8 +800,8 @@ export component MainWindow inherits Window {
                             width: 256px;
                             alignment: start;
                             spacing: 14px;
-                            Text { text: "Сводка"; color: AppTheme.ink; font-size: 16px; font-weight: 600; }
-                            StatCard { title: "Горячие клавиши"; caption: "назначено из " + hotkey_rows.length + " действий"; fraction: hotkey_rows.length == 0 ? 0 : hotkeys_bound / hotkey_rows.length; value: hotkeys_bound; }
+                            Text { text: "Summary"; color: AppTheme.ink; font-size: 16px; font-weight: 600; }
+                            StatCard { title: "Hotkeys"; caption: "of " + hotkey_rows.length + " actions have keys"; fraction: hotkey_rows.length == 0 ? 0 : hotkeys_bound / hotkey_rows.length; value: hotkeys_bound; }
                             Card {
                                 card-height: 96px;
                                 HorizontalLayout {
@@ -812,10 +812,10 @@ export component MainWindow inherits Window {
                                         alignment: center;
                                         horizontal-stretch: 1;
                                         spacing: 3px;
-                                        Text { text: "Правила программ"; color: AppTheme.ink; font-size: 13px; font-weight: 600; overflow: elide; }
-                                        Text { text: rule_rows.length == 0 ? "Пока ни одного" : "Настроено: " + rule_rows.length; color: AppTheme.muted; font-size: 12px; }
+                                        Text { text: "App rules"; color: AppTheme.ink; font-size: 13px; font-weight: 600; overflow: elide; }
+                                        Text { text: rule_rows.length == 0 ? "None yet" : "Set up: " + rule_rows.length; color: AppTheme.muted; font-size: 12px; }
                                     }
-                                    IconButton { y: (parent.height - self.height) / 2; icon: @image-url("icons/arrow-right.svg"); label: "Открыть правила программ"; activated => { page = 5; } }
+                                    IconButton { y: (parent.height - self.height) / 2; icon: @image-url("icons/arrow-right.svg"); label: "Open app rules"; activated => { page = 5; } }
                                 }
                             }
                             Card {
@@ -835,10 +835,10 @@ export component MainWindow inherits Window {
                                     }
                                     Rectangle { height: 4px; }
                                     Text { text: update_title; color: AppTheme.ink; font-size: 15px; font-weight: 600; wrap: word-wrap; }
-                                    Text { text: "Установлена версия " + app_version; color: AppTheme.ink-2; font-size: 12px; }
+                                    Text { text: "Installed version " + app_version; color: AppTheme.ink-2; font-size: 12px; }
                                     Rectangle { height: 8px; }
                                     ActionButton {
-                                        label: update_state == 2 ? "Обновить" : "Проверить";
+                                        label: update_state == 2 ? "Update" : "Check";
                                         icon: update_state == 2 ? @image-url("icons/download.svg") : @image-url("icons/refresh.svg");
                                         has-icon: true;
                                         primary: true;
@@ -863,14 +863,14 @@ export component MainWindow inherits Window {
                                 VerticalLayout {
                                     padding: 20px;
                                     spacing: 10px;
-                                    CardTitle { title: "Главная колонка"; subtitle: "Только для раскладки «Мастер и стек»"; icon: @image-url("icons/layout.svg"); }
+                                    CardTitle { title: "Main column"; subtitle: "Only for the Main window layout"; icon: @image-url("icons/layout.svg"); }
                                     HorizontalLayout {
                                         spacing: 18px;
                                         LayoutPreview { width: 170px; height: 112px; mode: 1; masters: master_count.to-float(); gap: preview_gap; }
                                         VerticalLayout {
                                             alignment: center;
                                             spacing: 8px;
-                                            Text { text: "Окон в главной колонке"; color: AppTheme.ink; font-size: 13px; }
+                                            Text { text: "Windows in the main column"; color: AppTheme.ink; font-size: 13px; }
                                             Stepper { value <=> master_count; minimum: 1; maximum: 8; }
                                             Text { text: master_hint; color: AppTheme.muted; font-size: 12px; }
                                         }
@@ -883,9 +883,9 @@ export component MainWindow inherits Window {
                                 VerticalLayout {
                                     padding: 20px;
                                     spacing: 6px;
-                                    CardTitle { title: "Поведение раскладки"; icon: @image-url("icons/overflow.svg"); }
-                                    ToggleRow { label: "Переносить новые окна дальше"; hint: "Если текущий рабочий стол заполнен"; checked: auto_overflow; changed(value) => { auto_overflow = value; } }
-                                    ToggleRow { label: "Без отступов для одного окна"; hint: "Единственное окно занимает весь экран"; checked: smart_gaps; changed(value) => { smart_gaps = value; } }
+                                    CardTitle { title: "Layout behaviour"; icon: @image-url("icons/overflow.svg"); }
+                                    ToggleRow { label: "Send new windows onward"; hint: "When the current workspace is full"; checked: auto_overflow; changed(value) => { auto_overflow = value; } }
+                                    ToggleRow { label: "No gaps for a single window"; hint: "A lone window fills the screen"; checked: smart_gaps; changed(value) => { smart_gaps = value; } }
                                 }
                             }
                         }
@@ -896,23 +896,23 @@ export component MainWindow inherits Window {
                                 spacing: 6px;
                                 HorizontalLayout {
                                     spacing: 12px;
-                                    CardTitle { horizontal-stretch: 1; title: "Дополнительно"; subtitle: "Размеры плиток, лимит окон, шаг изменения размера"; icon: @image-url("icons/resize.svg"); }
-                                    ActionButton { y: (parent.height - self.height) / 2; label: show_advanced ? "Скрыть" : "Показать"; kind: 2; compact: true; button-width: 120px; activated => { show_advanced = !show_advanced; } }
+                                    CardTitle { horizontal-stretch: 1; title: "More options"; subtitle: "Tile sizes, window limit, resize step"; icon: @image-url("icons/resize.svg"); }
+                                    ActionButton { y: (parent.height - self.height) / 2; label: show_advanced ? "Hide" : "Show"; kind: 2; compact: true; button-width: 120px; activated => { show_advanced = !show_advanced; } }
                                 }
                                 if show_advanced: Rectangle { height: 4px; }
                                 if show_advanced: HorizontalLayout {
                                     spacing: 24px;
                                     VerticalLayout {
                                         horizontal-stretch: 1;
-                                        FieldRow { label: "Минимальная ширина"; hint: "Пиксели"; value <=> min_tile_width; minimum: 50; maximum: 10000; step: 20; }
+                                        FieldRow { label: "Minimum width"; hint: "Pixels"; value <=> min_tile_width; minimum: 100; maximum: 4000; step: 20; }
                                         Divider { }
-                                        FieldRow { label: "Минимальная высота"; hint: "Пиксели"; value <=> min_tile_height; minimum: 50; maximum: 10000; step: 20; }
+                                        FieldRow { label: "Minimum height"; hint: "Pixels"; value <=> min_tile_height; minimum: 100; maximum: 4000; step: 20; }
                                     }
                                     VerticalLayout {
                                         horizontal-stretch: 1;
-                                        FieldRow { label: "Лимит окон на стол"; hint: "0 — подбирается автоматически"; value <=> max_tiles; minimum: 0; maximum: 1000; step: 1; }
+                                        FieldRow { label: "Windows per workspace"; hint: "0 picks it automatically"; value <=> max_tiles; minimum: 0; maximum: 20; step: 1; }
                                         Divider { }
-                                        FieldRow { label: "Шаг изменения размера"; hint: "Пиксели на одно нажатие Alt + плюс"; value <=> resize_step; minimum: 1; maximum: 2000; step: 10; }
+                                        FieldRow { label: "Resize step"; hint: "Pixels per press of the grow key"; value <=> resize_step; minimum: 1; maximum: 500; step: 10; }
                                     }
                                 }
                             }
@@ -927,7 +927,7 @@ export component MainWindow inherits Window {
                             VerticalLayout {
                                 padding: 20px;
                                 spacing: 12px;
-                                CardTitle { title: "Индикатор рабочих столов"; subtitle: "Точки вверху каждого монитора: текущий, занятые и пустые"; icon: @image-url("icons/desktops.svg"); }
+                                CardTitle { title: "Workspace dots"; subtitle: "Dots at the top of each screen: current, busy and empty"; icon: @image-url("icons/desktops.svg"); }
                                 Rectangle {
                                     height: 96px;
                                     border-radius: 14px;
@@ -952,18 +952,18 @@ export component MainWindow inherits Window {
                                             }
                                         }
                                     }
-                                    Text { y: 60px; x: (parent.width - self.width) / 2; text: show_indicator ? "Так индикатор выглядит на экране" : "Индикатор скрыт"; color: AppTheme.muted; font-size: 12px; }
+                                    Text { y: 60px; x: (parent.width - self.width) / 2; text: show_indicator ? "This is how the dots look on screen" : "The dots are hidden"; color: AppTheme.muted; font-size: 12px; }
                                 }
-                                ToggleRow { label: "Показывать индикатор на каждом мониторе"; checked: show_indicator; changed(value) => { show_indicator = value; } }
+                                ToggleRow { label: "Show the dots on every screen"; checked: show_indicator; changed(value) => { show_indicator = value; } }
                                 HorizontalLayout {
                                     padding-left: 10px;
                                     padding-right: 10px;
                                     spacing: 16px;
                                     height: 44px;
-                                    Text { text: "Размер точек"; color: AppTheme.ink; font-size: 13px; vertical-alignment: center; }
-                                    Segmented { y: 2px; options: ["Маленький", "Средний", "Большой"]; current <=> indicator_size; segment-width: 104px; }
+                                    Text { text: "Dot size"; color: AppTheme.ink; font-size: 13px; vertical-alignment: center; }
+                                    Segmented { y: 2px; options: ["Small", "Medium", "Large"]; current <=> indicator_size; segment-width: 104px; }
                                     Rectangle { horizontal-stretch: 1; }
-                                    Text { text: "Акцент"; color: AppTheme.ink; font-size: 13px; vertical-alignment: center; }
+                                    Text { text: "Accent"; color: AppTheme.ink; font-size: 13px; vertical-alignment: center; }
                                     Swatch { y: 5px; hex: accent_color; }
                                     TextField { y: 4px; width: 112px; text <=> accent_color; }
                                 }
@@ -974,8 +974,8 @@ export component MainWindow inherits Window {
                             VerticalLayout {
                                 padding: 20px;
                                 spacing: 4px;
-                                CardTitle { title: "Фокус"; icon: @image-url("icons/pointer.svg"); }
-                                ToggleRow { label: "Передавать фокус окну под указателем"; hint: "Без щелчка: достаточно навести мышь"; checked: focus_follows_mouse; changed(value) => { focus_follows_mouse = value; } }
+                                CardTitle { title: "Focus"; icon: @image-url("icons/pointer.svg"); }
+                                ToggleRow { label: "Focus the window under the mouse"; hint: "No click needed, just point at it"; checked: focus_follows_mouse; changed(value) => { focus_follows_mouse = value; } }
                             }
                         }
                     }
@@ -989,13 +989,13 @@ export component MainWindow inherits Window {
                             VerticalLayout {
                                 padding: 20px;
                                 spacing: 10px;
-                                CardTitle { title: "Полноэкранные программы"; subtitle: "Игры, видео и презентации"; icon: @image-url("icons/maximize.svg"); }
+                                CardTitle { title: "Fullscreen apps"; subtitle: "Games, videos and slideshows"; icon: @image-url("icons/maximize.svg"); }
                                 Rectangle { height: 2px; }
-                                Text { text: "При переходе на другой рабочий стол"; color: AppTheme.ink; font-size: 13px; }
-                                Segmented { options: ["Сворачивать", "Не трогать"]; current <=> fullscreen_windows; segment-width: 150px; }
+                                Text { text: "When you switch to another workspace"; color: AppTheme.ink; font-size: 13px; }
+                                Segmented { options: ["Minimize", "Leave alone"]; current <=> fullscreen_windows; segment-width: 150px; }
                                 Rectangle { height: 6px; }
-                                Text { text: "Окна с фото и видео"; color: AppTheme.ink; font-size: 13px; }
-                                Segmented { options: ["Плавающие", "В раскладке"]; current <=> media_windows; segment-width: 150px; }
+                                Text { text: "Photo and video viewers"; color: AppTheme.ink; font-size: 13px; }
+                                Segmented { options: ["Floating", "Tiled"]; current <=> media_windows; segment-width: 150px; }
                             }
                         }
                         Card {
@@ -1004,8 +1004,8 @@ export component MainWindow inherits Window {
                             VerticalLayout {
                                 padding: 20px;
                                 spacing: 8px;
-                                CardTitle { title: "Рамка активного окна"; subtitle: "Видна у любого окна, даже у консоли"; icon: @image-url("icons/border.svg"); }
-                                ToggleRow { label: "Показывать рамку"; checked: highlight_window; changed(value) => { highlight_window = value; } }
+                                CardTitle { title: "Focus border"; subtitle: "Shown around any window, even a console"; icon: @image-url("icons/border.svg"); }
+                                ToggleRow { label: "Show the border"; checked: highlight_window; changed(value) => { highlight_window = value; } }
                                 HorizontalLayout {
                                     spacing: 18px;
                                     height: 120px;
@@ -1036,7 +1036,7 @@ export component MainWindow inherits Window {
                                         }
                                         HorizontalLayout {
                                             spacing: 10px;
-                                            Text { text: "Толщина, пиксели"; color: AppTheme.ink; font-size: 13px; vertical-alignment: center; horizontal-stretch: 1; }
+                                            Text { text: "Width, pixels"; color: AppTheme.ink; font-size: 13px; vertical-alignment: center; horizontal-stretch: 1; }
                                             TextField { width: 72px; text <=> border_width; }
                                         }
                                     }
@@ -1060,14 +1060,14 @@ export component MainWindow inherits Window {
                                 spacing: 12px;
                                 Icon { y: (parent.height - self.height) / 2; source: recording >= 0 ? @image-url("icons/record.svg") : @image-url("icons/info.svg"); tint: recording >= 0 ? AppTheme.accent : AppTheme.muted; }
                                 Text {
-                                    text: recording >= 0 ? "Нажмите сочетание клавиш. Esc — отмена, Backspace — убрать сочетание" : "Кружок записывает новое сочетание, плюс добавляет второе, корзина убирает";
+                                    text: recording >= 0 ? "Press a key combination. Esc cancels, Backspace removes the keys" : "The circle records new keys, the plus adds another combination, the bin removes them";
                                     color: recording >= 0 ? AppTheme.accent-ink : AppTheme.ink-2;
                                     font-size: 13px;
                                     vertical-alignment: center;
                                     horizontal-stretch: 1;
                                     overflow: elide;
                                 }
-                                ActionButton { y: (parent.height - self.height) / 2; label: "Сбросить все"; icon: @image-url("icons/refresh.svg"); has-icon: true; kind: 2; compact: true; button-width: 148px; activated => { root.reset_hotkeys(); } }
+                                ActionButton { y: (parent.height - self.height) / 2; label: "Reset all"; icon: @image-url("icons/refresh.svg"); has-icon: true; kind: 2; compact: true; button-width: 148px; activated => { root.reset_hotkeys(); } }
                             }
                         }
                         key_capture := FocusScope {
@@ -1119,7 +1119,7 @@ export component MainWindow inherits Window {
                                                     border-width: 1px;
                                                     border-color: recording == index ? #9ccdff : AppTheme.line;
                                                     hint-text := Text {
-                                                        text: recording == index ? "Нажмите клавиши…" : "Не назначено";
+                                                        text: recording == index ? "Press keys…" : "Not set";
                                                         color: recording == index ? AppTheme.accent-ink : AppTheme.muted;
                                                         font-size: 12px;
                                                         horizontal-alignment: center;
@@ -1145,17 +1145,17 @@ export component MainWindow inherits Window {
                                                 if row.refused && !row.conflict: HorizontalLayout {
                                                     spacing: 6px;
                                                     Icon { y: (parent.height - self.height) / 2; width: 16px; height: 16px; source: @image-url("icons/alert.svg"); tint: AppTheme.danger; }
-                                                    Text { text: "Занято другой программой или Windows"; color: AppTheme.danger; font-size: 12px; vertical-alignment: center; }
+                                                    Text { text: "Taken by another app or by Windows"; color: AppTheme.danger; font-size: 12px; vertical-alignment: center; }
                                                 }
                                                 if row.conflict: HorizontalLayout {
                                                     spacing: 6px;
                                                     Icon { y: (parent.height - self.height) / 2; width: 16px; height: 16px; source: @image-url("icons/alert.svg"); tint: AppTheme.danger; }
-                                                    Text { text: "Уже занято"; color: AppTheme.danger; font-size: 12px; vertical-alignment: center; }
+                                                    Text { text: "Already used"; color: AppTheme.danger; font-size: 12px; vertical-alignment: center; }
                                                 }
                                             }
-                                            IconButton { y: (parent.height - self.height) / 2; icon: @image-url("icons/record.svg"); label: "Записать новое сочетание"; activated => { root.recording = index; root.recording_append = false; key_capture.focus(); } }
-                                            IconButton { y: (parent.height - self.height) / 2; icon: @image-url("icons/plus.svg"); label: "Добавить ещё сочетание"; activated => { root.recording = index; root.recording_append = true; key_capture.focus(); } }
-                                            IconButton { y: (parent.height - self.height) / 2; icon: @image-url("icons/trash.svg"); label: "Убрать сочетания"; danger: true; activated => { root.clear_keys(index); } }
+                                            IconButton { y: (parent.height - self.height) / 2; icon: @image-url("icons/record.svg"); label: "Record new keys"; activated => { root.recording = index; root.recording_append = false; key_capture.focus(); } }
+                                            IconButton { y: (parent.height - self.height) / 2; icon: @image-url("icons/plus.svg"); label: "Add another combination"; activated => { root.recording = index; root.recording_append = true; key_capture.focus(); } }
+                                            IconButton { y: (parent.height - self.height) / 2; icon: @image-url("icons/trash.svg"); label: "Remove keys"; danger: true; activated => { root.clear_keys(index); } }
                                         }
                                     }
                                 }
@@ -1171,7 +1171,7 @@ export component MainWindow inherits Window {
                             rules-list := VerticalLayout {
                                 padding: 20px;
                                 spacing: 6px;
-                                CardTitle { title: "Правила программ"; subtitle: rule_rows.length == 0 ? "Ещё нет ни одного правила" : "Правил: " + rule_rows.length; icon: @image-url("icons/apps.svg"); }
+                                CardTitle { title: "App rules"; subtitle: rule_rows.length == 0 ? "No rules yet" : "Rules: " + rule_rows.length; icon: @image-url("icons/apps.svg"); }
                                 Rectangle { height: 6px; }
                                 if rule_rows.length == 0: Rectangle {
                                     height: 132px;
@@ -1181,8 +1181,8 @@ export component MainWindow inherits Window {
                                         alignment: center;
                                         spacing: 6px;
                                         Icon { x: (parent.width - self.width) / 2; width: 28px; height: 28px; source: @image-url("icons/apps.svg"); tint: AppTheme.accent; }
-                                        Text { text: "Настройте первую программу"; color: AppTheme.ink; font-size: 14px; font-weight: 600; horizontal-alignment: center; }
-                                        Text { text: "Например, чтобы мессенджер всегда открывался на своём рабочем столе"; color: AppTheme.ink-2; font-size: 12px; horizontal-alignment: center; }
+                                        Text { text: "Set up your first app"; color: AppTheme.ink; font-size: 14px; font-weight: 600; horizontal-alignment: center; }
+                                        Text { text: "For example, always open your messenger on its own workspace"; color: AppTheme.ink-2; font-size: 12px; horizontal-alignment: center; }
                                     }
                                 }
                                 for rule[index] in rule_rows: Rectangle {
@@ -1203,7 +1203,7 @@ export component MainWindow inherits Window {
                                             Icon { source: @image-url("icons/window.svg"); tint: AppTheme.accent; }
                                         }
                                         Text { text: rule; color: AppTheme.ink; font-size: 13px; vertical-alignment: center; horizontal-stretch: 1; overflow: elide; }
-                                        IconButton { y: (parent.height - self.height) / 2; icon: @image-url("icons/trash.svg"); label: "Удалить правило"; danger: true; activated => { root.delete_rule(index); } }
+                                        IconButton { y: (parent.height - self.height) / 2; icon: @image-url("icons/trash.svg"); label: "Delete rule"; danger: true; activated => { root.delete_rule(index); } }
                                     }
                                 }
                             }
@@ -1213,14 +1213,14 @@ export component MainWindow inherits Window {
                             VerticalLayout {
                                 padding: 20px;
                                 spacing: 14px;
-                                CardTitle { title: "Новое правило"; subtitle: "Выберите открытую программу и что с ней делать"; icon: @image-url("icons/app-plus.svg"); }
+                                CardTitle { title: "New rule"; subtitle: "Pick an open app and what to do with it"; icon: @image-url("icons/app-plus.svg"); }
                                 HorizontalLayout {
                                     spacing: 10px;
                                     height: 38px;
-                                    Select { horizontal-stretch: 1; model: app_choices; current-index <=> rule_app_index; placeholder: "Нет открытых программ"; }
+                                    Select { horizontal-stretch: 1; model: app_choices; current-index <=> rule_app_index; placeholder: "No open apps"; }
                                     Select { width: 250px; model: rule_kinds; current-index <=> rule_kind_index; }
-                                    ActionButton { label: "Добавить"; icon: @image-url("icons/plus.svg"); has-icon: true; primary: true; button-width: 128px; enabled: app_choices.length > 0; activated => { root.add_rule(); } }
-                                    IconButton { y: 2px; icon: @image-url("icons/refresh.svg"); label: "Обновить список программ"; activated => { root.refresh_apps(); } }
+                                    ActionButton { label: "Add"; icon: @image-url("icons/plus.svg"); has-icon: true; primary: true; button-width: 128px; enabled: app_choices.length > 0; activated => { root.add_rule(); } }
+                                    IconButton { y: 2px; icon: @image-url("icons/refresh.svg"); label: "Refresh the app list"; activated => { root.refresh_apps(); } }
                                 }
                             }
                         }
@@ -1234,14 +1234,14 @@ export component MainWindow inherits Window {
                             VerticalLayout {
                                 padding: 20px;
                                 spacing: 8px;
-                                CardTitle { title: "Запуск и диагностика"; icon: @image-url("icons/adjustments.svg"); }
-                                ToggleRow { label: "Запускать tile-rs при входе в Windows"; checked: autostart; changed(value) => { autostart = value; } }
+                                CardTitle { title: "Startup and troubleshooting"; icon: @image-url("icons/adjustments.svg"); }
+                                ToggleRow { label: "Start tile-rs when Windows starts"; checked: autostart; changed(value) => { autostart = value; } }
                                 HorizontalLayout {
                                     padding-left: 10px;
                                     spacing: 10px;
                                     alignment: start;
-                                    ActionButton { label: "Открыть конфиг"; icon: @image-url("icons/file.svg"); has-icon: true; compact: true; button-width: 168px; activated => { root.open_config(); } }
-                                    ActionButton { label: "Открыть журнал"; icon: @image-url("icons/list.svg"); has-icon: true; compact: true; button-width: 168px; activated => { root.open_log(); } }
+                                    ActionButton { label: "Open config file"; icon: @image-url("icons/file.svg"); has-icon: true; compact: true; button-width: 168px; activated => { root.open_config(); } }
+                                    ActionButton { label: "Open log"; icon: @image-url("icons/list.svg"); has-icon: true; compact: true; button-width: 168px; activated => { root.open_log(); } }
                                 }
                             }
                         }
@@ -1250,15 +1250,15 @@ export component MainWindow inherits Window {
                             VerticalLayout {
                                 padding: 20px;
                                 spacing: 8px;
-                                CardTitle { title: "О программе"; subtitle: "tile-rs " + app_version + " · открытый исходный код, лицензия MIT"; icon: @image-url("icons/info.svg"); }
-                                Text { text: "Окно настроек построено на Slint и распространяется по лицензии Slint Royalty-Free."; color: AppTheme.ink-2; font-size: 12px; wrap: word-wrap; }
+                                CardTitle { title: "About"; subtitle: "tile-rs " + app_version + " · open source, MIT license"; icon: @image-url("icons/info.svg"); }
+                                Text { text: "The settings window is built with Slint under the Slint Royalty-Free license."; color: AppTheme.ink-2; font-size: 12px; wrap: word-wrap; }
                                 HorizontalLayout {
                                     spacing: 24px;
                                     alignment: start;
                                     AboutSlint { width: 160px; height: 100px; }
                                     VerticalLayout {
                                         alignment: center;
-                                        ActionButton { label: "Страница на GitHub"; icon: @image-url("icons/external.svg"); has-icon: true; compact: true; button-width: 196px; activated => { root.open_github(); } }
+                                        ActionButton { label: "GitHub page"; icon: @image-url("icons/external.svg"); has-icon: true; compact: true; button-width: 196px; activated => { root.open_github(); } }
                                     }
                                 }
                             }
@@ -1291,7 +1291,7 @@ export component MainWindow inherits Window {
                                         alignment: center;
                                         spacing: 3px;
                                         Text { text: update_title; color: AppTheme.ink; font-size: 20px; font-weight: 700; }
-                                        Text { text: "Установлена версия " + app_version + " · стабильный канал"; color: AppTheme.ink-2; font-size: 13px; }
+                                        Text { text: "Installed version " + app_version + " · stable channel"; color: AppTheme.ink-2; font-size: 13px; }
                                     }
                                 }
                                 Text { text: update_message; color: update_state == 5 ? AppTheme.danger : AppTheme.ink-2; font-size: 13px; wrap: word-wrap; height: 40px; }
@@ -1303,10 +1303,10 @@ export component MainWindow inherits Window {
                                 }
                                 HorizontalLayout {
                                     spacing: 10px;
-                                    ActionButton { label: update_state == 1 ? "Проверяем…" : "Проверить"; icon: @image-url("icons/refresh.svg"); has-icon: true; button-width: 150px; enabled: update_state != 1 && update_state != 4; activated => { root.check_updates(); } }
-                                    if update_state == 2 || update_state == 4: ActionButton { label: update_state == 4 ? "Загрузка " + update_progress + "%" : "Установить обновление"; icon: @image-url("icons/download.svg"); has-icon: true; primary: true; button-width: 232px; enabled: update_state == 2; activated => { root.install_update(); } }
+                                    ActionButton { label: update_state == 1 ? "Checking…" : "Check"; icon: @image-url("icons/refresh.svg"); has-icon: true; button-width: 150px; enabled: update_state != 1 && update_state != 4; activated => { root.check_updates(); } }
+                                    if update_state == 2 || update_state == 4: ActionButton { label: update_state == 4 ? "Downloading " + update_progress + "%" : "Install update"; icon: @image-url("icons/download.svg"); has-icon: true; primary: true; button-width: 232px; enabled: update_state == 2; activated => { root.install_update(); } }
                                     Rectangle { horizontal-stretch: 1; }
-                                    ActionButton { label: "Все релизы"; icon: @image-url("icons/external.svg"); has-icon: true; kind: 2; button-width: 140px; activated => { root.open_release(); } }
+                                    ActionButton { label: "All releases"; icon: @image-url("icons/external.svg"); has-icon: true; kind: 2; button-width: 140px; activated => { root.open_release(); } }
                                 }
                             }
                         }
@@ -1315,12 +1315,12 @@ export component MainWindow inherits Window {
                             notes := VerticalLayout {
                                 padding: 20px;
                                 spacing: 12px;
-                                CardTitle { title: "Что нового"; icon: @image-url("icons/list.svg"); }
+                                CardTitle { title: "What's new"; icon: @image-url("icons/list.svg"); }
                                 Text {
                                     wrap: word-wrap;
                                     color: AppTheme.ink-2;
                                     font-size: 13px;
-                                    text: release_notes == "" ? "Здесь появится описание нового релиза после проверки.\n\nПроверка выполняется при запуске и затем каждые 6 часов. Когда выйдет новая версия, Windows покажет уведомление." : release_notes;
+                                    text: release_notes == "" ? "Release notes appear here after a check.\n\ntile-rs checks at startup and then every 6 hours. When a new version is out, Windows shows a notification." : release_notes;
                                 }
                             }
                         }
@@ -1361,8 +1361,8 @@ export component MainWindow inherits Window {
                     VerticalLayout {
                         alignment: center;
                         spacing: 2px;
-                        Text { text: "Добро пожаловать в tile-rs"; color: AppTheme.ink; font-size: 22px; font-weight: 700; }
-                        Text { text: "Окна выстраиваются сами. Вот главные сочетания"; color: AppTheme.ink-2; font-size: 13px; }
+                        Text { text: "Welcome to tile-rs"; color: AppTheme.ink; font-size: 22px; font-weight: 700; }
+                        Text { text: "Windows arrange themselves. Here are the main keys"; color: AppTheme.ink-2; font-size: 13px; }
                     }
                 }
                 Rectangle { height: 8px; }
@@ -1380,8 +1380,8 @@ export component MainWindow inherits Window {
                 Rectangle { vertical-stretch: 1; }
                 HorizontalLayout {
                     spacing: 12px;
-                    Text { text: "Любое сочетание меняется во вкладке «Горячие клавиши»"; color: AppTheme.muted; font-size: 12px; vertical-alignment: center; horizontal-stretch: 1; }
-                    ActionButton { label: "Понятно"; primary: true; button-width: 132px; activated => { root.dismiss_welcome(); } }
+                    Text { text: "Change any of them on the Hotkeys page"; color: AppTheme.muted; font-size: 12px; vertical-alignment: center; horizontal-stretch: 1; }
+                    ActionButton { label: "Got it"; primary: true; button-width: 132px; activated => { root.dismiss_welcome(); } }
                 }
             }
         }

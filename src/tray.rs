@@ -14,8 +14,8 @@ use windows::Win32::UI::WindowsAndMessaging::{
     AppendMenuW, CreateIconIndirect, CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyIcon,
     DestroyMenu, GetCursorPos, PostMessageW, PostQuitMessage, RegisterClassW,
     RegisterWindowMessageW, SetForegroundWindow, TrackPopupMenu, HICON, ICONINFO, MF_CHECKED,
-    MF_GRAYED, MF_SEPARATOR, MF_STRING, SPI_SETWORKAREA, SW_SHOWNORMAL, TPM_RETURNCMD,
-    TPM_RIGHTBUTTON, WINDOW_EX_STYLE, WM_APP, WM_DESTROY, WM_DISPLAYCHANGE, WM_LBUTTONDBLCLK,
+    MF_GRAYED, MF_POPUP, MF_SEPARATOR, MF_STRING, SPI_SETWORKAREA, SW_SHOWNORMAL, TPM_RETURNCMD,
+    TPM_RIGHTBUTTON, WINDOW_EX_STYLE, WM_APP, WM_DESTROY, WM_DISPLAYCHANGE, WM_LBUTTONUP,
     WM_NULL, WM_RBUTTONUP, WM_SETTINGCHANGE, WNDCLASSW, WS_EX_TOOLWINDOW, WS_OVERLAPPED,
 };
 
@@ -170,12 +170,12 @@ pub fn notify_update(version: &str) {
         .szInfoTitle
         .iter_mut()
         .take(63)
-        .zip("tile-rs: доступно обновление".encode_utf16())
+        .zip("tile-rs: update available".encode_utf16())
     {
         *dest = ch;
     }
     let message = format!(
-        "Версия {version} готова. Нажмите, чтобы открыть Check update и установить обновление."
+        "Version {version} is ready. Click to open Updates and install it."
     );
     for (dest, ch) in data.szInfo.iter_mut().take(255).zip(message.encode_utf16()) {
         *dest = ch;
@@ -293,7 +293,7 @@ fn show_menu(hwnd: HWND) {
         let ver = wide(&format!("tile-rs v{}", env!("CARGO_PKG_VERSION")));
         let _ = AppendMenuW(menu, MF_STRING | MF_GRAYED, 0, PCWSTR(ver.as_ptr()));
         let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
-        item(menu, M_SETTINGS, "Settings...", false);
+        item(menu, M_SETTINGS, "Settings", false);
         item(
             menu,
             M_PAUSE,
@@ -304,15 +304,19 @@ fn show_menu(hwnd: HWND) {
             },
             false,
         );
-        item(menu, M_RETILE, "Re-tile now", false);
-        let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
-        item(menu, M_EDIT, "Edit config (hotkeys, rules)...", false);
-        item(menu, M_RELOAD, "Reload config", false);
+        item(menu, M_RETILE, "Arrange windows again", false);
         item(menu, M_HOTKEYS, "Show hotkeys", false);
-        item(menu, M_FOLDER, "Open config folder", false);
-        item(menu, M_LOG, "Open log", false);
-        item(menu, M_DIAGNOSTICS, "Export window diagnostics", false);
-        item(menu, M_UPDATE, "Check for updates", false);
+        // rarely needed, technical items live in a submenu so the main menu stays short
+        if let Ok(more) = CreatePopupMenu() {
+            item(more, M_UPDATE, "Check for updates", false);
+            item(more, M_EDIT, "Edit config file", false);
+            item(more, M_RELOAD, "Reload config file", false);
+            item(more, M_FOLDER, "Open config folder", false);
+            item(more, M_LOG, "Open log", false);
+            item(more, M_DIAGNOSTICS, "Export window diagnostics", false);
+            let label = wide("More");
+            let _ = AppendMenuW(menu, MF_POPUP, more.0 as usize, PCWSTR(label.as_ptr()));
+        }
         let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
         item(
             menu,
@@ -424,7 +428,8 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
         match lparam.0 as u32 {
             NIN_BALLOONUSERCLICK => crate::launcher::show_updates(),
             WM_RBUTTONUP => show_menu(hwnd),
-            WM_LBUTTONDBLCLK => crate::dispatch(Action::Pause),
+            // a click opens the settings, like any other tray app; pausing is in the menu
+            WM_LBUTTONUP => crate::show_launcher(),
             _ => {}
         }
         return LRESULT(0);
