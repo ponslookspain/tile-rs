@@ -23,10 +23,8 @@ pub fn msgbox(title: &str, text: &str, question: bool) -> bool {
     }
 }
 
-/// Non-blocking message box (own thread), so the main message loop keeps running.
+/// A message for the user. It does not open a window: it waits in the settings window's notice
+/// banner (see `platform::notices`).
 pub fn notify(title: &str, text: &str) {
-    let (t, x) = (title.to_string(), text.to_string());
-    std::thread::spawn(move || {
-        msgbox(&t, &x, false);
-    });
+    super::notices::push(title, text);
 }

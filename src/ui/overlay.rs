@@ -9,7 +9,7 @@ use std::mem::size_of;
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicIsize, AtomicU32, Ordering};
 use std::sync::OnceLock;
 
-use crate::config::IndicatorSize;
+use crate::config::{IndicatorSide, IndicatorSize};
 
 use windows::core::w;
 use windows::Win32::Foundation::{COLORREF, HINSTANCE, HWND, LPARAM, LRESULT, RECT, WPARAM};
@@ -247,6 +247,8 @@ use windows::Win32::UI::WindowsAndMessaging::{UpdateLayeredWindow, ULW_ALPHA};
 
 const DOTS: i32 = 9;
 static INDICATOR_SCALE: AtomicU32 = AtomicU32::new(1);
+/// Screen edge of the indicator: 0 top, 1 bottom, 2 left, 3 right.
+static INDICATOR_SIDE: AtomicU32 = AtomicU32::new(0);
 /// Accent colour of the indicator as a COLORREF (0x00BBGGRR).
 static INDICATOR_ACCENT: AtomicU32 = AtomicU32::new(0x00FF_8C00);
 /// Hover animation: progress runs 0..=HOVER_MAX, HOVER_STEP per timer tick.
@@ -295,18 +297,119 @@ impl Metrics {
     }
 }
 
-/// Height reserved for the indicator at the top of a monitor's work area (pill plus its top margin).
+fn side() -> IndicatorSide {
+    match INDICATOR_SIDE.load(Ordering::Relaxed) {
+        1 => IndicatorSide::Bottom,
+        2 => IndicatorSide::Left,
+        3 => IndicatorSide::Right,
+        _ => IndicatorSide::Top,
+    }
+}
+
+fn is_vertical(side: IndicatorSide) -> bool {
+    matches!(side, IndicatorSide::Left | IndicatorSide::Right)
+}
+
+/// Thickness reserved for the indicator along its screen edge (pill plus its edge margin).
 pub fn indicator_bar_height(dpi: u32) -> i32 {
     metrics(dpi).px(TOP + PILL_H).round() as i32
 }
 
-/// Size of the indicator window: the pill plus transparent margins for its shadow.
-pub fn indicator_window_size(dpi: u32) -> (i32, i32) {
+/// Size of the indicator window drawn lying down (top and bottom): the pill plus transparent
+/// margins for its shadow.
+fn horizontal_size(dpi: u32) -> (i32, i32) {
     let m = metrics(dpi);
     (
         m.px(PILL_W + 2.0 * SIDE).round() as i32,
         m.px(TOP + PILL_H + BOTTOM).round() as i32,
     )
+}
+
+/// Size of the indicator window on `side`: turned on its end for the left and right edges.
+fn window_size_for(side: IndicatorSide, dpi: u32) -> (i32, i32) {
+    let (w, h) = horizontal_size(dpi);
+    if is_vertical(side) {
+        (h, w)
+    } else {
+        (w, h)
+    }
+}
+
+pub fn indicator_window_size(dpi: u32) -> (i32, i32) {
+    window_size_for(side(), dpi)
+}
+
+/// `work` shrunk by the indicator's bar on its edge.
+fn reserve_for(side: IndicatorSide, mut work: RECT, bar: i32) -> RECT {
+    match side {
+        IndicatorSide::Top => work.top += bar,
+        IndicatorSide::Bottom => work.bottom -= bar,
+        IndicatorSide::Left => work.left += bar,
+        IndicatorSide::Right => work.right -= bar,
+    }
+    work
+}
+
+/// Takes the indicator's bar off the edge of a monitor's work area.
+pub fn reserve_indicator_bar(work: &mut RECT, dpi: u32) {
+    *work = reserve_for(side(), *work, indicator_bar_height(dpi));
+}
+
+/// Where the indicator window goes on a monitor: centred along its edge of `work`.
+fn rect_for(side: IndicatorSide, work: RECT, w: i32, h: i32) -> RECT {
+    let (left, top) = match side {
+        IndicatorSide::Top => (work.left + (work.right - work.left - w) / 2, work.top),
+        IndicatorSide::Bottom => (
+            work.left + (work.right - work.left - w) / 2,
+            work.bottom - h,
+        ),
+        IndicatorSide::Left => (work.left, work.top + (work.bottom - work.top - h) / 2),
+        IndicatorSide::Right => (work.right - w, work.top + (work.bottom - work.top - h) / 2),
+    };
+    RECT {
+        left,
+        top,
+        right: left + w,
+        bottom: top + h,
+    }
+}
+
+pub fn indicator_rect(work: RECT, dpi: u32) -> RECT {
+    let side = side();
+    let (w, h) = window_size_for(side, dpi);
+    rect_for(side, work, w, h)
+}
+
+/// Turns the lying-down picture (`w` x `h`, edge margin on top) to face `side`.
+fn orient(px: Vec<u32>, w: i32, h: i32, side: IndicatorSide) -> Vec<u32> {
+    let (w, h) = (w.max(0) as usize, h.max(0) as usize);
+    match side {
+        IndicatorSide::Top => px,
+        IndicatorSide::Bottom => px.chunks(w.max(1)).rev().flatten().copied().collect(),
+        IndicatorSide::Left | IndicatorSide::Right => {
+            let mut out = vec![0; px.len()];
+            for y in 0..h {
+                for x in 0..w {
+                    let nx = if side == IndicatorSide::Right {
+                        h - 1 - y
+                    } else {
+                        y
+                    };
+                    out[x * h + nx] = px[y * w + x];
+                }
+            }
+            out
+        }
+    }
+}
+
+/// The window coordinate that runs along the dots (x lying down, y on end).
+fn along_axis(side: IndicatorSide, x: i32, y: i32) -> i32 {
+    if is_vertical(side) {
+        y
+    } else {
+        x
+    }
 }
 
 /// Left edge and width (design pixels, window coordinates) of dot `i` when workspace `cur` is the
@@ -428,12 +531,24 @@ pub fn dot_at_screen(x: i32, y: i32) -> Option<(usize, u8)> {
             return None;
         }
         let r: Vec<i32> = ind.rect.iter().map(|a| a.load(Ordering::Relaxed)).collect();
-        let below = r[3] - r[1];
-        if x < r[0] || x >= r[2] || y < r[1] || y >= r[3] + below {
+        let side = side();
+        // the drop zone reaches one indicator thickness further into the screen
+        let depth = if is_vertical(side) {
+            r[2] - r[0]
+        } else {
+            r[3] - r[1]
+        };
+        let (from_x, to_x, from_y, to_y) = match side {
+            IndicatorSide::Top => (r[0], r[2], r[1], r[3] + depth),
+            IndicatorSide::Bottom => (r[0], r[2], r[1] - depth, r[3]),
+            IndicatorSide::Left => (r[0], r[2] + depth, r[1], r[3]),
+            IndicatorSide::Right => (r[0] - depth, r[2], r[1], r[3]),
+        };
+        if x < from_x || x >= to_x || y < from_y || y >= to_y {
             return None;
         }
         let idx = dot_at_x(
-            x - r[0],
+            along_axis(side, x - r[0], y - r[1]),
             ind.dpi.load(Ordering::Relaxed),
             ind.cur.load(Ordering::Relaxed) as i32,
         );
@@ -633,9 +748,11 @@ fn render_indicator(hwnd: HWND, ind: &Ind) {
         .map(|a| a.load(Ordering::Relaxed) as f32 / HOVER_MAX as f32)
         .collect();
     let accent = INDICATOR_ACCENT.load(Ordering::Relaxed);
+    let side = side();
+    let (paint_w, paint_h) = if is_vertical(side) { (h, w) } else { (w, h) };
     let pixels = paint_dots(
-        w,
-        h,
+        paint_w,
+        paint_h,
         metrics(dpi),
         ind.cur.load(Ordering::Relaxed) as i32,
         ind.pop.load(Ordering::Relaxed),
@@ -646,6 +763,7 @@ fn render_indicator(hwnd: HWND, ind: &Ind) {
             ((accent >> 16) & 0xff) as u8,
         ),
     );
+    let pixels = orient(pixels, paint_w, paint_h, side);
     unsafe {
         let screen = GetDC(None);
         let mem = CreateCompatibleDC(Some(screen));
@@ -702,6 +820,20 @@ pub fn set_indicator_accent(color: u32) {
     }
 }
 
+/// Moves the indicator to another screen edge. The next `show_indicator` resizes and repaints it.
+pub fn set_indicator_side(side: IndicatorSide) {
+    let value = match side {
+        IndicatorSide::Top => 0,
+        IndicatorSide::Bottom => 1,
+        IndicatorSide::Left => 2,
+        IndicatorSide::Right => 3,
+    };
+    INDICATOR_SIDE.store(value, Ordering::Relaxed);
+    for ind in &INDS {
+        ind.s_cur.store(u32::MAX, Ordering::Relaxed);
+    }
+}
+
 /// Changes the indicator scale. The next `show_indicator` resizes and repaints every indicator.
 pub fn set_indicator_size(size: IndicatorSize) {
     let scale = match size {
@@ -729,8 +861,9 @@ unsafe extern "system" fn indicator_wndproc(
     match msg {
         WM_MOUSEMOVE => {
             let x = (lparam.0 & 0xFFFF) as u16 as i16 as i32;
+            let y = ((lparam.0 >> 16) & 0xFFFF) as u16 as i16 as i32;
             let idx = dot_at_x(
-                x,
+                along_axis(side(), x, y),
                 ind.dpi.load(Ordering::Relaxed),
                 ind.cur.load(Ordering::Relaxed) as i32,
             );
@@ -761,8 +894,9 @@ unsafe extern "system" fn indicator_wndproc(
         }
         WM_LBUTTONUP => {
             let x = (lparam.0 & 0xFFFF) as u16 as i16 as i32;
+            let y = ((lparam.0 >> 16) & 0xFFFF) as u16 as i16 as i32;
             let idx = dot_at_x(
-                x,
+                along_axis(side(), x, y),
                 ind.dpi.load(Ordering::Relaxed),
                 ind.cur.load(Ordering::Relaxed) as i32,
             );
@@ -775,8 +909,9 @@ unsafe extern "system" fn indicator_wndproc(
         }
         WM_RBUTTONUP => {
             let x = (lparam.0 & 0xFFFF) as u16 as i16 as i32;
+            let y = ((lparam.0 >> 16) & 0xFFFF) as u16 as i16 as i32;
             let idx = dot_at_x(
-                x,
+                along_axis(side(), x, y),
                 ind.dpi.load(Ordering::Relaxed),
                 ind.cur.load(Ordering::Relaxed) as i32,
             );
@@ -1021,6 +1156,63 @@ mod indicator_tests {
         let below = (m.px(TOP + PILL_H) + 2.0) as i32;
         let a = at(w / 2, below) >> 24;
         assert!(a > 0 && a < 0xA0, "shadow alpha {a:#x}");
+    }
+
+    #[test]
+    fn the_indicator_can_sit_on_any_edge() {
+        use IndicatorSide::*;
+        let work = RECT {
+            left: 100,
+            top: 50,
+            right: 1100,
+            bottom: 650,
+        };
+        // vertical edges turn the window on its end
+        assert_eq!(window_size_for(Top, 96), (224, 44));
+        assert_eq!(window_size_for(Bottom, 96), (224, 44));
+        assert_eq!(window_size_for(Left, 96), (44, 224));
+        assert_eq!(window_size_for(Right, 96), (44, 224));
+        // the bar comes off the matching edge of the tiling area
+        let bar = indicator_bar_height(96);
+        let shrunk = |s| {
+            let r = reserve_for(s, work, bar);
+            (
+                r.left - work.left,
+                r.top - work.top,
+                work.right - r.right,
+                work.bottom - r.bottom,
+            )
+        };
+        assert_eq!(shrunk(Top), (0, bar, 0, 0));
+        assert_eq!(shrunk(Bottom), (0, 0, 0, bar));
+        assert_eq!(shrunk(Left), (bar, 0, 0, 0));
+        assert_eq!(shrunk(Right), (0, 0, bar, 0));
+        // centred along the edge, flush with it
+        let r = rect_for(Right, work, 44, 224);
+        assert_eq!(
+            (r.right, r.top + 112),
+            (work.right, (work.top + work.bottom) / 2)
+        );
+        let r = rect_for(Bottom, work, 224, 44);
+        assert_eq!(
+            (r.bottom, r.left + 112),
+            (work.bottom, (work.left + work.right) / 2)
+        );
+        // dots are found along y when the indicator stands on its end
+        assert_eq!(along_axis(Top, 7, 9), 7);
+        assert_eq!(along_axis(Left, 7, 9), 9);
+    }
+
+    #[test]
+    fn turning_the_picture_keeps_every_pixel_and_moves_the_edge_margin() {
+        use IndicatorSide::*;
+        // 3 wide, 2 high: the top row is the edge margin
+        let px: Vec<u32> = vec![1, 2, 3, 4, 5, 6];
+        assert_eq!(orient(px.clone(), 3, 2, Top), px);
+        assert_eq!(orient(px.clone(), 3, 2, Bottom), vec![4, 5, 6, 1, 2, 3]);
+        // 2 wide, 3 high after turning; the old top row becomes the left (or right) column
+        assert_eq!(orient(px.clone(), 3, 2, Left), vec![1, 4, 2, 5, 3, 6]);
+        assert_eq!(orient(px, 3, 2, Right), vec![4, 1, 5, 2, 6, 3]);
     }
 
     #[test]

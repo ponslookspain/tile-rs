@@ -983,22 +983,64 @@ pub(super) fn focus_follows_tick() {
     }
     let fg = unsafe { GetForegroundWindow() };
     if fg != root {
-        // SetForegroundWindow is refused unless our process may set the foreground; attaching to
-        // the current foreground thread lifts that restriction (the usual FFM trick).
+        // SetForegroundWindow is refused unless our process may set the foreground; attaching our
+        // own thread to the current foreground thread lifts that restriction (the usual FFM
+        // trick). Never join two foreign input queues: a hung app would stall the other one too.
         unsafe {
-            let fg_thread = GetWindowThreadProcessId(fg, None);
-            let target_thread = GetWindowThreadProcessId(root, None);
-            let attach = fg_thread != 0 && target_thread != 0 && fg_thread != target_thread;
-            if attach {
-                let _ = AttachThreadInput(fg_thread, target_thread, true);
+            let own_thread = windows::Win32::System::Threading::GetCurrentThreadId();
+            let attach_to = focus_attach_thread(GetWindowThreadProcessId(fg, None), own_thread);
+            if let Some(thread) = attach_to {
+                let _ = AttachThreadInput(own_thread, thread, true);
             }
             let _ = SetForegroundWindow(root);
-            if attach {
-                let _ = AttachThreadInput(fg_thread, target_thread, false);
+            if let Some(thread) = attach_to {
+                let _ = AttachThreadInput(own_thread, thread, false);
             }
         }
     }
     STATE.with(|s| s.borrow_mut().ffm_last = Some(h));
+}
+
+/// The foreground thread our own input queue must join to be allowed to take the foreground, or
+/// `None` when there is nothing to attach to (no foreground thread, or it is our own).
+pub(super) fn focus_attach_thread(fg_thread: u32, own_thread: u32) -> Option<u32> {
+    (fg_thread != 0 && fg_thread != own_thread).then_some(fg_thread)
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum TimerWork {
+    Follow,
+    Retile,
+    Live,
+    Enforce,
+}
+
+/// What one firing of the shared debounce timer does, and which pending work it cannot cover.
+#[derive(Debug, PartialEq, Eq)]
+pub(super) struct TimerPlan {
+    pub primary: TimerWork,
+    pub carry_enforce: bool,
+}
+
+/// Only one branch runs per firing. A workspace switch re-tiles with fresh layouts, so it covers a
+/// pending reflow, but a retile that finds nothing to change does not snap back a window that
+/// moved itself; a live resize covers neither (a reflow outranks it, so only verify can be left).
+pub(super) fn plan_timer_work(follow: bool, reflow: bool, live: bool, enforce: bool) -> TimerPlan {
+    let primary = if follow {
+        TimerWork::Follow
+    } else if reflow {
+        TimerWork::Retile
+    } else if live {
+        TimerWork::Live
+    } else if enforce {
+        TimerWork::Enforce
+    } else {
+        TimerWork::Retile
+    };
+    TimerPlan {
+        primary,
+        carry_enforce: enforce && matches!(primary, TimerWork::Follow | TimerWork::Live),
+    }
 }
 
 /// Handles the thread timers: the debounce / live / verify timer and the focus-follows-mouse poll.
@@ -1118,11 +1160,11 @@ pub(super) fn handle_debounce_timer(wparam: usize) {
         }
         (s.follow.take(), reflow, enforce, live)
     });
-    match follow {
-        Some((mi, w, h)) => switch_ws(mi, w, Some(h)),
-        None if reflow => retile(),
-        None if live => live_resize(),
-        None if enforce => {
+    let plan = plan_timer_work(follow.is_some(), reflow, live, enforce);
+    match (plan.primary, follow) {
+        (TimerWork::Follow, Some((mi, w, h))) => switch_ws(mi, w, Some(h)),
+        (TimerWork::Live, _) => live_resize(),
+        (TimerWork::Enforce, _) => {
             let fullscreen = enforce_layout();
             // only walk all windows again if the set of windows really changed (or one of them
             // just went fullscreen and must be dropped from the layout)
@@ -1132,7 +1174,16 @@ pub(super) fn handle_debounce_timer(wparam: usize) {
                 retile();
             }
         }
-        None => retile(),
+        _ => retile(),
+    }
+    if plan.carry_enforce {
+        // One timer serves every kind of work; what the branch above did not cover must not be
+        // lost with the flag that was already taken.
+        STATE.with(|s| {
+            let mut s = s.borrow_mut();
+            s.enforce = true;
+            s.timer = unsafe { SetTimer(None, s.timer, VERIFY_MS, None) };
+        });
     }
     sync_border();
     sync_dividers();

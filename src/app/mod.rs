@@ -7,6 +7,7 @@ mod cli;
 mod event_queue;
 mod events;
 mod interaction;
+mod invariants;
 mod monitors;
 mod placement;
 mod ratios_store;
@@ -24,8 +25,7 @@ use crate::diagnostics::{
     anim_prof_finish, anim_prof_frame, anim_prof_reset, log, log_file, log_reset, prof, Timer,
 };
 use crate::layout::{divider, geometry, live_resize};
-use crate::platform::autostart::set_autostart;
-use crate::platform::dialogs::{msgbox, notify};
+use crate::platform::dialogs::notify;
 use crate::platform::{monitor, parked, update, window};
 use crate::ui::{launcher, overlay, preview, tray};
 
@@ -46,7 +46,8 @@ pub(crate) use actions::{
     tour_progress_path,
 };
 pub(crate) use interaction::{
-    begin_divider, end_divider, request_relayout, settle_divider, ui_state, update_divider,
+    begin_divider, end_divider, request_relayout, settle_divider, state_busy, try_ui_state,
+    ui_state, update_divider,
 };
 pub(crate) use report::export_diagnostics;
 pub(crate) use startup::{end_session, query_end_session};

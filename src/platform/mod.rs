@@ -3,6 +3,7 @@
 pub(crate) mod autostart;
 pub(crate) mod dialogs;
 pub(crate) mod monitor;
+pub(crate) mod notices;
 pub(crate) mod parked;
 pub(crate) mod update;
 pub(crate) mod window;

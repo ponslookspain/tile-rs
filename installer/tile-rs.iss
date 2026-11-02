@@ -63,3 +63,7 @@ Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: 
 
 [Run]
 Filename: "{app}\tile-rs.exe"; Description: "Start tile-rs now"; Flags: nowait postinstall skipifsilent
+
+[UninstallRun]
+; the program moves its autostart to a logon task; remove it with the program
+Filename: "{sys}\schtasks.exe"; Parameters: "/Delete /TN tile-rs /F"; Flags: runhidden; RunOnceId: "RemoveLogonTask"

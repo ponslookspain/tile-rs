@@ -1264,3 +1264,40 @@ fn a_lone_window_is_admitted_with_smart_gaps() {
     );
     config::set(config::parse("").unwrap());
 }
+
+#[test]
+fn focus_follows_mouse_only_attaches_our_own_thread_to_a_real_foreground_thread() {
+    assert_eq!(focus_attach_thread(0, 7), None, "no foreground thread");
+    assert_eq!(focus_attach_thread(7, 7), None, "already our own thread");
+    assert_eq!(focus_attach_thread(42, 7), Some(42));
+}
+
+#[test]
+fn window_message_handlers_see_a_borrowed_state_instead_of_aborting() {
+    assert!(!state_busy());
+    assert!(try_ui_state().is_some());
+    STATE.with(|s| {
+        let _held = s.borrow_mut();
+        assert!(state_busy());
+        assert!(try_ui_state().is_none());
+    });
+    assert!(!state_busy());
+}
+
+#[test]
+fn the_shared_timer_keeps_work_its_branch_does_not_cover() {
+    use TimerWork::*;
+    let carry = |f, r, l, e| {
+        let p = plan_timer_work(f, r, l, e);
+        (p.primary, p.carry_enforce)
+    };
+    assert_eq!(carry(false, false, false, false), (Retile, false));
+    assert_eq!(carry(false, false, false, true), (Enforce, false));
+    // a workspace switch re-tiles with fresh layouts but must not forget a pending verify
+    assert_eq!(carry(true, true, false, true), (Follow, true));
+    // a reflow retiles everything, which already covers the verify
+    assert_eq!(carry(false, true, false, true), (Retile, false));
+    assert_eq!(carry(false, true, true, true), (Retile, false));
+    // a live resize does not
+    assert_eq!(carry(false, false, true, true), (Live, true));
+}

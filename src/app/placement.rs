@@ -154,7 +154,7 @@ pub(super) fn monitor_work(mi: usize) -> RECT {
     let mut r = monitor::work(mi);
     // Each managed monitor has its own workspace indicator bar.
     if config::workspace_indicator() {
-        r.top += overlay::indicator_bar_height(monitor::dpi(mi));
+        overlay::reserve_indicator_bar(&mut r, monitor::dpi(mi));
     }
     r
 }
