@@ -41,6 +41,7 @@ These keys go at the top of the file, before any `[section]`.
 | `auto_overflow` | `true` | When the actual layout cannot fit another window, try the following workspaces and follow the admitted window. If disabled or no workspace fits, leave the window floating and log the reason instead of squeezing a neighbour below its minimum. Toggle float or reload settings to retry an automatic float. |
 | `workspace_indicator` | `true` | Minimal workspace dots at the top of each monitor. The active dot is blue with an outline, occupied workspaces glow blue, and empty dots are dim. Click a dot to switch that monitor. |
 | `workspace_indicator_size` | `"medium"` | Visual dot and click target size: `"small"`, `"medium"`, or `"large"`. This can also be changed in the launcher. |
+| `workspace_indicator_position` | `"top"` | The screen edge of the workspace dots: `"top"`, `"bottom"`, `"left"`, or `"right"`. On the left and right they stand on end. This can also be changed in the settings. |
 | `accent_color` | `"#008cff"` | Accent colour of the workspace indicator (`#RRGGBB`): the current workspace, occupied and empty dots and the ring around the current one are drawn in it. Also available in the settings launcher. |
 | `smart_gaps` | `false` | Drop the inner and outer gaps when a workspace holds a single window, so it fills the screen. |
 | `master_count` | `1` | Master-stack only: how many windows share the master (left) column, 1-8. The `master_count_inc` / `master_count_dec` hotkeys change and save it. |

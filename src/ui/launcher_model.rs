@@ -629,6 +629,7 @@ pub fn edit_rules(text: &str, rules: &[Rule]) -> String {
 pub struct SettingsForm {
     pub layout_index: i32,
     pub indicator_size: i32,
+    pub indicator_side: i32,
     pub inner_gap: String,
     pub outer_gap: String,
     pub animations: bool,
@@ -708,6 +709,10 @@ impl SettingsForm {
                 "workspace_indicator_size",
                 format!("\"{}\"", indicator.name()),
             ),
+            (
+                "workspace_indicator_position",
+                format!("\"{}\"", side_from_index(self.indicator_side).name()),
+            ),
             ("focus_follows_mouse", self.focus_follows_mouse.to_string()),
             ("border", self.highlight_window.to_string()),
             ("border_color", format!("\"{border_color}\"")),
@@ -778,6 +783,24 @@ pub fn indicator_from_index(index: i32) -> config::IndicatorSize {
         0 => config::IndicatorSize::Small,
         2 => config::IndicatorSize::Large,
         _ => config::IndicatorSize::Medium,
+    }
+}
+
+pub fn side_index(side: config::IndicatorSide) -> i32 {
+    match side {
+        config::IndicatorSide::Top => 0,
+        config::IndicatorSide::Bottom => 1,
+        config::IndicatorSide::Left => 2,
+        config::IndicatorSide::Right => 3,
+    }
+}
+
+pub fn side_from_index(index: i32) -> config::IndicatorSide {
+    match index {
+        1 => config::IndicatorSide::Bottom,
+        2 => config::IndicatorSide::Left,
+        3 => config::IndicatorSide::Right,
+        _ => config::IndicatorSide::Top,
     }
 }
 
@@ -925,6 +948,7 @@ mod tests {
         SettingsForm {
             layout_index: 1,
             indicator_size: 2,
+            indicator_side: 3,
             inner_gap: " 005 ".into(),
             outer_gap: "0".into(),
             animations: true,
@@ -951,11 +975,12 @@ mod tests {
     #[test]
     fn settings_pairs_preserve_config_names_and_normalize_numbers() {
         let pairs = valid_form().config_pairs().unwrap();
-        assert_eq!(pairs.len(), 22);
+        assert_eq!(pairs.len(), 23);
         let value = |key| pairs.iter().find(|(k, _)| *k == key).unwrap().1.as_str();
         assert_eq!(value("inner_gap"), "5");
         assert_eq!(value("layout"), "\"master_stack\"");
         assert_eq!(value("workspace_indicator_size"), "\"large\"");
+        assert_eq!(value("workspace_indicator_position"), "\"right\"");
         assert_eq!(value("fullscreen_windows"), "\"ignore\"");
         assert_eq!(value("media_windows"), "\"tile\"");
         assert_eq!(value("easing"), "\"out_cubic\"");

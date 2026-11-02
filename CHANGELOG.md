@@ -6,6 +6,23 @@ follows [Semantic Versioning](https://semver.org) (see [docs/RELEASING.md](docs/
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-11-02
+
+### Added
+- The workspace dots can sit on any edge of the screen: `workspace_indicator_position = "top" | "bottom" | "left" | "right"`, also on the Workspaces page of the settings. On the left and right the dots stand on end. Older configs get the key added on start-up.
+- The settings window shows a *Notices* banner with the messages tile-rs used to put in pop-up windows (hotkeys Windows refused to register, config errors, diagnostics saved), until you dismiss them.
+
+### Changed
+- tile-rs no longer opens message boxes on its own. Hotkey feedback such as "Layout: grid" or "Monocle on" is gone from the screen; starting a second copy opens the settings of the running one instead of a box; the first start no longer asks about autostart (turn it on in the settings).
+- "Start with Windows" now uses a logon task instead of the `Run` registry entry, which Windows delays for several seconds after sign-in. An existing entry moves over by itself on the next start, and the uninstaller removes the task. If Windows refuses the task, the registry entry is used as before.
+- The open windows are tiled before the tray icon and overlays are set up, so they settle sooner after start-up.
+
+### Fixed
+- Focus follows the mouse no longer joins the input queues of two other programs, which could freeze one of them while the other was hung.
+- Changing the display resolution, waking from sleep or other system notices that arrive while tile-rs is busy are handled afterwards instead of closing the program.
+- A window that moved itself right after a workspace switch or while another window was being resized is now pulled back to its tile.
+- tile-rs checks its own window bookkeeping after every re-tile and repairs duplicates; problems are written to the log.
+
 ## [0.8.1] - 2026-10-24
 
 ### Fixed
@@ -397,7 +414,8 @@ First working prototype.
 - Tray icon with menu, autostart, single-instance guard, first-run dialog.
 - `config.toml`: gap, animations, hotkeys, per-application rules (float / workspace).
 
-[Unreleased]: https://github.com/ponslookspain/tile-rs/compare/v0.8.1...HEAD
+[Unreleased]: https://github.com/ponslookspain/tile-rs/compare/v0.9.0...HEAD
+[0.9.0]: https://github.com/ponslookspain/tile-rs/compare/v0.8.1...v0.9.0
 [0.8.1]: https://github.com/ponslookspain/tile-rs/compare/v0.8.0...v0.8.1
 [0.8.0]: https://github.com/ponslookspain/tile-rs/compare/v0.7.1...v0.8.0
 [0.7.1]: https://github.com/ponslookspain/tile-rs/compare/v0.7.0...v0.7.1

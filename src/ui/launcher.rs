@@ -78,6 +78,15 @@ fn config_error_text(error: &str, path: &std::path::Path) -> String {
     )
 }
 
+/// The notices left by the manager, one paragraph each, for the banner.
+fn notices_text() -> String {
+    crate::platform::notices::load()
+        .iter()
+        .map(|notice| format!("{}\n{}", notice.title, notice.text))
+        .collect::<Vec<_>>()
+        .join("\n\n")
+}
+
 /// The settings process cannot start. It is about to exit, so the message has to be shown here and
 /// now: a notification box on a helper thread would die with the process before it appeared.
 fn fail_to_start(message: &str, mutex: windows::Win32::Foundation::HANDLE) {
@@ -207,6 +216,30 @@ pub fn run() {
             &format!("\"{}\"", crate::diagnostics::log_file().display()),
         );
     });
+    ui.on_dismiss_notices({
+        let weak = ui.as_weak();
+        move || {
+            crate::platform::notices::clear();
+            if let Some(ui) = weak.upgrade() {
+                ui.set_notices_text("".into());
+            }
+        }
+    });
+    // The manager may leave a notice while the window is open.
+    let notices_timer = slint::Timer::default();
+    {
+        let weak = ui.as_weak();
+        let refresh = move || {
+            if let Some(ui) = weak.upgrade() {
+                let text = notices_text();
+                if ui.get_notices_text() != text.as_str() {
+                    ui.set_notices_text(text.into());
+                }
+            }
+        };
+        refresh();
+        notices_timer.start(slint::TimerMode::Repeated, Duration::from_secs(2), refresh);
+    }
     ui.on_quit_manager(|| {
         crate::ui::tray::request_manager_quit();
         slint::quit_event_loop().ok();
@@ -357,6 +390,7 @@ fn populate(ui: &MainWindow, cfg: &config::Config) {
     ui.set_indicator_size(launcher_model::indicator_index(
         cfg.workspace_indicator_size,
     ));
+    ui.set_indicator_side(launcher_model::side_index(cfg.workspace_indicator_position));
     ui.set_animations(cfg.animations);
     ui.set_auto_overflow(cfg.auto_overflow);
     ui.set_show_indicator(cfg.workspace_indicator);
@@ -566,6 +600,7 @@ fn form_values(ui: &MainWindow) -> String {
     [
         ui.get_layout_index().to_string(),
         ui.get_indicator_size().to_string(),
+        ui.get_indicator_side().to_string(),
         ui.get_animations().to_string(),
         ui.get_auto_overflow().to_string(),
         ui.get_show_indicator().to_string(),
@@ -1113,6 +1148,7 @@ fn save(ui: &MainWindow, editor: &mut Editor) {
     let form = launcher_model::SettingsForm {
         layout_index: ui.get_layout_index(),
         indicator_size: ui.get_indicator_size(),
+        indicator_side: ui.get_indicator_side(),
         inner_gap: ui.get_inner_gap().to_string(),
         outer_gap: ui.get_outer_gap().to_string(),
         animations: ui.get_animations(),

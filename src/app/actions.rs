@@ -142,6 +142,7 @@ pub(super) fn reload(announce_failures: bool) {
     match config::load() {
         Ok(c) => {
             overlay::set_indicator_size(c.workspace_indicator_size);
+            overlay::set_indicator_side(c.workspace_indicator_position);
             config::set(c);
             overlay::set_indicator_accent(config::accent_color_value());
             overlay::set_border_color(config::border_color_value());
@@ -328,7 +329,7 @@ pub(super) fn cycle_layout() {
         return;
     }
     reload_config();
-    notify("tile-rs", &format!("Layout: {}", next.name()));
+    log(format!("layout: {}", next.name()));
 }
 
 pub(super) fn toggle_monocle_state(s: &mut State, h: isize) -> Option<bool> {
@@ -356,7 +357,7 @@ pub(super) fn toggle_monocle() {
     let Some(on) = on else { return };
     retile();
     focus_hwnd(fg);
-    notify("tile-rs", if on { "Monocle on" } else { "Monocle off" });
+    log(if on { "monocle on" } else { "monocle off" });
 }
 
 pub(super) fn last_focus_target(
@@ -409,7 +410,7 @@ pub(super) fn workspace_back() {
 /// the count in `config.toml`.
 pub(super) fn change_master_count(step: i8) {
     if config::layout() != Layout::MasterStack {
-        notify("tile-rs", "Master count applies to the master-stack layout");
+        log("master count applies to the master-stack layout");
         return;
     }
     let now = config::master_count() as i32;
@@ -425,7 +426,7 @@ pub(super) fn change_master_count(step: i8) {
         return;
     }
     reload_config();
-    notify("tile-rs", &format!("Master windows: {next}"));
+    log(format!("master windows: {next}"));
 }
 
 /// Marker file: the settings window's first-run tour is open and watching.

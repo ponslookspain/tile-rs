@@ -91,11 +91,8 @@ pub(super) fn start(interactive: bool) {
     if unsafe { GetLastError() } == ERROR_ALREADY_EXISTS {
         log("(a second instance tried to start and exited)");
         if interactive {
-            msgbox(
-                "tile-rs",
-                "tile-rs is already running.\n\nLook for its icon in the system tray (click ^ near the clock).",
-                false,
-            );
+            // the running instance has its icon in the tray; show it the settings instead of a box
+            launcher::show();
         }
         return;
     }
@@ -109,6 +106,7 @@ pub(super) fn start(interactive: bool) {
     match config::load() {
         Ok(c) => {
             overlay::set_indicator_size(c.workspace_indicator_size);
+            overlay::set_indicator_side(c.workspace_indicator_position);
             config::set(c);
         }
         Err(e) => {
@@ -118,15 +116,10 @@ pub(super) fn start(interactive: bool) {
     }
 
     if interactive && first_run {
-        let yes = msgbox(
-            "tile-rs - first start",
-            "Start tile-rs automatically when you sign in to Windows?\n\n\
-             (You can change this later in the launcher or the tray menu.)",
-            true,
+        notify(
+            "tile-rs: start with Windows?",
+            "tile-rs does not start by itself yet. Turn on \"Start with Windows\" on the General page.",
         );
-        if yes {
-            set_autostart(true);
-        }
     }
 
     window::SKIP_ZOOMED.store(true, Ordering::Relaxed);
@@ -177,6 +170,11 @@ pub(super) fn start(interactive: bool) {
     }
     EVENT_HOOKS.with(|hooks| *hooks.borrow_mut() = event_hooks);
     let failed = register_hotkeys();
+    let anim_timer = create_anim_timer();
+    STATE.with(|s| s.borrow_mut().anim_timer = anim_timer);
+    // Tile the windows that are already open before the less urgent parts (tray icon, overlays)
+    // are set up: after sign-in this is the moment the user is waiting for.
+    retile();
     tray::create();
     launcher::create();
     update::start_background_checks();
@@ -188,8 +186,6 @@ pub(super) fn start(interactive: bool) {
     overlay::set_indicator_click(switch_ws_on_monitor);
     overlay::set_indicator_menu(dot_menu);
     overlay::create_indicator(monitor::count());
-    let anim_timer = create_anim_timer();
-    STATE.with(|s| s.borrow_mut().anim_timer = anim_timer);
     apply_focus_follows_timer();
     if config::focus_follows_mouse() {
         log("focus follows the mouse pointer");
@@ -201,9 +197,11 @@ pub(super) fn start(interactive: bool) {
             &failed.join("\n"),
         );
     }
-    retile();
+    // the overlays did not exist yet when the first pass ran
+    sync_indicator();
     announce_elevated();
     refresh_border();
+    crate::platform::autostart::upgrade_to_logon_task();
     STATE.with(|s| schedule_trim(&mut s.borrow_mut()));
     if interactive {
         launcher::show();

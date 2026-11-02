@@ -349,14 +349,7 @@ pub(super) fn sync_indicator() {
         let s = s.borrow();
         for (mi, mon) in mons.iter().enumerate().take(MON) {
             let dpi = monitor::dpi(mi);
-            let (w, h) = overlay::indicator_window_size(dpi);
-            let x = mon.work.left + (mon.work.right - mon.work.left - w) / 2;
-            let rect = RECT {
-                left: x,
-                top: mon.work.top,
-                right: x + w,
-                bottom: mon.work.top + h,
-            };
+            let rect = overlay::indicator_rect(mon.work, dpi);
             let mut mask = 0u32;
             for (window, ws) in &s.ws {
                 if s.mi(*window) == mi {
@@ -385,6 +378,19 @@ pub(crate) fn ui_state() -> (u8, bool) {
         let s = s.borrow();
         (s.cur[active_mon(&s)], s.paused)
     })
+}
+
+/// `ui_state` for callers that may run while a native call holds STATE.
+pub(crate) fn try_ui_state() -> Option<(u8, bool)> {
+    STATE.with(|s| {
+        let s = s.try_borrow().ok()?;
+        Some((s.cur[active_mon(&s)], s.paused))
+    })
+}
+
+/// True while STATE is borrowed, i.e. a handler entered now must wait instead of borrowing again.
+pub(crate) fn state_busy() -> bool {
+    STATE.with(|s| s.try_borrow_mut().is_err())
 }
 
 /// The screen work area changed (display mode, taskbar size / auto-hide): rebuild the layout.

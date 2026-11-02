@@ -27,6 +27,7 @@ export component MainWindow inherits Window {
     in-out property <int> page: 0;
     in-out property <int> layout_index: 0;
     in-out property <int> indicator_size: 1;
+    in-out property <int> indicator_side: 0;
     in-out property <bool> animations: true;
     in-out property <bool> auto_overflow: true;
     in-out property <bool> show_indicator: true;
@@ -73,6 +74,8 @@ export component MainWindow inherits Window {
     // Non-empty when config.toml has an error: the window then shows the defaults, saves nothing
     // and explains why in a banner (Updates and About still work).
     in-out property <string> config_error: "";
+    // messages the manager left instead of opening a window; empty = none
+    in-out property <string> notices_text: "";
 
     in property <string> app_version;
     // 0 idle, 1 checking, 2 available, 3 current, 4 downloading, 5 error
@@ -94,6 +97,7 @@ export component MainWindow inherits Window {
     changed animations => { AppTheme.motion = animations; dirty = true; }
     changed layout_index => { dirty = true; }
     changed indicator_size => { dirty = true; }
+    changed indicator_side => { dirty = true; }
     changed auto_overflow => { dirty = true; }
     changed show_indicator => { dirty = true; }
     changed focus_follows_mouse => { dirty = true; }
@@ -135,6 +139,7 @@ export component MainWindow inherits Window {
     // tiling is paused in the running manager (polled by the launcher)
     in-out property <bool> paused: false;
     callback open_config();
+    callback dismiss_notices();
     callback open_log();
     callback quit_manager();
 
@@ -249,6 +254,21 @@ export component MainWindow inherits Window {
                 }
             }
 
+            if notices_text != "": Rectangle {
+                border-radius: 12px;
+                background: AppTheme.warn-soft;
+                VerticalLayout {
+                    padding: 14px;
+                    spacing: 8px;
+                    Text { text: "Notices"; color: AppTheme.warn-ink; font-size: 14px; font-weight: 700; }
+                    Text { text: notices_text; color: AppTheme.ink; font-size: 12px; wrap: word-wrap; }
+                    HorizontalLayout {
+                        alignment: start;
+                        ActionButton { label: "Dismiss"; compact: true; button-width: 120px; activated => { root.dismiss_notices(); } }
+                    }
+                }
+            }
+
             ScrollView {
                 vertical-stretch: 1;
                 VerticalLayout {
@@ -299,6 +319,7 @@ export component MainWindow inherits Window {
                     // ---------- 2: workspaces ----------
                     if (page == 0 && show_more) || page == 2: WorkspacesSection {
                         indicator_size <=> root.indicator_size;
+                        indicator_side <=> root.indicator_side;
                         show_indicator <=> root.show_indicator;
                         focus_follows_mouse <=> root.focus_follows_mouse;
                         accent_color <=> root.accent_color;

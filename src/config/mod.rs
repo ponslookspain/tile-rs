@@ -72,6 +72,27 @@ impl IndicatorSize {
     }
 }
 
+/// Which edge of the screen the workspace indicator sits on.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum IndicatorSide {
+    #[default]
+    Top,
+    Bottom,
+    Left,
+    Right,
+}
+
+impl IndicatorSide {
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Top => "top",
+            Self::Bottom => "bottom",
+            Self::Left => "left",
+            Self::Right => "right",
+        }
+    }
+}
+
 /// The supported tiling layouts.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub enum Layout {
@@ -141,6 +162,7 @@ struct RawConfig {
     auto_overflow: Option<bool>,
     workspace_indicator: Option<bool>,
     workspace_indicator_size: Option<String>,
+    workspace_indicator_position: Option<String>,
     focus_follows_mouse: Option<bool>,
     smart_gaps: Option<bool>,
     master_count: Option<u32>,
@@ -190,6 +212,7 @@ pub struct Config {
     /// Show the small workspace indicator.
     pub workspace_indicator: bool,
     pub workspace_indicator_size: IndicatorSize,
+    pub workspace_indicator_position: IndicatorSide,
     /// Focus the window under the mouse pointer when it moves over a tiled window.
     pub focus_follows_mouse: bool,
     /// No gaps around a lone window.
@@ -260,6 +283,7 @@ auto_overflow = true
 # Small indicator at the top of the screen showing the workspaces (dots).
 workspace_indicator = true
 workspace_indicator_size = "medium" # small, medium, large
+workspace_indicator_position = "top" # top, bottom, left, right
 
 # Move focus to the window under the mouse pointer when it moves onto a tiled window.
 focus_follows_mouse = false
@@ -506,6 +530,9 @@ pub fn migrate(text: &str) -> Option<String> {
     }
     if !has("workspace_indicator_size") {
         top.push("workspace_indicator_size = \"medium\" # small, medium, large".into());
+    }
+    if !has("workspace_indicator_position") {
+        top.push("workspace_indicator_position = \"top\" # top, bottom, left, right".into());
     }
     if !has("smart_gaps") {
         top.push("# Drop the gaps when a workspace holds a single window.".into());
@@ -806,6 +833,18 @@ pub fn parse(text: &str) -> Result<Config, String> {
             ))
         }
     };
+    let workspace_indicator_position =
+        match raw.workspace_indicator_position.as_deref().unwrap_or("top") {
+            "top" => IndicatorSide::Top,
+            "bottom" => IndicatorSide::Bottom,
+            "left" => IndicatorSide::Left,
+            "right" => IndicatorSide::Right,
+            value => {
+                return Err(format!(
+                "workspace_indicator_position = \"{value}\": expected top, bottom, left, or right"
+            ))
+            }
+        };
     let focus_follows_mouse = raw.focus_follows_mouse.unwrap_or(false);
     let smart_gaps = raw.smart_gaps.unwrap_or(false);
     let master_count = raw.master_count.unwrap_or(1).clamp(1, MAX_MASTER_COUNT);
@@ -869,6 +908,7 @@ pub fn parse(text: &str) -> Result<Config, String> {
         auto_overflow,
         workspace_indicator,
         workspace_indicator_size,
+        workspace_indicator_position,
         focus_follows_mouse,
         smart_gaps,
         master_count,
@@ -1037,6 +1077,27 @@ pub fn rules() -> Vec<Rule> {
 mod tests {
     use super::*;
     use windows::Win32::UI::Input::KeyboardAndMouse::{MOD_ALT, MOD_SHIFT};
+
+    #[test]
+    fn the_indicator_edge_is_read_and_checked() {
+        let side = |value: &str| {
+            parse(&format!(
+                "workspace_indicator_position = \"{value}\"
+"
+            ))
+            .map(|c| c.workspace_indicator_position)
+        };
+        assert_eq!(
+            parse("").unwrap().workspace_indicator_position,
+            IndicatorSide::Top
+        );
+        assert_eq!(side("left"), Ok(IndicatorSide::Left));
+        assert_eq!(side("right"), Ok(IndicatorSide::Right));
+        assert_eq!(side("bottom"), Ok(IndicatorSide::Bottom));
+        assert!(side("middle")
+            .unwrap_err()
+            .contains("expected top, bottom, left, or right"));
+    }
 
     #[test]
     fn atomic_save_replaces_complete_config_and_preserves_it_on_rename_failure() {
@@ -1251,7 +1312,7 @@ mod tests {
         let once = migrate(OLD_CONFIG).unwrap();
         assert!(migrate(&once).is_none(), "second run must change nothing");
         // a key the user commented out or turned off is not re-added
-        let custom = "layout = \"spiral\"\ngap = 5\nanimations = false\n# animation_ms = 99\neasing = \"linear\"\nfullscreen_windows = \"ignore\"\nmedia_windows = \"tile\"\nlive_resize = \"live\"\nresize_step = 10\nborder = false\n# border_color = \"#112233\"\nborder_width = 3\nmin_tile_width = 400\nmin_tile_height = 300\nmax_tiles = 6\nauto_overflow = false\nworkspace_indicator = false\nworkspace_indicator_size = \"small\"\nfocus_follows_mouse = true\nsmart_gaps = false\nmaster_count = 2\naccent_color = \"#008cff\"\n\n[hotkeys]\n# grow_width = \"alt+plus\"\n# shrink_width = \"alt+minus\"\nminimize = \"alt+shift+m\"\ntoggle_float = \"alt+shift+f\"\nclose = \"alt+shift+q\"\ncycle_layout = \"ctrl+alt+l\"\ntoggle_monocle = \"alt+m\"\nfocus_last = \"alt+z\"\nworkspace_back_and_forth = \"alt+shift+z\"\nmaster_count_inc = \"alt+period\"\nmaster_count_dec = \"alt+comma\"\nquit = \"ctrl+alt+q\"\nworkspace_next = \"alt+shift+period\"\nworkspace_prev = \"alt+shift+comma\"\nmove_to_next_workspace = \"ctrl+alt+period\"\nmove_to_prev_workspace = \"ctrl+alt+comma\"\nfocus_prev_monitor = \"alt+bracketleft\"\nfocus_next_monitor = \"alt+bracketright\"\nmove_to_prev_monitor = \"alt+shift+bracketleft\"\nmove_to_next_monitor = \"alt+shift+bracketright\"\nshow_hotkeys = \"alt+slash\"\n";
+        let custom = "layout = \"spiral\"\ngap = 5\nanimations = false\n# animation_ms = 99\neasing = \"linear\"\nfullscreen_windows = \"ignore\"\nmedia_windows = \"tile\"\nlive_resize = \"live\"\nresize_step = 10\nborder = false\n# border_color = \"#112233\"\nborder_width = 3\nmin_tile_width = 400\nmin_tile_height = 300\nmax_tiles = 6\nauto_overflow = false\nworkspace_indicator = false\nworkspace_indicator_size = \"small\"\nworkspace_indicator_position = \"left\"\nfocus_follows_mouse = true\nsmart_gaps = false\nmaster_count = 2\naccent_color = \"#008cff\"\n\n[hotkeys]\n# grow_width = \"alt+plus\"\n# shrink_width = \"alt+minus\"\nminimize = \"alt+shift+m\"\ntoggle_float = \"alt+shift+f\"\nclose = \"alt+shift+q\"\ncycle_layout = \"ctrl+alt+l\"\ntoggle_monocle = \"alt+m\"\nfocus_last = \"alt+z\"\nworkspace_back_and_forth = \"alt+shift+z\"\nmaster_count_inc = \"alt+period\"\nmaster_count_dec = \"alt+comma\"\nquit = \"ctrl+alt+q\"\nworkspace_next = \"alt+shift+period\"\nworkspace_prev = \"alt+shift+comma\"\nmove_to_next_workspace = \"ctrl+alt+period\"\nmove_to_prev_workspace = \"ctrl+alt+comma\"\nfocus_prev_monitor = \"alt+bracketleft\"\nfocus_next_monitor = \"alt+bracketright\"\nmove_to_prev_monitor = \"alt+shift+bracketleft\"\nmove_to_next_monitor = \"alt+shift+bracketright\"\nshow_hotkeys = \"alt+slash\"\n";
         let custom = format!("animation_fps_limit = 30\nsnapshot_animations = false\n{custom}");
         assert!(migrate(&custom).is_none());
         assert!(!parse(&custom).unwrap().animations);

@@ -3,13 +3,14 @@ import { AppTheme } from "launcher-theme.slint";
 
 export component WorkspacesSection inherits VerticalLayout {
     in-out property <int> indicator_size;
+    in-out property <int> indicator_side;
     in-out property <bool> show_indicator;
     in-out property <bool> focus_follows_mouse;
     in-out property <string> accent_color;
 
     spacing: 18px;
     Card {
-        card-height: 300px;
+        card-height: 344px;
         VerticalLayout {
             padding: 20px;
             spacing: 12px;
@@ -41,6 +42,15 @@ export component WorkspacesSection inherits VerticalLayout {
                 Text { y: 60px; x: (parent.width - self.width) / 2; text: show_indicator ? "This is how the dots look on screen" : "The dots are hidden"; color: AppTheme.muted; font-size: 12px; }
             }
             ToggleRow { label: "Show the dots on every screen"; checked: show_indicator; changed(value) => { show_indicator = value; } }
+            HorizontalLayout {
+                padding-left: 10px;
+                padding-right: 10px;
+                spacing: 16px;
+                height: 44px;
+                Text { text: "Position"; color: AppTheme.ink; font-size: 13px; vertical-alignment: center; }
+                Segmented { y: 2px; options: ["Top", "Bottom", "Left", "Right"]; current <=> indicator_side; segment-width: 78px; }
+                Rectangle { horizontal-stretch: 1; }
+            }
             HorizontalLayout {
                 padding-left: 10px;
                 padding-right: 10px;

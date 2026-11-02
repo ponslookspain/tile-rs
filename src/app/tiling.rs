@@ -670,6 +670,7 @@ pub(super) fn retile() {
         if s.follow.is_some() {
             s.timer = unsafe { SetTimer(None, s.timer, DEBOUNCE_MS, None) };
         }
+        invariants::check(&mut s);
     });
     // the focused window may only now have joined the layout: make sure it has the border
     refresh_border();

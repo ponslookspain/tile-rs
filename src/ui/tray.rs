@@ -561,6 +561,27 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
         crate::app::end_session(wparam.0 != 0);
         return LRESULT(0);
     }
+    // STATE can be borrowed while a native call pumps messages: replay these after it is released
+    // instead of aborting (panic = "abort") on a second borrow.
+    let touches_state = matches!(
+        msg,
+        WM_DIAGNOSTICS
+            | WM_DIAGNOSTICS_WITH_TITLES
+            | WM_LAUNCHER_RELOAD
+            | WM_LAUNCHER_PAUSE
+            | WM_LAUNCHER_RESUME
+            | WM_LAUNCHER_QUIT
+            | WM_TRAY
+            | WM_DISPLAYCHANGE
+            | WM_POWERBROADCAST
+    ) || (msg == WM_SETTINGCHANGE && wparam.0 == SPI_SETWORKAREA.0 as usize);
+    if touches_state && crate::app::state_busy() {
+        let _ = PostMessageW(Some(hwnd), msg, wparam, lparam);
+        return LRESULT(isize::from(msg == WM_POWERBROADCAST));
+    }
+    if msg == WM_TIMER && wparam.0 == RESUME_TIMER && crate::app::state_busy() {
+        return LRESULT(0); // the timer is still armed and fires again
+    }
     if msg == WM_DIAGNOSTICS || msg == WM_DIAGNOSTICS_WITH_TITLES {
         crate::app::export_diagnostics(msg == WM_DIAGNOSTICS_WITH_TITLES);
         return LRESULT(0);
@@ -576,7 +597,10 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
         return LRESULT(0);
     }
     if msg == WM_LAUNCHER_STATE {
-        return LRESULT(isize::from(crate::app::ui_state().1));
+        // asked from another thread: while STATE is busy, report "running" rather than abort
+        return LRESULT(isize::from(
+            crate::app::try_ui_state().is_some_and(|state| state.1),
+        ));
     }
     if msg == WM_LAUNCHER_RESUME {
         if crate::app::ui_state().1 {
